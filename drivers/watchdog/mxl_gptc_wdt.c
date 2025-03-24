@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2022 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019 Intel Corporation.
  * Wu ZhiXian <wzhixian@maxlinear.com>
  *
@@ -64,8 +64,32 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started\n"
 struct mxl_wdt_drvdata {
 	struct watchdog_device wdd;
 	struct regmap *wdt_rst_base;
+	int bootstatus;
 	const struct mxl_match_data *soc_data;
 };
+
+
+static int reboot_reason = 0;
+
+static int __init parse_rst_reason(char *rst_reason)
+{
+	if (strcmp(rst_reason, "GLOBAL_SW_RESET") == 0) {
+		reboot_reason = 0;
+	} else if (strcmp(rst_reason, "POR_RESET") == 0) {
+		reboot_reason = WDIOF_POWEROVER;
+	} else if (strcmp(rst_reason, "ATOM_WDT_RESET") == 0 ||
+	       strcmp(rst_reason, "ARC_WDT_RESET") == 0) {
+		reboot_reason = WDIOF_CARDRESET;
+	} else {
+		pr_err("Invalid rst_reason value: %s\n", rst_reason);
+		return 0;
+	}
+
+	pr_debug("Parsed rst_reason: %s, reboot_reason: %d\n", rst_reason, reboot_reason);
+	return 1;
+}
+
+__setup("rst_reason=", parse_rst_reason);
 
 static inline void gptc_wdt_rst_en_write(struct mxl_wdt_drvdata *drvdata, u32 val)
 {
@@ -177,8 +201,9 @@ static void mxl_gptc_wdt_irq(void *data)
 }
 
 static const struct watchdog_info mxl_gptc_wdt_info = {
-	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING | WDIOF_MAGICCLOSE |
-		WDIOF_PRETIMEOUT,
+	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING |
+		   WDIOF_MAGICCLOSE | WDIOF_PRETIMEOUT |
+		   WDIOF_CARDRESET | WDIOF_POWEROVER,
 	.identity = "Hardware Watchdog for Intel LGM",
 };
 
@@ -228,6 +253,7 @@ static int mxl_gptc_wdt_probe(struct platform_device *pdev)
 
 	drvdata->wdt_rst_base = wdt_rst_base;
 	drvdata->soc_data = match_data;
+	drvdata->bootstatus = reboot_reason;
 
 	wdd = &drvdata->wdd;
 	wdd->info = &mxl_gptc_wdt_info;
@@ -237,6 +263,7 @@ static int mxl_gptc_wdt_probe(struct platform_device *pdev)
 	wdd->min_hw_heartbeat_ms = 1 * 1000;
 	wdd->max_hw_heartbeat_ms = 200 * 1000; // FIXME
 	wdd->parent = dev;
+	wdd->bootstatus = drvdata->bootstatus;
 	watchdog_set_drvdata(wdd, drvdata);
 	watchdog_init_timeout(wdd, timeout, dev);
 	watchdog_set_nowayout(wdd, nowayout);
