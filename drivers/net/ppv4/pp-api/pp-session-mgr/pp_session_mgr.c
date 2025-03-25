@@ -186,6 +186,7 @@ union work_args {
 /* functions declarations */
 static s32 __smgr_port_flush(u16 pid);
 static inline bool smgr_is_l2tpudp_sess_supported(struct sess_info *s);
+static inline bool __smgr_is_ip_nat_addr_changed(struct sess_info *s);
 
 /* Shortcuts for database accesses */
 #define DB_FREE_LIST_GET_NODE(_db) \
@@ -1400,6 +1401,11 @@ static inline bool __smgr_is_esp_nat_sess(struct sess_info *s)
 	/* bypass with UDP NAT */
 	if (SESS_RX_IS_INNER_ESP(s) && SESS_TX_IS_INNER_ESP(s) &&
 	    SESS_RX_OUTER_IP_NEXT(s) == PKTPRS_PROTO_UDP)
+		return true;
+
+	/* bypass without NAT-T */
+	if (SESS_RX_IS_OUTER_ESP(s) && SESS_TX_IS_OUTER_ESP(s) &&
+	    __smgr_is_ip_nat_addr_changed(s))
 		return true;
 
 	/* IP over GRE termination */
