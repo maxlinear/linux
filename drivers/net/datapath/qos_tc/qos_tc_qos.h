@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
- * Copyright (c) 2020 - 2024 MaxLinear, Inc.
+ * Copyright (c) 2020 - 2025 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -13,7 +13,7 @@
 #include <linux/radix-tree.h>
 #include <linux/types.h>
 
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 
 #define QOS_TC_MAX_Q 8
 #define QOS_TC_DOT1P_SZ 8
@@ -71,6 +71,15 @@ struct qos_tc_dot1p {
 	unsigned int tcid;
 };
 
+struct qos_tc_tbf_data {
+	u32 parent;
+	u32 handle;
+	u32 cir;
+	u32 pir;
+	u32 cbs;
+	u32 pbs;
+};
+
 struct qos_tc_qdisc {
 	struct net_device *dev;
 	enum qos_tc_qdisc_type type;
@@ -94,11 +103,14 @@ struct qos_tc_qdisc {
 	unsigned int num_q;
 	struct qos_tc_q_data qids[QOS_TC_MAX_Q];
 
-	/* TODO: for multi-stage schedulers */
 	unsigned int num_children;
 	struct qos_tc_qdisc *children[QOS_TC_MAX_Q];
 	/* Used for sibling qdiscs */
 	int p_w;
+
+	bool tbf_on;
+	unsigned int num_tbf;
+	struct qos_tc_tbf_data tbfs[QOS_TC_MAX_Q];
 
 	union {
 		struct {
@@ -116,6 +128,7 @@ struct qos_tc_qdisc {
 		} drr;
 	};
 
+	int alloc_flag;
 	/* TODO: abstrac the hw specific part */
 	struct qos_tc_qdisc_ops *ops;
 };
@@ -124,9 +137,13 @@ struct qos_tc_port {
 	struct net_device *dev;
 	struct qos_tc_qdisc root_qdisc;
 	unsigned int sch_num;
+	bool tbf_on;
+	struct qos_tc_tbf_data tbf;
+	struct qos_tc_q_data tbf_queue;
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
 	u64 q_map; /* q_map for maintaining queues */
 #endif
+	int (*destroy)(struct qos_tc_port *);
 	struct radix_tree_root qdiscs;
 	struct list_head list;
 };
@@ -145,6 +162,10 @@ struct qos_tc_qmap_tc {
 int qos_tc_get_queue_by_handle(struct net_device *dev,
 			       u32 handle,
 			       struct qos_tc_q_data **qid);
+int qos_tc_get_sch_by_handle(struct net_device *dev,
+			     u32 handle,
+			     struct qos_tc_qdisc **sch);
+
 
 struct qos_tc_port *qos_tc_port_get(struct net_device *dev);
 struct qos_tc_port *qos_tc_port_alloc(struct net_device *dev);
@@ -208,14 +229,24 @@ int qos_tc_qdata_add(struct net_device *dev, struct qos_tc_q_data *qid,
 		     u32 handle, u32 parent, enum qos_tc_qdata_type type,
 		     int (*destroy)(struct net_device *dev, u32 handle,
 				    u32 parent));
+int qos_tc_qdata_add_tbf(struct net_device *dev, struct qos_tc_q_data *qid,
+			 struct qos_tc_tbf_data *tbf,
+			 int (*destroy)(struct net_device *dev, u32 handle,
+					u32 parent));
+
 int qos_tc_qdata_remove(struct net_device *dev, struct qos_tc_q_data *qid,
 			u32 handle, u32 parent);
 
 int qos_tc_shaper_add(struct qos_tc_qdisc *sch,
-		      struct qos_tc_q_data *qid,
-		      struct tc_tbf_qopt_offload_replace_params *params);
+		      struct qos_tc_q_data *qdata,
+		      struct qos_tc_tbf_data *tbf);
+
 int qos_tc_shaper_remove(struct qos_tc_qdisc *sch,
 			 struct qos_tc_q_data *qid);
+
+int tbf_remove(struct net_device *dev, u32 handle, u32 parent);
+int qos_tc_del_tbf_from_qdisc(struct qos_tc_qdisc *qdisc,
+			      struct qos_tc_q_data *qid);
 
 bool qos_tc_is_cpu_port(int port);
 
@@ -229,5 +260,19 @@ bool qos_tc_is_gpon_dev(struct net_device *dev);
 bool qos_tc_is_first_subif(struct net_device *dev);
 bool qos_tc_is_vuni_dev(struct net_device *dev);
 int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx);
+
+u64 psched_ns_t2l(const struct psched_ratecfg *r, u64 time_in_ns);
+int qos_tc_check_qid(struct qos_tc_qdisc *qdisc, int idx);
+
+int qos_tc_add_qdisc_to_dev(struct net_device *dev,
+			    struct qos_tc_qdisc *qdisc, u32 handle);
+
+int qos_tc_add_tbf_child_qdisc(struct qos_tc_port *port,
+			       enum qos_tc_qdisc_type type,
+			       u32 parent,
+			       u32 handle);
+int qos_tc_add_sch_to_tbf_port(struct qos_tc_port *port,
+			       enum qos_tc_qdisc_type type,
+			       u32 parent, u32 handle);
 
 #endif

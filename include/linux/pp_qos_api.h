@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -418,6 +418,9 @@ struct pp_qos_queue_stat {
 	s32 reset;
 
 	/*! Packets currently in queue */
+	u32 queue_average_size_bytes;
+
+	/*! Packets currently in queue */
 	u32 queue_packets_occupancy;
 
 	/*! Bytes currently in queue */
@@ -529,6 +532,7 @@ struct pp_qos_queue_info {
 };
 
 #define PP_QOS_CONTEXT_MAX_QUEUES     (8)
+#define PP_QOS_MAX_LLD_SERVICE_FLOWS  (8)
 #define PP_QOS_MAX_SERVICE_FLOWS      (16)
 #define PP_MAX_HISTOGRAM_BINS         (16)
 
@@ -582,12 +586,41 @@ struct pp_qos_lld_sf_config {
 
 enum pp_qos_aqm_mode {
 	/*! Normal AQM mode */
-	PP_QOS_AQM_MODE_NORMAL,
+	PP_QOS_AQM_MODE_NORMAL = 1,
 
 	/*! AQM is defined, but algorithm will not drop.
 	 *  Used when defining a queue which may use AQM later on.
 	 */
-	PP_QOS_AQM_MODE_NO_DROP,
+	PP_QOS_AQM_MODE_NO_DROP = 2,
+
+	/*! AQM mode num */
+	PP_QOS_AQM_MODE_NUM
+};
+
+enum pp_qos_sf_queue_type {
+	/*! Queue is a low queue */
+	PP_QOS_SF_QUEUE_TYPE_LOW,
+
+	/*! Queue is a high queue */
+	PP_QOS_SF_QUEUE_TYPE_HIGH,
+
+	/*! Queue is a management queue */
+	PP_QOS_SF_QUEUE_TYPE_MGMT,
+
+	/*! Queue type num */
+	PP_QOS_SF_QUEUE_TYPE_NUM,
+};
+
+/**
+ * @struct pp_qos_sf_queue_config
+ * @brief service flow queue configuration
+ */
+struct pp_qos_sf_queue_config {
+	/*! logical queue id */
+	u32                       id;
+
+	/*! queue type */
+	enum pp_qos_sf_queue_type type;
 };
 
 /**
@@ -598,8 +631,8 @@ struct pp_qos_aqm_lld_sf_config {
 	/*! number of queues attached to this context */
 	u32 num_queues;
 
-	/*! array of logical queue id's attached to this context */
-	u32 queue_id[PP_QOS_CONTEXT_MAX_QUEUES];
+	/*! array of queues attached to this context */
+	struct pp_qos_sf_queue_config queue[PP_QOS_CONTEXT_MAX_QUEUES];
 
 	/*! The size (in bytes) of the buffer for this Service Flow */
 	u32 buffer_size;
@@ -708,6 +741,15 @@ struct pp_sf_hist_stat {
 
 	/*! maximum latency */
 	u32 max_latency;
+};
+
+/**
+ * @struct pp_qos_pci_addr
+ * @brief struct holding the addresses of registers
+ * 		  used over pci device in pp
+ */
+struct pp_qos_pci_addr {
+	u32 msrtoken_addr;
 };
 
 /**
@@ -869,6 +911,24 @@ s32 pp_qos_queue_stat_get(struct pp_qos_dev *qos_dev, u32 id,
  */
 s32 pp_qos_aqm_lld_sf_set(struct pp_qos_dev *qos_dev, u8 sf_id,
 	struct pp_qos_aqm_lld_sf_config *sf_cfg);
+
+/**
+ * @brief Set PCI addresses in qos fw
+ * @param qos_dev handle to qos device instance obtained from
+ *        pp_qos_dev_open
+ * @param pci_addr structure holding register addresses
+ * @return 0 on success
+ */
+s32 pp_qos_pci_addr_set(struct pp_qos_dev *qdev, struct pp_qos_pci_addr *pci_addr);
+
+/**
+ * @brief Set AQM engine type in QoS FW
+ * @param qos_dev handle to qos device instance obtained from
+ *        pp_qos_dev_open
+ * @param aqm_engine sw or hw engine type
+ * @return 0 on success
+ */
+s32 pp_qos_set_aqm_engine(struct pp_qos_dev *qdev, u8 aqm_engine);
 
 /**
  * @brief Remove Aqm/LLD service flow
@@ -1094,6 +1154,15 @@ struct pp_qos_stats {
 	u64 bytes_rcvd;
 	u64 bytes_dropped;
 	u64 bytes_transmit;
+};
+
+struct pp_qos_aqm_sf_stats {
+	u32 occupancy;
+	u32 burst_state;
+	u32 drop_prob;
+	u32 hist_updates;
+	u32 max_latency;
+	u32 last_total_accepts;
 };
 
 /**

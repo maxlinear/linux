@@ -298,11 +298,12 @@ struct __aligned(128) pp_fv {
 	 proto_info == PP_FV_OTHER_L3_UDP)
 
 #define PP_FV_ETHTYPE_STR(h_proto) \
-	(ntohs(h_proto) == ETH_P_IP   ? "IPv4" :       \
-	(ntohs(h_proto) == ETH_P_IPV6 ? "IPv6" :       \
-	(ntohs(h_proto) == PPP_IP     ? "PPPoE IPv4" : \
-	(ntohs(h_proto) == PPP_IPV6   ? "PPPoE IPv6" : \
-	("Other")))))
+	(ntohs(h_proto) == ETH_P_IP        ? "IPv4" :       \
+	(ntohs(h_proto) == ETH_P_IPV6      ? "IPv6" :       \
+	(ntohs(h_proto) == PPP_IP          ? "PPPoE IPv4" : \
+	(ntohs(h_proto) == PPP_IPV6        ? "PPPoE IPv6" : \
+	(ntohs(h_proto) == ETH_P_MPLS_UC   ? "MPLS" :       \
+	("Other"))))))
 
 #define PP_FV_L3_PROTOCOL_STR(proto) \
 	(proto == IPPROTO_ICMP   ? "ICMP"   : \

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2020 - 2024 MaxLinear, Inc.
+ * Copyright (c) 2020 - 2025 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -10,7 +10,7 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_qmap.h"
 #include "qos_tc_trace.h"
@@ -22,6 +22,10 @@
 #endif
 
 static LIST_HEAD(port_list);
+
+static int __qos_tc_qdata_remove(struct net_device *dev,
+				 struct qos_tc_q_data *qid,
+				 struct qos_tc_qdata_params *p);
 
 struct qos_tc_port *qos_tc_port_get(struct net_device *dev)
 {
@@ -53,6 +57,9 @@ struct qos_tc_port *qos_tc_port_alloc(struct net_device *dev)
 
 int qos_tc_port_delete(struct qos_tc_port *port)
 {
+	if (port->destroy)
+		port->destroy(port);
+
 	list_del(&port->list);
 	kfree(port);
 
@@ -84,7 +91,7 @@ static int qos_tc_overwrite_port_thresholds(struct qos_tc_qdisc *sch)
 
 static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
 {
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 	int ret;
 
 	subif = kzalloc(sizeof(*subif), GFP_KERNEL);
@@ -98,7 +105,6 @@ static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
 		/* negative return value is no error for non
 		 * reinsertion port
 		 */
-		kfree(subif);
 		return false;
 	}
 	netdev_dbg(dev, "%s: returned %d\n",
@@ -108,7 +114,6 @@ static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
 		ret = true;
 	else
 		ret = false;
-	kfree(subif);
 
 	return ret;
 }
@@ -116,13 +121,13 @@ static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
 int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 		const struct qos_tc_params *tc_params)
 {
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 	struct dp_dequeue_res deq = {0};
 	struct dp_queue_res q_res[QOS_TC_MAX_Q] = {0};
 	int ret;
 	int flags = 0;
 
-	if (tc_params->flags & QOS_TC_IS_LIF_CONFIG) {
+	if (tc_params && tc_params->flags & QOS_TC_IS_LIF_CONFIG) {
 		sch->def_q = tc_params->def_q;
 		/* For logical interfaces, the required phy port data is received
 		 * through tc_params.
@@ -189,6 +194,13 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 			flags = subif->data_flag;
 			/* save hw egress port settings */
 			sch->inst = subif->inst;
+			/* alloc_flag will be set for URX only; for other SoCs, it will be zero.
+			This alloc_flag is utilized for getting interface information.
+			Based on the interface, we are modifying queue length and drop algorithm
+			on user queues which are created on the particular default interfaces. */
+#if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
+			sch->alloc_flag = subif->alloc_flag;
+#endif
 			/* If we do not have a default queue from DP use -1 */
 			if (subif->subif_common.num_q == 1)
 				sch->def_q = subif->subif_common.def_qlist[0];
@@ -197,9 +209,7 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 			if (subif->subif_common.num_q > 1)
 				netdev_warn(sch->dev, "found %i DP default queues, do not change them",
 					    subif->subif_common.num_q);
-			kfree(subif);
 		} else {
-			kfree(subif);
 			netdev_dbg(sch->dev, "Can not find in DP: %i", ret);
 			/* Some devices like T-Conts are not registered to DP
 			 * and then this function returns an error. Just ignore
@@ -222,10 +232,17 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 	return 0;
 }
 
+static int fill_port_data(struct qos_tc_qdisc *sch)
+{
+	const struct qos_tc_params tc_params = {0};
+
+	return qos_tc_fill_port_data(sch, &tc_params);
+}
+
 int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 		const struct qos_tc_params *tc_params)
 {
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 	int ret = 0;
 
 	if (tc_params->flags & QOS_TC_IS_LIF_CONFIG) {
@@ -245,14 +262,12 @@ int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 		}
 		ret = dp_get_netif_subifid(sch->dev, NULL, NULL, 0, subif, 0);
 		if (ret < 0) {
-			kfree(subif);
 			return -ENODEV;
 		}
 		/* This is PON DS port so mark this */
 		sch->port = subif->port_id;
 		sch->deq_idx = 0;
 		sch->ds = true;
-		kfree(subif);
 	}
 
 	return 0;
@@ -279,6 +294,27 @@ void qos_tc_free_qdisc(struct qos_tc_qdisc *qdisc)
 struct qos_tc_qdisc *qos_tc_qdisc_find(struct qos_tc_port *port, u32 handle)
 {
 	return radix_tree_lookup(&port->qdiscs, TC_H_MAJ(handle));
+}
+
+int qos_tc_add_qdisc_to_dev(struct net_device *dev,
+			    struct qos_tc_qdisc *qdisc, u32 handle)
+{
+	struct qos_tc_port *port = NULL;
+	int ret;
+
+	port = qos_tc_port_get(dev);
+	if (!port)
+		return -ENODEV;
+
+	netdev_dbg(port->dev, "%s: add hdl:%#x to tree\n", __func__, handle);
+	ret = radix_tree_insert(&port->qdiscs, handle, qdisc);
+	if (ret < 0) {
+		netdev_err(dev, "%s: qdisc radix tree insert failed: %d\n",
+			   __func__, ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 int qos_tc_get_sch_by_handle(struct net_device *dev,
@@ -351,6 +387,14 @@ static int qos_tc_get_grandparent_queue_by_handle(struct net_device *dev,
 	return -ENOENT;
 }
 
+int qos_tc_check_qid(struct qos_tc_qdisc *qdisc, int idx)
+{
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
+		return -EINVAL;
+
+	return 0;
+}
+
 int qos_tc_get_queue_by_handle(struct net_device *dev,
 			       u32 handle,
 			       struct qos_tc_q_data **qid)
@@ -376,7 +420,7 @@ int qos_tc_get_queue_by_handle(struct net_device *dev,
 
 static bool qos_tc_is_dev_type(struct net_device *dev, u32 flag)
 {
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 	int ret;
 
 	if (!dev)
@@ -398,7 +442,7 @@ static bool qos_tc_is_dev_type(struct net_device *dev, u32 flag)
 		else
 			ret = false;
 	}
-	kfree(subif);
+
 	return ret;
 }
 
@@ -424,7 +468,7 @@ inline bool qos_tc_is_gpon_dev(struct net_device *dev)
 
 bool qos_tc_is_first_subif(struct net_device *dev)
 {
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 	int ret;
 
 	subif = kzalloc(sizeof(*subif), GFP_KERNEL);
@@ -443,9 +487,59 @@ bool qos_tc_is_first_subif(struct net_device *dev)
 		else
 			ret = false;
 	}
-	kfree(subif);
 
 	return ret;
+}
+
+static int qos_tc_qdata_child_remove(struct net_device *dev,
+				     struct qos_tc_q_data *qid,
+				     u32 handle);
+
+static int hw_queue_del(struct qos_tc_qdisc *sch, int idx)
+{
+	struct dp_node_link node = {0};
+	struct dp_node_alloc anode = {0};
+	int ret;
+
+	if (!sch)
+		return -EINVAL;
+
+	if (idx < 0 || idx > QOS_TC_MAX_Q - 1)
+		return -EINVAL;
+
+	trace_qos_tc_queue_del_enter(sch, &sch->qids[idx], idx);
+
+	ret = qos_tc_qdata_child_remove(sch->dev, &sch->qids[idx], sch->handle);
+	if (ret)
+		return ret;
+
+	if (!sch->qids[idx].qid)
+		return -EINVAL;
+
+	node.node_type = DP_NODE_QUEUE;
+	node.node_id.q_id = sch->qids[idx].qid;
+	ret = dp_node_unlink(&node, 0);
+	if (ret == DP_FAILURE) {
+		netdev_err(sch->dev, "qid %d unlink failed\n",
+			   node.node_id.q_id);
+		return -ENODEV;
+	}
+
+	anode.type = DP_NODE_QUEUE;
+	anode.id.q_id = sch->qids[idx].qid;
+
+	ret = dp_node_free(&anode, DP_NODE_AUTO_FREE_RES);
+	if (ret == DP_FAILURE)
+		netdev_err(sch->dev, "qid %d free failed\n",
+			   anode.id.q_id);
+
+	trace_qos_tc_queue_del_exit(sch, &sch->qids[idx], idx);
+
+	memset(&sch->qids[idx], 0, sizeof(struct qos_tc_q_data));
+	sch->num_q--;
+
+	netdev_dbg(sch->dev, "qid: %i deleted\n", anode.id.q_id);
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
@@ -470,10 +564,10 @@ static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
 				    int parent, int idx, int prio_w,
 				    const struct qos_tc_params *tc_params)
 {
-	dp_subif_t *dp_subif;
+	dp_subif_t *dp_subif __free(kfree) = NULL;
 	int ret = 0;
 	int dp_alloc_flag = 0;
-	struct qos_notifier_data *data;
+	struct qos_notifier_data *data __free(kfree) = NULL;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data) {
@@ -500,26 +594,21 @@ static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
 			 * no notification can or has to be sent.
 			 */
 			netdev_dbg(sch->dev, "%s: subif idx get failed\n", __func__);
-			kfree(dp_subif);
-			kfree(data);
 			return;
 		}
 	} else {
 		dp_alloc_flag = dp_subif->alloc_flag;
 	}
-	kfree(dp_subif);
 
 	/* NOTE: Any interfaces which are not required these notifications
 	 * can be included in the below validation. */
 	if (dp_alloc_flag & DP_F_GPON) {
-		kfree(data);
 		return;
 	}
 
 	fill_qos_notify_data(data, sch, parent, event, idx, prio_w);
 	/* Send notification */
 	qos_qmap_notify(data, event);
-	kfree(data);
 }
 #else
 static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
@@ -557,6 +646,9 @@ static int qos_tc_link_sched(struct qos_tc_qdisc *sch, int prio,
 		netdev_err(sch->dev, "failed to link sched %d to port\n", sch->sch_id);
 		return -ENODEV;
 	}
+
+	netdev_dbg(sch->dev, "%s: sch: %u - port: %u\n",
+		   __func__, sch->sch_id, sch->port);
 	return 0;
 }
 
@@ -612,7 +704,7 @@ int qos_tc_add_sched(struct qos_tc_qdisc *sch, int prio,
 		return -ENOMEM;
 	}
 	sch->sch_id = anode.id.sch_id;
-	netdev_dbg(sch->dev, "adding sched id %u\n", sch->sch_id);
+	netdev_dbg(sch->dev, "%s: adding sched id %u\n", __func__, sch->sch_id);
 
 	/* Link SP/WRR sched to port/sched */
 	ret = qos_tc_link_sched(sch, prio, tc_params);
@@ -646,6 +738,13 @@ int qos_tc_add_sched(struct qos_tc_qdisc *sch, int prio,
 	trace_qos_tc_add_sched_exit(sch, 0);
 
 	return 0;
+}
+
+static int add_sched(struct qos_tc_qdisc *sch, int prio)
+{
+	const struct qos_tc_params tc_params = {0};
+
+	return qos_tc_add_sched(sch, prio, &tc_params);
 }
 
 int qos_tc_add_staged_sched(struct qos_tc_qdisc *psch,
@@ -684,8 +783,8 @@ int qos_tc_add_staged_sched(struct qos_tc_qdisc *psch,
 	node.node_type = DP_NODE_SCH;
 	node.node_id.sch_id = csch->sch_id;
 	node.cqm_deq_port.cqm_deq_port = csch->epn;
-	netdev_dbg(csch->dev, "%s: adding sched id %u\n",
-		   __func__, node.node_id.sch_id);
+	netdev_dbg(csch->dev, "%s: adding sched id %u type: %u\n",
+		   __func__, node.node_id.sch_id, node.arbi);
 	if (dp_node_link_add(&node, 0) == DP_FAILURE) {
 		netdev_err(csch->dev,
 			   "failed to link sched %d to sched %d in: %d\n",
@@ -720,6 +819,81 @@ int qos_tc_add_staged_sched(struct qos_tc_qdisc *psch,
 	return 0;
 }
 
+static int get_p_node_type(struct qos_tc_qdisc *sch, enum dp_node_type child)
+{
+	struct qos_tc_port *port = NULL;
+
+	port = qos_tc_port_get(sch->dev);
+	netdev_dbg(sch->dev, "%s: port tbf: %s parent: %#x child type: %u\n",
+		   __func__, port->tbf_on ? "on" : "off", sch->parent, child);
+
+	if (port && port->tbf_on && sch->parent == TC_H_ROOT)
+		return DP_NODE_PORT;
+
+	return DP_NODE_SCH;
+}
+
+static int add_child_sched(struct qos_tc_qdisc *psch,
+			   struct qos_tc_qdisc *csch, int prio)
+{
+	struct dp_node_link node = {0};
+	struct dp_node_alloc anode = {0};
+	int ret;
+
+	trace_qos_tc_add_sched_enter(csch, psch->sch_id);
+
+	/* Allocate sched */
+	anode.inst = csch->inst;
+	anode.dp_port = csch->port;
+	anode.type = DP_NODE_SCH;
+	anode.id.sch_id = DP_NODE_AUTO_ID;
+	ret = dp_node_alloc(&anode, 0);
+	if (ret == DP_FAILURE) {
+		netdev_err(csch->dev, "sch_id alloc fialed\n");
+		return -ENOMEM;
+	}
+	csch->sch_id = anode.id.sch_id;
+
+	/* Link SP/WRR sched to port/sched */
+	node.dp_port = csch->port;
+	node.p_node_type = get_p_node_type(psch, DP_NODE_SCH);
+	node.p_node_id.sch_id = psch->sch_id;
+	node.arbi = (psch->type == QOS_TC_QDISC_DRR) ?
+		    ARBITRATION_WRR : ARBITRATION_WSP;
+	node.prio_wfq = prio;
+	node.node_type = DP_NODE_SCH;
+	node.node_id.sch_id = csch->sch_id;
+	node.cqm_deq_port.cqm_deq_port = csch->epn;
+	netdev_dbg(csch->dev, "%s: link parent %d sch id %u -> sch id %u pw: %u\n",
+		   __func__, node.p_node_type,
+		   node.p_node_id.sch_id, node.node_id.sch_id, node.prio_wfq);
+	if (dp_node_link_add(&node, 0) == DP_FAILURE) {
+		netdev_err(csch->dev,
+			   "failed to link sched %d to sched %d in: %d\n",
+			   csch->sch_id, psch->sch_id, prio);
+		dp_node_free(&anode, DP_NODE_AUTO_FREE_RES);
+		return -ENODEV;
+	}
+
+	trace_qos_tc_add_sched_exit(csch, psch->sch_id);
+
+	return 0;
+}
+
+static bool is_virt_tbf_port_sch(struct qos_tc_qdisc *sch)
+{
+	struct qos_tc_port *port = NULL;
+
+	if (sch->parent != TC_H_ROOT)
+		return false;
+
+	port = qos_tc_port_get(sch->dev);
+	if (port && port->tbf_on)
+		return true;
+
+	return false;
+}
+
 int qos_tc_sched_del(struct qos_tc_qdisc *sch,
 		const struct qos_tc_params *tc_params)
 {
@@ -731,6 +905,11 @@ int qos_tc_sched_del(struct qos_tc_qdisc *sch,
 	int ret;
 
 	trace_qos_tc_sched_del_enter(sch, 0);
+
+	if (is_virt_tbf_port_sch(sch)) {
+		sch->use_cnt = 0;
+		return 0;
+	}
 
 	node.node_type = DP_NODE_SCH;
 	node.node_id.sch_id = sch->sch_id;
@@ -770,6 +949,39 @@ int qos_tc_sched_del(struct qos_tc_qdisc *sch,
 		netdev_dbg(sch->dev, "q_map is full\n");
 	}
 #endif
+
+	trace_qos_tc_sched_del_exit(sch, 0);
+
+	return 0;
+}
+
+static int sched_del(struct qos_tc_qdisc *sch)
+{
+	struct dp_node_link node = {0};
+	struct dp_node_alloc anode = {0};
+	int ret;
+
+	trace_qos_tc_sched_del_enter(sch, 0);
+
+	node.node_type = DP_NODE_SCH;
+	node.node_id.sch_id = sch->sch_id;
+	ret = dp_node_unlink(&node, 0);
+	if (ret == DP_FAILURE) {
+		netdev_err(sch->dev, "sched id %d unlink failed\n",
+			   node.node_id.sch_id);
+		return -ENODEV;
+	}
+
+	anode.type = DP_NODE_SCH;
+	anode.id.sch_id = sch->sch_id;
+	ret = dp_node_free(&anode, DP_NODE_AUTO_FREE_RES);
+	if (ret == DP_FAILURE) {
+		netdev_err(sch->dev, "sched id %d free failed\n",
+			   node.node_id.sch_id);
+		return -ENODEV;
+	}
+
+	sch->use_cnt = 0;
 
 	trace_qos_tc_sched_del_exit(sch, 0);
 
@@ -845,6 +1057,7 @@ int qos_tc_add_child_qdisc(struct net_device *dev,
 		qdisc->inst = psch->inst;
 		qdisc->def_q = psch->def_q;
 		qdisc->epn = psch->epn;
+		qdisc->alloc_flag = psch->alloc_flag;
 	} else {
 		qdisc = psch;
 		qdisc->dev = dev;
@@ -862,7 +1075,6 @@ int qos_tc_add_child_qdisc(struct net_device *dev,
 	qdisc->handle = handle;
 	qdisc->parent = parent;
 	qdisc->use_cnt = 1;
-
 	if (parent == TC_H_ROOT) {
 		ret = qos_tc_add_sched(psch, idx, tc_params);
 		if (ret < 0) {
@@ -901,6 +1113,253 @@ err_free_qdisc:
 		qos_tc_free_qdisc(qdisc);
 	}
 	return ret;
+}
+
+static struct qos_tc_qdisc *get_parent_sch(struct qos_tc_port *port, u32 parent)
+{
+	struct net_device *dev = port->dev;
+	struct qos_tc_qdisc *psch = NULL;
+	struct qos_tc_qdisc *csch = NULL;
+	int idx = parent != TC_H_ROOT ? TC_H_MIN(parent) - 1 : 0;
+
+	if (!port)
+		return ERR_PTR(-EINVAL);
+
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
+		return ERR_PTR(-EINVAL);
+
+	if (parent != TC_H_ROOT) {
+		psch = qos_tc_qdisc_find(port, parent);
+		if (!psch) {
+			netdev_err(dev, "%s: parent not found\n", __func__);
+			return ERR_PTR(-ENODEV);
+		}
+	} else {
+		psch = &port->root_qdisc;
+	}
+
+	/* if there is a sched on this input return with error for now */
+	csch = psch->children[idx];
+	if (csch && csch->sch_id) {
+		netdev_err(dev, "%s input allocated by sched\n", __func__);
+		return ERR_PTR(-EINVAL);
+	}
+
+	return psch;
+}
+
+static int add_qdisc(struct qos_tc_qdisc *psch, struct qos_tc_qdisc *qp)
+{
+	struct net_device *dev = psch->dev;
+	struct qos_tc_port *port = qos_tc_port_get(dev);
+	struct qos_tc_qdisc *qdisc = NULL;
+	int idx = TC_H_MIN(qp->parent) - 1;
+	int ret;
+
+	/* ready to add the sched */
+	ret = qos_tc_alloc_qdisc(&qdisc);
+	if (ret < 0)
+		return -ENOMEM;
+
+	psch->children[idx] = qdisc;
+	psch->num_children++;
+	qdisc->p_w = qp->p_w;
+	/* get port data from parent qdisc */
+	qdisc->dev = psch->dev;
+	qdisc->port = psch->port;
+	qdisc->deq_idx = psch->deq_idx;
+	qdisc->inst = psch->inst;
+	qdisc->def_q = psch->def_q;
+	qdisc->epn = psch->epn;
+
+	qdisc->type = qp->type;
+	qdisc->handle = qp->handle;
+	qdisc->parent = qp->parent;
+	qdisc->use_cnt = 1;
+	qdisc->alloc_flag = psch->alloc_flag;
+
+	netdev_dbg(dev, "%s: parent sch id: %d idx: %d <=> %d\n",
+		   __func__, psch->sch_id, idx, qp->p_w);
+
+	ret = add_child_sched(psch, qdisc, qp->p_w);
+	if (ret < 0) {
+		netdev_err(dev, "%s: add sched failed\n", __func__);
+		goto err_free_qdisc;
+	}
+
+	/* add to radix tree here */
+	ret = radix_tree_insert(&port->qdiscs, TC_H_MAJ(qp->handle), qdisc);
+	if (ret) {
+		netdev_err(dev, "qdisc insertion to radix tree failed: %d\n",
+			   ret);
+		goto err_free_sched;
+	}
+
+	return 0;
+
+err_free_sched:
+	sched_del(qdisc);
+
+err_free_qdisc:
+	netdev_err(dev, "%s: freeing child qdisc\n", __func__);
+	psch->children[idx] = NULL;
+	psch->num_children--;
+	qos_tc_free_qdisc(qdisc);
+
+	return ret;
+}
+
+static int add_qdisc_root(struct qos_tc_qdisc *psch, struct qos_tc_qdisc *qp)
+{
+	struct net_device *dev = psch->dev;
+	struct qos_tc_port *port = qos_tc_port_get(dev);
+	struct qos_tc_qdisc *qdisc = NULL;
+	int idx = TC_H_MIN(qp->parent) - 1;
+	int ret = 0;
+
+	qdisc = psch;
+	qdisc->dev = dev;
+	qdisc->p_w = QOS_TC_UNUSED;
+	ret = fill_port_data(qdisc);
+	if (ret < 0) {
+		netdev_err(dev,
+			   "%s: failed getting port hw config %d\n",
+			   __func__, ret);
+		return -EINVAL;
+	}
+
+	qdisc->type = qp->type;
+	qdisc->handle = qp->handle;
+	qdisc->parent = qp->parent;
+	qdisc->use_cnt = 1;
+
+	ret = add_sched(psch, idx);
+	if (ret < 0) {
+		netdev_err(dev, "%s: add sched failed\n", __func__);
+		return -EINVAL;
+	}
+	netdev_dbg(dev, "%s: add root sch id %d\n",
+		   __func__, psch->sch_id);
+
+	/* add to radix tree here */
+	ret = radix_tree_insert(&port->qdiscs, TC_H_MAJ(qp->handle), qdisc);
+	if (ret) {
+		netdev_err(dev, "qdisc insertion to radix tree failed: %d\n",
+			   ret);
+		goto err_free_sched;
+	}
+
+	return 0;
+
+err_free_sched:
+	sched_del(qdisc);
+
+	return ret;
+}
+
+static int tbf_queue_delete(struct qos_tc_qdisc *q, struct qos_tc_qdisc *new_q,
+			    int idx)
+{
+	struct qos_tc_q_data *qid = &q->qids[idx];
+	struct qos_tc_tbf_data *tbf = &q->tbfs[idx];
+
+	int ret;
+
+	if (!q->qids[idx].qid)
+		return 0;
+
+	netdev_dbg(q->dev, "%s: parent: %#x handle: %#x p_w: %d idx: %d qid: %u\n",
+		   __func__, q->parent, q->handle, q->qids[idx].p_w,
+		   idx, qid->qid);
+
+	new_q->p_w = qid->p_w;
+
+	/* remove shaper data from queue param list */
+	ret = qos_tc_qdata_remove(q->dev, qid, tbf->handle, tbf->parent);
+	if (ret < 0) {
+		netdev_err(q->dev, "%s: tbf qdata remove failed\n", __func__);
+		return ret;
+	}
+
+	ret = hw_queue_del(q, idx);
+	if (ret < 0) {
+		netdev_err(q->dev, "%s: queue delete failed\n", __func__);
+		return ret;
+	}
+
+	return ret;
+}
+
+int qos_tc_add_tbf_child_qdisc(struct qos_tc_port *port,
+			       enum qos_tc_qdisc_type type,
+			       u32 parent,
+			       u32 handle)
+{
+	struct net_device *dev = port->dev;
+	struct qos_tc_qdisc *psch = NULL;
+	int idx = TC_H_MIN(parent) - 1;
+	int ret;
+
+	struct qos_tc_qdisc qdisc = {
+		.type = type,
+		.handle = handle,
+		.parent = parent,
+	};
+
+	netdev_dbg(dev, "%s adding sched p: %#x h:%#x\n",
+		   __func__, parent, handle);
+	psch = get_parent_sch(port, parent);
+	if (IS_ERR_OR_NULL(psch)) {
+		netdev_err(dev, "%s: get_parent_sch failed %ld\n",
+			   __func__, PTR_ERR(psch));
+		return PTR_ERR(psch);
+	}
+	netdev_dbg(dev, "%s: parent sch p:%#x h:%x -> input: %d\n",
+		   __func__, psch->parent, psch->handle, idx);
+	/* if there is a queue on this input then delete it */
+	ret = tbf_queue_delete(psch, &qdisc, idx);
+	if (ret) {
+		netdev_err(dev, "%s: error removing tbf_queue\n", __func__);
+		return -EIO;
+	}
+	netdev_dbg(dev, "%s: using p_w: %i\n",
+		   __func__, qdisc.p_w);
+
+	if (parent == TC_H_ROOT)
+		return add_qdisc_root(psch, &qdisc);
+
+	return add_qdisc(psch, &qdisc);
+}
+
+int qos_tc_add_sch_to_tbf_port(struct qos_tc_port *port,
+			       enum qos_tc_qdisc_type type,
+			       u32 parent, u32 handle)
+{
+	struct net_device *dev = port->dev;
+	struct qos_tc_qdisc *psch = &port->root_qdisc;
+	struct qos_tc_q_data *qid = &psch->qids[0];
+	struct qos_tc_qdata_params *p;
+	int ret;
+
+	struct qos_tc_qdisc qdisc = {
+		.type = type,
+		.handle = handle,
+		.parent = parent,
+		.p_w = 0,
+	};
+
+	WARN_ON(!qid);
+
+	list_for_each_entry(p, &qid->params, list)
+		__qos_tc_qdata_remove(dev, qid, p);
+
+	ret = hw_queue_del(psch, 0);
+	if (ret < 0) {
+		netdev_err(dev, "%s: queue delete failed\n", __func__);
+		return ret;
+	}
+
+	return add_qdisc(psch, &qdisc);
 }
 
 static int qos_tc_sched_policy_update(struct qos_tc_qdisc *sch,
@@ -954,6 +1413,8 @@ static int qos_tc_sched_policy_update(struct qos_tc_qdisc *sch,
 #define WRED_UNASSIGNED_TH 0
 #define WRED_CPU_TH 32
 #define WRED_RED_TH 8000
+#define MAX_QUEUE_LENGTH_1K 0x400
+#define MAX_QUEUE_LENGTH_3K 0xC00
 
 int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 {
@@ -971,7 +1432,6 @@ int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 
 	/** Modify */
 	q_cfg.act = DP_NODE_EN;
-	q_cfg.drop = DP_QUEUE_DROP_WRED;
 
 	q_cfg.min_size[0] = WRED_GREEN_MIN_TH;
 	q_cfg.max_size[0] = WRED_GREEN_MAX_TH;
@@ -982,7 +1442,30 @@ int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 
 	q_cfg.wred_min_guaranteed = qos_tc_is_cpu_port(sch->port) ?
 					WRED_CPU_TH : WRED_UNASSIGNED_TH;
+
+#if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
+	/* Set queue length and drop algorithm based on the interface */
+	if (sch->alloc_flag & DP_F_GPON) {
+		q_cfg.wred_max_allowed = WRED_RED_TH;
+		q_cfg.drop = DP_QUEUE_DROP_WRED;
+	} else if (sch->alloc_flag & DP_F_FAST_ETH_LAN) {
+		q_cfg.wred_max_allowed = WRED_RED_TH;
+		q_cfg.codel = DP_CODEL_EN;
+	} else if (sch->alloc_flag & (DP_F_FAST_ETH_WAN | DP_F_DIRECT)) {
+		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_3K;
+		q_cfg.codel = DP_CODEL_EN;
+	} else if (sch->alloc_flag & DP_F_VUNI) {
+		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_3K;
+	} else if (sch->alloc_flag & DP_F_FAST_WLAN) {
+		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_1K;
+	} else {
+		q_cfg.wred_max_allowed = WRED_RED_TH;
+		q_cfg.drop = DP_QUEUE_DROP_WRED;
+	}
+#else
 	q_cfg.wred_max_allowed = WRED_RED_TH;
+	q_cfg.drop = DP_QUEUE_DROP_WRED;
+#endif
 
 	/** Write */
 	if (dp_queue_conf_set(&q_cfg, 1) == DP_FAILURE) {
@@ -1026,8 +1509,16 @@ int qos_tc_queue_add(struct qos_tc_qdisc *sch, int arbi, int prio_w, int idx,
 	node.prio_wfq = prio_w;
 	node.node_type = DP_NODE_QUEUE;
 	node.node_id.q_id = sch->qids[idx].qid;
-	node.p_node_type = DP_NODE_SCH;
 	node.p_node_id.sch_id = sch->sch_id;
+
+	node.p_node_type = get_p_node_type(sch, DP_NODE_QUEUE);
+	if (node.p_node_type == DP_NODE_PORT) {
+		node.cqm_deq_port.cqm_deq_port = sch->epn;
+		node.p_node_id.cqm_deq_port = sch->epn;
+	}
+
+	netdev_dbg(sch->dev, "%s: attach queue %d to sch id %d p_w: %u\n",
+		   __func__, anode.id.q_id, sch->sch_id, node.prio_wfq);
 	if (dp_node_link_add(&node, 0) == DP_FAILURE) {
 		netdev_err(sch->dev, "failed to link queue\n");
 		anode.type = DP_NODE_QUEUE;
@@ -1041,9 +1532,14 @@ int qos_tc_queue_add(struct qos_tc_qdisc *sch, int arbi, int prio_w, int idx,
 	}
 
 	sch->num_q++;
-	ret = qos_tc_sched_policy_update(sch, arbi, prio_w, idx);
-	if (ret < 0)
-		netdev_err(sch->dev, "%s:policy set fail\n", __func__);
+
+	if (node.p_node_type != DP_NODE_PORT) {
+		netdev_dbg(sch->dev, "%s: update sch policy to %u\n",
+			   __func__, arbi);
+		ret = qos_tc_sched_policy_update(sch, arbi, prio_w, idx);
+		if (ret < 0)
+			netdev_err(sch->dev, "%s:policy set fail\n", __func__);
+	}
 
 	ret = qos_tc_queue_wred_defaults_set(sch, idx);
 	if (ret < 0)
@@ -1068,16 +1564,10 @@ int qos_tc_queue_add(struct qos_tc_qdisc *sch, int arbi, int prio_w, int idx,
 	return 0;
 }
 
-static int qos_tc_qdata_child_remove(struct net_device *dev,
-				     struct qos_tc_q_data *qid,
-				     u32 handle);
 
 int qos_tc_queue_del(struct qos_tc_qdisc *sch, int idx,
 		const struct qos_tc_params *tc_params)
 {
-	struct dp_node_alloc anode = {0};
-	int ret;
-
 	if (!sch)
 		return -EINVAL;
 
@@ -1098,29 +1588,24 @@ int qos_tc_queue_del(struct qos_tc_qdisc *sch, int idx,
 	}
 #endif
 
-	trace_qos_tc_queue_del_enter(sch, &sch->qids[idx], idx);
+	return hw_queue_del(sch, idx);
+}
 
-	ret = qos_tc_qdata_child_remove(sch->dev, &sch->qids[idx], sch->handle);
-	if (ret)
+static int add_shaper_on_sch_unlink(struct qos_tc_qdisc *sch, int idx)
+{
+	struct qos_tc_q_data *qid = &sch->qids[idx];
+	struct qos_tc_tbf_data *tbf = &sch->tbfs[idx];
+	int ret;
+
+	ret = qos_tc_shaper_add(sch, qid, tbf);
+	if (ret < 0)
 		return ret;
 
-	anode.type = DP_NODE_QUEUE;
-	anode.id.q_id = sch->qids[idx].qid;
-	if (!anode.id.q_id)
-		return -EINVAL;
+	ret = qos_tc_qdata_add_tbf(sch->dev, qid, tbf, tbf_remove);
+	if (ret < 0)
+		return ret;
 
-	ret = dp_node_free(&anode, DP_NODE_AUTO_FREE_RES);
-	if (ret == DP_FAILURE)
-		netdev_err(sch->dev, "qid %d free failed\n",
-			   anode.id.q_id);
-
-	trace_qos_tc_queue_del_exit(sch, &sch->qids[idx], idx);
-
-	memset(&sch->qids[idx], 0, sizeof(struct qos_tc_q_data));
-	sch->num_q--;
-
-	netdev_dbg(sch->dev, "qid: %i deleted\n", anode.id.q_id);
-	return 0;
+	return qos_tc_add_qdisc_to_dev(sch->dev, sch, tbf->handle);
 }
 
 int qos_tc_qdisc_unlink(struct qos_tc_port *p, struct qos_tc_qdisc *sch,
@@ -1146,10 +1631,20 @@ int qos_tc_qdisc_unlink(struct qos_tc_port *p, struct qos_tc_qdisc *sch,
 	/* We have a parent e.g. prio then re-add missing queue/band. */
 	ret = qos_tc_queue_add(psch, psch->type, sch->p_w, idx, tc_params);
 	if (ret < 0) {
-		netdev_err(psch->dev, "re-add queue fail\n");
+		netdev_err(psch->dev, "%s: re-add queue fail\n", __func__);
 		return -ECANCELED;
 	}
 
+	if (!sch->tbf_on)
+		return 0;
+
+	ret = add_shaper_on_sch_unlink(psch, idx);
+	if (ret < 0) {
+		netdev_err(psch->dev, "%s: tbf move to queue fail\n", __func__);
+		return -ECANCELED;
+	}
+
+	netdev_dbg(psch->dev, "%s:%i -> sch %u\n", __func__, idx, psch->sch_id);
 	return 0;
 }
 
@@ -1187,13 +1682,16 @@ int qos_tc_qdisc_tree_del(struct qos_tc_port *p, struct qos_tc_qdisc *root,
 				return ret;
 		}
 	}
-
+	netdev_dbg(root->dev, "%s: deleting sched %#x %#x\n",
+		   __func__, root->parent, root->handle);
 	ret = qos_tc_sched_del(root, tc_params);
 	if (ret < 0)
 		return ret;
 
 	p->sch_num--;
 	if (root->parent != TC_H_ROOT && TC_H_MIN(root->parent)) {
+		netdev_dbg(root->dev, "%s: unlinking qdisk %#x\n",
+			   __func__, root->parent);
 		ret = qos_tc_qdisc_unlink(p, root, tc_params);
 		if (ret < 0)
 			netdev_err(root->dev, "%s: sch[%d] unlink failed\n",
@@ -1279,8 +1777,11 @@ static int qos_tc_set_qmap(int qid, struct qos_tc_qdisc *sch, int subif,
 		}
 
 #if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
-		/* URX specific setting: Set egflag only for non CPU ports */
-		if (!qos_tc_is_cpu_port(sch->port)) {
+		/*
+		 * URX specific setting: egflag should be set only for egress ports,
+		 * and skipped for non-egress ports like CPU and VUNI.
+		 */
+		if (!qos_tc_is_cpu_port(sch->port) && !qos_tc_is_vuni_dev(sch->dev)) {
 			qmap_set.map.egflag = 1;
 			qmap_set.mask.egflag = 0;
 		}
@@ -1459,7 +1960,8 @@ static int qos_tc_replicate_mappings_for_subifs(struct net_device *dev,
 	struct dp_port_prop prop;
 	int i = 0;
 	int ret = 0;
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
+
 	struct net_device *netdev;
 
 	if (dp_get_port_prop(sch->inst, sch->port, &prop))
@@ -1522,7 +2024,6 @@ cleanup:
 	}
 
 	read_unlock(&dev_base_lock);
-	kfree(subif);
 
 	return ret;
 }
@@ -1728,7 +2229,7 @@ static int qos_tc_update_qmap_cpu_from_indev(struct qos_tc_qdisc *sch,
 	struct net_device *dev = sch->dev;
 	int ret;
 	int port;
-	dp_subif_t *subif;
+	dp_subif_t *subif __free(kfree) = NULL;
 
 	subif = kzalloc(sizeof(*subif), GFP_KERNEL);
 	if (!subif) {
@@ -1739,7 +2240,6 @@ static int qos_tc_update_qmap_cpu_from_indev(struct qos_tc_qdisc *sch,
 
 	ret = dp_get_netif_subifid(q_tc->indev, NULL, NULL, 0, subif, 0);
 	if (ret < 0) {
-		kfree(subif);
 		if (!en) {
 			/* If port is not there, there are no mappings.
 			 * So if we try to unmap a queue from non-existent port,
@@ -1749,7 +2249,6 @@ static int qos_tc_update_qmap_cpu_from_indev(struct qos_tc_qdisc *sch,
 		return -ENODEV;
 	}
 	port = subif->port_id;
-	kfree(subif);
 
 	ret = qos_tc_get_qid_data(dev, q_tc, &qid);
 	if (ret)
@@ -1958,6 +2457,104 @@ int qos_tc_qdata_add(struct net_device *dev, struct qos_tc_q_data *qid,
 	return 0;
 }
 
+static int get_qid_idx(struct qos_tc_qdisc *qdisc, struct qos_tc_q_data *qid)
+{
+	int idx;
+
+	for (idx = 0; idx < QOS_TC_MAX_Q; idx++)
+		if (!memcmp(&qid->qid, &qdisc->qids[idx], sizeof(qid->qid)))
+			return idx;
+
+	return -EINVAL;
+}
+
+int qos_tc_del_tbf_from_qdisc(struct qos_tc_qdisc *qdisc,
+			      struct qos_tc_q_data *qid)
+{
+	int idx;
+
+	idx = get_qid_idx(qdisc, qid);
+	if (idx < 0) {
+		netdev_err(qdisc->dev, "%s: cannot get qid idx\n", __func__);
+		return -EIO;
+	}
+
+	memset(&qdisc->tbfs[idx], 0, sizeof(qdisc->tbfs[idx]));
+
+	return 0;
+}
+
+int tbf_remove(struct net_device *dev, u32 handle, u32 parent)
+{
+	struct qos_tc_qdisc *qdisc = NULL;
+	struct qos_tc_q_data *qid = NULL;
+	struct qos_tc_port *port = NULL;
+	int ret;
+
+	port = qos_tc_port_get(dev);
+	if (!port) {
+		netdev_err(dev, "%s: no port found\n", __func__);
+		return 0;
+	}
+
+	qdisc = qos_tc_qdisc_find(port, parent);
+	if (!qdisc) {
+		netdev_err(dev, "%s: qdisc doesn't exist\n", __func__);
+		return 0;
+	}
+
+	qid = qos_tc_qdata_qid_get(dev, qdisc, parent);
+	if (!qid) {
+		ret = qos_tc_get_queue_by_handle(dev, parent, &qid);
+		if (ret < 0 || !qid) {
+			netdev_err(dev, "%s: handle not found err %d\n",
+				   __func__, ret);
+			return -EINVAL;
+		}
+	}
+
+	ret = qos_tc_shaper_remove(qdisc, qid);
+	if (ret < 0)
+		return ret;
+
+	radix_tree_delete(&port->qdiscs, TC_H_MAJ(handle));
+
+	return 0;
+}
+
+int qos_tc_qdata_add_tbf(struct net_device *dev, struct qos_tc_q_data *qid,
+			 struct qos_tc_tbf_data *tbf,
+			 int (*destroy)(struct net_device *dev, u32 handle,
+					u32 parent))
+{
+	enum qos_tc_qdata_type type = QOS_TC_QDATA_TBF;
+	struct qos_tc_qdata_params *params;
+	u32 tmp_h, tmp_p;
+
+	/* Only one queue setting type allowed */
+	if (!qos_tc_qdata_get_by_type(dev, qid, type, &tmp_h, &tmp_p)) {
+		netdev_err(dev, "%s: Duplicated setting pid:%#x class/handle:%#x\n",
+			   __func__, tbf->parent, tbf->handle);
+		return -ENODEV;
+	}
+
+	params = kzalloc(sizeof(*params), GFP_KERNEL);
+	if (!params)
+		return -ENOMEM;
+
+	params->handle = tbf->handle;
+	params->parent = tbf->parent;
+	params->type = QOS_TC_QDATA_TBF;
+	params->destroy = destroy;
+	params->qid = qid;
+
+	/* Convert from bytes to kilobits */
+
+	list_add(&params->list, &qid->params);
+
+	return 0;
+}
+
 struct qos_tc_q_data *qos_tc_qdata_qid_get(struct net_device *dev,
 					   struct qos_tc_qdisc *qdisc,
 					   u32 parent)
@@ -1978,10 +2575,6 @@ struct qos_tc_q_data *qos_tc_qdata_qid_get(struct net_device *dev,
 
 	return NULL;
 }
-
-static int __qos_tc_qdata_remove(struct net_device *dev,
-				 struct qos_tc_q_data *qid,
-				 struct qos_tc_qdata_params *p);
 
 static int qos_tc_qdata_child_remove(struct net_device *dev,
 				     struct qos_tc_q_data *qid,
@@ -2064,8 +2657,8 @@ static void qos_tc_shaper_config_init(struct qos_tc_qdisc *sch,
  * to determinate how many bytes can be sent in given time.
  * Copied from net/sched/sch_tbf.c
  */
-static u64 psched_ns_t2l(const struct psched_ratecfg *r,
-			 u64 time_in_ns)
+u64 psched_ns_t2l(const struct psched_ratecfg *r,
+		  u64 time_in_ns)
 {
 	/* The formula is :
 	 * len = (time_in_ns * r->rate_bytes_ps) / NSEC_PER_SEC
@@ -2094,7 +2687,7 @@ static u64 psched_ns_t2l(const struct psched_ratecfg *r,
 
 int qos_tc_shaper_add(struct qos_tc_qdisc *sch,
 		      struct qos_tc_q_data *qdata,
-		      struct tc_tbf_qopt_offload_replace_params *params)
+		      struct qos_tc_tbf_data *tbf)
 {
 	struct dp_shaper_conf cfg = {0};
 	int ret;
@@ -2106,14 +2699,11 @@ int qos_tc_shaper_add(struct qos_tc_qdisc *sch,
 		   cfg.id.sch_id, cfg.id.cqm_deq_port);
 
 	/* Convert from bytes to kilobits */
-	cfg.cir = div_u64(params->rate.rate_bytes_ps * 8, 1000);
-	cfg.pir = div_u64(params->peak.rate_bytes_ps * 8, 1000);
+	cfg.cir = tbf->cir;
+	cfg.pir = tbf->pir;
 
-	cfg.cbs = psched_ns_t2l(&params->rate, params->buffer);
-	cfg.pbs = psched_ns_t2l(&params->peak, params->mtu);
-
-	netdev_dbg(sch->dev, "%s: cir: %d pir: %d cbs: %d pbs: %d\n",
-		   __func__, cfg.cir, cfg.pir, cfg.cbs, cfg.pbs);
+	cfg.cbs = tbf->cbs;
+	cfg.pbs = tbf->pbs;
 
 	ret = dp_shaper_conf_set(&cfg, 0);
 	if (ret == DP_FAILURE) {

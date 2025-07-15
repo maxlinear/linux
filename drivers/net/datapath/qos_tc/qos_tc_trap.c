@@ -13,7 +13,6 @@
 #include <net/pkt_cls.h>
 #include <net/datapath_api_qos.h>
 #include <net/switch_api/lantiq_gsw_flow.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_pce.h"

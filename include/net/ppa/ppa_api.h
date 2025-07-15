@@ -697,67 +697,17 @@ extern uint32_t (*is_device_type_wireless)(void);
 #define SKB_MIRROR_FLAG 0x2000
 #endif
 #define ENUM_STRING(x) #x
-void ppa_subsystem_id(uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *);
-void ppa_get_api_id(uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *,
-		uint32_t *);
-int32_t ppa_init(PPA_INIT_INFO *, uint32_t);
-void ppa_exit(void);
-int32_t ppa_enable(uint32_t, uint32_t, uint32_t);
-int32_t ppa_get_status(uint32_t *, uint32_t *, uint32_t);
-#if IS_ENABLED(MIB_MODE_ENABLE)
-int32_t ppa_set_mib_mode(uint8_t);
-int32_t ppa_get_mib_mode(uint8_t *);
-#endif
-int32_t ppa_get_ct_stats(PPA_SESSION *p_session, PPA_CT_COUNTER *pCtCounter);
-int32_t ppa_session_add(PPA_BUF *, PPA_SESSION *, uint32_t);
-int32_t ppa_session_modify(PPA_SESSION *, PPA_SESSION_EXTRA *, uint32_t);
-int32_t ppa_session_get(PPA_SESSION ***, PPA_SESSION_EXTRA **, int32_t *, uint32_t);
-int32_t ppa_mc_group_update(PPA_MC_GROUP *, uint32_t);
-int32_t ppa_mc_group_get(IP_ADDR_C, IP_ADDR_C, PPA_MC_GROUP *, uint32_t);
-int32_t ppa_mc_entry_get(IP_ADDR_C, IP_ADDR_C, PPA_SESSION_EXTRA *, uint32_t);
+void ppa_session_delete_by_sgc(int32_t sgc_grp_idx, int32_t sgc_id);
+void ppa_delete_all_hw_session(void);
 #if defined(RTP_SAMPLING_ENABLE) && RTP_SAMPLING_ENABLE
-int32_t ppa_mc_entry_rtp_get(IP_ADDR_C, IP_ADDR_C, uint8_t*);
 int32_t ppa_mc_entry_rtp_set(PPA_MC_GROUP *);
 #endif
-int32_t ppa_multicast_pkt_srcif_add(PPA_BUF *, PPA_NETIF *);
-int32_t ppa_inactivity_status(PPA_U_SESSION *);
-int32_t ppa_set_session_inactivity(PPA_U_SESSION *, int32_t);
-
-int32_t ppa_bridge_entry_add(uint8_t *, PPA_NETIF *, PPA_NETIF *, uint32_t);
-int32_t ppa_bridge_entry_delete(uint8_t *, PPA_NETIF *, uint32_t);
-int32_t ppa_bridge_entry_hit_time(uint8_t *, PPA_NETIF *, uint32_t *);
-
-int32_t ppa_get_if_stats(PPA_IFNAME *, PPA_IF_STATS *, uint32_t);
-int32_t ppa_get_accel_stats(PPA_IFNAME *, PPA_ACCEL_STATS *, uint32_t);
 #if defined(PPA_IF_MIB) && PPA_IF_MIB
 int32_t ppa_get_netif_accel_stats(PPA_IFNAME *, PPA_NETIF_ACCEL_STATS *, uint32_t, struct rtnl_link_stats64*);
 #endif
 int32_t ppa_add_if(PPA_IFINFO *, uint32_t);
 int32_t ppa_del_if(PPA_IFINFO *, uint32_t);
-int32_t ppa_get_if(int32_t *, PPA_IFINFO **, uint32_t);
-#if IS_ENABLED(CONFIG_PPA_API_DIRECTCONNECT) && CONFIG_PPA_API_DIRECTCONNECT
-int32_t ppa_disconn_if(PPA_NETIF *, PPA_DP_SUBIF *, uint8_t *, uint32_t);
-#endif
-int32_t ppa_get_max_entries(PPA_MAX_ENTRY_INFO *max_entry, uint32_t flags);
-int32_t ppa_ip_comare(PPA_IPADDR ip1, PPA_IPADDR ip2, uint32_t flag);
-int32_t ppa_zero_ip(PPA_IPADDR ip);
-int32_t ppa_ip_sprintf(char *buf, PPA_IPADDR ip, uint32_t flag);
-
 int32_t ppa_update_min_hit(uint32_t val);
-int32_t ppa_set_switch_mode(bool mode);
-
 extern uint32_t g_ppa_ppa_mtu;
 extern uint32_t g_ppa_min_hits;
 #endif /*NO_DOXY*/

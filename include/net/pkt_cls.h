@@ -1063,6 +1063,7 @@ struct tc_codel_qopt_offload_params {
 	u32 ce_threshold;
 	u32 interval;
 	u32 mtu;
+	u32 limit;
 	bool ecn;
 };
 

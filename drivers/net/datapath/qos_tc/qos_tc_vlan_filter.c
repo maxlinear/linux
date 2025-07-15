@@ -17,7 +17,6 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_vlan.h>
 #include <uapi/linux/tc_act/tc_vlan.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_vlan_storage.h"

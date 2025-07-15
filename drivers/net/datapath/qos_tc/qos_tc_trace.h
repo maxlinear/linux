@@ -13,7 +13,6 @@
 #include <linux/tracepoint.h>
 #include <net/pkt_cls.h>
 
-#include "qos_tc_compat.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_flower.h"
 

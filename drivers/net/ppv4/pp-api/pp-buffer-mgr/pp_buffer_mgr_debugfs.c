@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2021 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -257,6 +257,7 @@ static void dump_pools(struct seq_file *f)
 	const char *flags_str[BMGR_NUM_FLAGS] = {
 		"MIN GUARANTEE",
 		"ISOLATED",
+		"SSB",
 	};
 
 	/* Dump all pools */

@@ -9,6 +9,8 @@
 #ifndef _QOS_TC_FLOWER_
 #define _QOS_TC_FLOWER_
 
+#include <net/flow_offload.h>
+
 enum qos_tc_flower_type {
 	TC_TYPE_UNKNOWN = 0,
 	TC_TYPE_EXT_VLAN = 1,
@@ -38,18 +40,7 @@ int qos_tc_flower_storage_add(struct net_device *dev,
 			      enum qos_tc_flower_type type,
 			      void *arg1, void *arg2);
 
-#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-		   bool (*check)(const struct tc_action *a));
-#elif (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-		   bool (*check)(const struct tc_action *a));
-#elif (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-		   bool (*check)(const struct tc_action *a));
-#else
 bool has_action_id(struct flow_cls_offload *f, enum flow_action_id id);
-#endif
 
 struct net_device *qos_tc_get_indev(struct net_device *dev,
 				    struct flow_cls_offload *f);
@@ -57,5 +48,29 @@ struct net_device *qos_tc_get_indev(struct net_device *dev,
 void qos_tc_storage_debugfs(struct seq_file *file, void *ctx);
 
 int qos_tc_get_cfm_act(struct net_device *dev, struct flow_cls_offload *f);
+
+static inline struct flow_dissector *
+qos_tc_get_dissector(struct flow_cls_offload *f)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+
+	return rule->match.dissector;
+}
+
+static inline void *
+qos_tc_get_mask(struct flow_cls_offload *f)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+
+	return rule->match.mask;
+}
+
+static inline void *
+qos_tc_get_key(struct flow_cls_offload *f)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+
+	return rule->match.key;
+}
 
 #endif

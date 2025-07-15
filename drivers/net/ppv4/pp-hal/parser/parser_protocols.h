@@ -88,6 +88,8 @@ enum prsr_proto_id {
 	PRSR_PROTO_QINQ, /* ETH_P_8021AD */
 	PRSR_PROTO_PPPOE_INT, /* ETH_P_PPP_SES */
 	PRSR_PROTO_ESP_INT, /* IPPROTO_ESP */
+	PRSR_PROTO_MPLS, /* ETH_P_MPLS_UC */
+	PRSR_PROTO_MPLS_SEL, /* MPLS Select */
 	PRSR_PROTO_PAYLOAD, /* Payload */
 	PRSR_PROTO_IDLE, /* Idle */
 	PRSR_PROTO_NO_PARSE, /* Dummy protocol to support no parsing */
@@ -179,5 +181,9 @@ enum prsr_proto_id {
 #define GENEVE_UDP_DPORT       6081
 #define GENEVE_OPTS_OFF        2
 #define GENEVE_OPTS_LEN        6
+
+/* MPLS select */
+#define MPLS_LAST_ENTRY_OFF    23
+#define MPLS_LAST_ENTRY_LEN    1
 
 #endif /* __PARSER_PROTOCOLS_H__ */

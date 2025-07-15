@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2021 - 2023 MaxLinear, Inc.
+ * Copyright (c) 2021 - 2025 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -10,24 +10,50 @@
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
 #include <linux/version.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
+#include "qos_tc_tbf.h"
 #include "qos_tc_trace.h"
-
-/* create qdisc tree */
 
 static int qos_tc_sched_update(struct net_device *dev,
 			       struct qos_tc_port *port,
-			       struct tc_prio_qopt_offload *p,
+			       struct tc_prio_qopt_offload *opt,
 			       const struct qos_tc_params *tc_params)
 {
 	enum qos_tc_qdisc_type type = QOS_TC_QDISC_PRIO;
+	struct qos_tc_qdata_params *qp = NULL;
+	int ret;
 
-	if (!dev || !port || !p)
+	if (!dev || !port || !opt)
 		return -EINVAL;
 
-	return qos_tc_add_child_qdisc(dev, port, type, p->parent, p->handle,
-			tc_params);
+	if (qos_tc_get_qp(port, QOS_TC_QDATA_GREEN, opt->parent) ||
+	    qos_tc_get_qp(port, QOS_TC_QDATA_YELLOW, opt->parent) ||
+	    qos_tc_get_qp(port, QOS_TC_QDATA_CODEL, opt->parent)) {
+		netdev_err(dev, "%s: offload not supported\n", __func__);
+		return -EOPNOTSUPP;
+	}
+
+	qp = qos_tc_get_qp(port, QOS_TC_QDATA_TBF, opt->parent);
+	if (IS_ERR(qp))
+		return PTR_ERR(qp);
+
+	/* Queue has tbf shaper configured */
+	if (qp)
+		return qos_tc_q_tbf_sch(port, type, qp->parent, opt->handle);
+
+	if (qos_tc_tbf_port_sch_on(port, opt->parent))
+		return qos_tc_add_sch_to_tbf_port(port, type, opt->parent,
+						  opt->handle);
+
+	ret = qos_tc_add_child_qdisc(dev, port, type, opt->parent, opt->handle,
+				     tc_params);
+	if (ret) {
+		netdev_err(port->dev, "%s: add child qdisc failed\n", __func__);
+		return ret;
+	}
+
+	return ret;
 }
 
 static int qos_tc_queues_update(struct net_device *dev,
@@ -181,13 +207,7 @@ int qos_tc_prio_offload(struct net_device *dev,
 			const struct qos_tc_params *tc_params)
 {
 	int err = 0;
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	struct tc_to_netdev *tc_to_netdev = type_data;
-	struct tc_prio_qopt_offload *opt = tc_to_netdev->sch_prio;
-#else
 	struct tc_prio_qopt_offload *opt = type_data;
-#endif
 
 	ASSERT_RTNL();
 	netdev_dbg(dev, "PRIO: offload starting\n");
@@ -225,13 +245,8 @@ int qos_tc_prio_offload(struct net_device *dev,
 		return -EOPNOTSUPP;
 	case TC_PRIO_GRAFT:
 		/* TODO */
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-		netdev_dbg(dev, "graft pid:%#x class/handle:%#x bands:%#x\n",
-			   opt->parent, opt->handle, opt->replace_params.bands);
-#else
 		netdev_dbg(dev, "graft pid:%#x class/handle:%#x band:%#x\n",
 			   opt->parent, opt->handle, opt->graft_params.band);
-#endif
 		return -EOPNOTSUPP;
 	default:
 		break;

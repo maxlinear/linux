@@ -300,6 +300,8 @@ struct xpcs_prv_data {
 	/* WAN workaround */
 	u32 wan_wa;
 
+	const char *e16_fw_name;
+
 	struct xpcs_ops ops;
 #if IS_ENABLED(CONFIG_MXL_P34X_FWDL)
 	struct platform_device *phydev;

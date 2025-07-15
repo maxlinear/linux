@@ -20,16 +20,15 @@
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/debugfs.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/mfd/syscon.h>
-#include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/of_device.h>
+#include <linux/of_address.h>
 #include <linux/platform_data/lgm_epu.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_qos.h>
@@ -96,6 +95,7 @@ struct epu_device {
 	struct notifier_block raw_notifier;
 	struct regulator	*vdd_cpu[2];
 	struct regulator	*vdd_adp;
+	int			irq[2];
 	u32			vol_base;
 	u32			vol_step;
 	unsigned long		irq_bitmap;
@@ -103,7 +103,8 @@ struct epu_device {
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *debugfs_dir;
 #endif
-	spinlock_t	i2c_lock; /* lock to pretect i2c Hw lock */
+	raw_spinlock_t	i2c_lock; /* lock to protect i2c HW lock */
+	int		i2c_hwlock_cnt;
 	struct generic_pm_domain *domains[];
 };
 
@@ -155,6 +156,8 @@ static BLOCKING_NOTIFIER_HEAD(adp_chain);
 					    ((u64)(intr) << 11) | \
 					    ((u64)(rpi0) << 16) | \
 					    ((u64)(rpi1) << 24))
+
+static struct epu_device *epu_dev;
 
 static const u64 adp_gp_reg_tab[] = {
 	0xe0500000, 0x12, 0x0, 0x802d, 0x0, 0x0, 0x0, 0x0,
@@ -815,7 +818,7 @@ static void epu_set_combo_mode(struct regmap *regmap, u32 event)
 	regmap_update_bits(regmap, EPU_SYS_PM_CTL, mask, val);
 }
 
-static int epu_update_table(struct epu_device *edev, int cpu)
+static int epu_update_table_nolock(struct epu_device *edev, int cpu)
 {
 	struct regmap *gen = edev->gen_regmap;
 	u32 i;
@@ -854,26 +857,14 @@ static int epu_update_table(struct epu_device *edev, int cpu)
 	return voltage;
 }
 
-static int get_i2c_hw_lock(struct epu_device *edev, int *cnt)
+/**
+ * Function to get I2C HW lock.
+ * This function has no lock to protect it
+ */
+static int _get_i2c_hw_lock(struct epu_device *edev)
 {
 	struct regmap *aon = edev->aon_regmap;
-	int ret, stat, lock_cnt;
-
-	spin_lock(&edev->i2c_lock);
-	lock_cnt = READ_ONCE(*cnt);
-	if (lock_cnt++ > 1) {
-		/* SW already grabbed I2C HW lock */
-		WRITE_ONCE(*cnt, lock_cnt);
-		spin_unlock(&edev->i2c_lock);
-		return 0;
-	}
-
-	cpu_idle_poll_ctrl(true);
-	/**
-	 * Wait until CPU wakeup.
-	 * Function would timeout if wait too long
-	 **/
-	kick_all_cpus_sync();
+	int ret, stat;
 
 	regmap_update_bits(aon, EPU_DEV_PM_CTL_0,
 			   SW_PRIO_MSK | MSK_PUNIT_MSK,
@@ -888,33 +879,67 @@ static int get_i2c_hw_lock(struct epu_device *edev, int *cnt)
 	if (ret) {
 		regmap_update_bits(aon, EPU_DEV_PM_CTL_0,
 				   SW_PRIO_MSK | MSK_PUNIT_MSK, 0);
-		cpu_idle_poll_ctrl(false);
-		*cnt = lock_cnt - 1;
 		WARN_ONCE(ret, "Timeout to get i2c HW semaphore\n");
 		return -EIO;
 	}
 
-	WRITE_ONCE(*cnt, lock_cnt);
-	spin_unlock(&edev->i2c_lock);
-
 	return 0;
 }
 
-static int release_i2c_hw_lock(struct epu_device *edev, int *cnt)
+static void cpu_wakeup_from_idle(void)
 {
-	struct regmap *aon = edev->aon_regmap;
-	int ret, stat, lock_cnt;
+	cpu_idle_poll_ctrl(true);
+	smp_mb();
+	kick_all_cpus_sync();
+}
 
-	spin_lock(&edev->i2c_lock);
-	lock_cnt = READ_ONCE(*cnt);
-	if (--lock_cnt > 0) {
-		WRITE_ONCE(*cnt, lock_cnt);
-		spin_unlock(&edev->i2c_lock);
+static void cpu_release_to_idle(void)
+{
+	cpu_idle_poll_ctrl(false);
+}
+
+raw_spinlock_t *epu_i2c_raw_spinlock(void)
+{
+	WARN(!epu_dev, "Get EPU i2c spinlock before EPU init!\n");
+
+	return &epu_dev->i2c_lock;
+	
+}
+EXPORT_SYMBOL_GPL(epu_i2c_raw_spinlock);
+
+/**
+ * Wake up all CPUs to prevent i2c hw lock blocking CPU auto waking up.
+ * spin_lock_irqsave is used to prevent intel_state driver
+ * updating CPU frequency that will use i2c in HW PATH.
+ */
+static int spinlock_get_i2c_hw_lock(struct epu_device *edev)
+{
+	int ret;
+	unsigned long flags;
+
+	cpu_wakeup_from_idle();
+	raw_spin_lock_irqsave(&edev->i2c_lock, flags);
+	edev->i2c_hwlock_cnt += 1;
+	if (edev->i2c_hwlock_cnt > 1) { /* SW already grabbed I2C HW lock */
+		raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
 		return 0;
 	}
 
-	/* assert check */
-	WARN_ON(lock_cnt < 0);
+	ret = _get_i2c_hw_lock(edev);
+
+	raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
+
+	return ret;
+}
+
+/**
+ * Release I2C HW lock.
+ * This function has no lock to protect it.
+ */
+static void _release_i2c_hw_lock(struct epu_device *edev)
+{
+	struct regmap *aon = edev->aon_regmap;
+	int ret, stat;
 
 	regmap_update_bits(aon, EPU_DEV_PM_CTL_0, SW_PRIO_MSK | MSK_PUNIT_MSK, 0);
 	regmap_write(aon, EPU_SW_I2C_REQ, EPU_SW_I2C_REQ_CLR);
@@ -924,54 +949,107 @@ static int release_i2c_hw_lock(struct epu_device *edev, int *cnt)
 					      EPU_POLL_TIMEOUT);
 	if (ret) {
 		WARN_ONCE(ret, "Timeout to release i2c semaphore\n");
-		spin_unlock(&edev->i2c_lock);
-		return -EIO;
+		return;
 	}
 
-	cpu_idle_poll_ctrl(false);
-
-	WRITE_ONCE(*cnt, lock_cnt);
-	spin_unlock(&edev->i2c_lock);
-
-	return 0;
+	return;
 }
 
-DEFINE_RAW_SPINLOCK(epu_cpum_lock);
+/**
+ * spin_lock_irqsave is used to prevent intel_state driver
+ * updating CPU frequency that will use i2c in HW PATH.
+ */
+static void spinlock_release_i2c_hw_lock(struct epu_device *edev)
+{
+	unsigned long flags;
+
+	cpu_release_to_idle();
+
+	raw_spin_lock_irqsave(&edev->i2c_lock, flags);
+	edev->i2c_hwlock_cnt -= 1;
+	if (edev->i2c_hwlock_cnt > 0) { /* SW still hold lock  */
+		raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
+		return;
+	}
+
+	WARN_ON(edev->i2c_hwlock_cnt < 0);
+	_release_i2c_hw_lock(edev);
+	raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
+
+	return;
+}
+
+/**
+ * Update epu table to adapt to temperature change.
+ * Apply corresponding voltage according to new EPU table.
+ * EPU table setting guarantee there's no duplicated voltage
+ * value in these 2 settings.
+ * spin_lock_irqsave to protect the epu table update & I2C HW lock
+ * from intel_pstate driver update voltage from HW path.
+ * Note: Caller MUST manually release I2C HW lock
+ */
+static int spinlock_update_epu_table(struct epu_device *edev, int cpu)
+{
+	int voltage, ret = 0;
+	unsigned long flags;
+	struct regulator *regulator;
+
+	cpu_wakeup_from_idle();
+
+	raw_spin_lock_irqsave(&edev->i2c_lock, flags);
+	edev->i2c_hwlock_cnt += 1;
+	if (edev->i2c_hwlock_cnt == 1) { /* SW haven't get i2c HW lock */
+		ret = _get_i2c_hw_lock(edev);
+
+		if (ret) { /* grab lock failed */
+			/**
+			 * NO counter restore here as caller MUST call i2c hw lock release function
+			 * even in failed case as caller can't tell the failure due to get hw i2c lock
+			 */
+			raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
+			dev_err(edev->dev, "Failed to update epu table due to I2C HW lock failure!\n");
+			return ret;
+		}
+	}
+
+	voltage = epu_update_table_nolock(edev, cpu);
+
+	/**
+	 * Release cpu_cpum_lock once i2c Hw lock has been grabbed.
+	 * PUNIt won't be able to update voltage until we release it.
+	 */
+	raw_spin_unlock_irqrestore(&edev->i2c_lock, flags);
+
+	regulator = edev->vdd_cpu[cpu];
+	if (voltage > 0 && regulator)
+		ret = regulator_set_voltage(regulator, voltage, voltage);
+
+	return ret;
+}
+
 static int epu_i2c_sem(struct epu_device *edev, u32 event, void *data)
 {
-	int voltage, cpu;
-	static int cnt;
+	int cpu, ret = 0;
 
 	switch (event) {
 	case I2C_SEM_EVENT_REQUEST:
 		if (data) {
-			raw_spin_lock(&epu_cpum_lock);
-
 			cpu = *(u32 *)data & 1;
-			voltage = epu_update_table(edev, cpu);
-			get_i2c_hw_lock(edev, &cnt);
-
-			/**
-			 * Release cpu_cpum_lock once i2c Hw lock has been grabbed.
-			 * PUNIt won't be able to update voltage until we release it.
-			 */
-			raw_spin_unlock(&epu_cpum_lock);
-
-			if (voltage > 0)
-				regulator_set_voltage(edev->vdd_cpu[cpu], voltage, voltage);
+			ret = spinlock_update_epu_table(edev, cpu);
 		} else {
-			get_i2c_hw_lock(edev, &cnt);
+			ret = spinlock_get_i2c_hw_lock(edev);
 		}
 
 		break;
 	case I2C_SEM_EVENT_RELEASE:
-		release_i2c_hw_lock(edev, &cnt);
+		spinlock_release_i2c_hw_lock(edev);
+		
 		break;
 	default:
 		return NOTIFY_DONE;
 	}
 
-	return NOTIFY_OK;
+	return notifier_from_errno(ret);
 }
 
 #define CHIP_TOP_ECO_SPARE_0		0x1c0
@@ -1482,6 +1560,51 @@ static int epu_hsio_d3_prepare(struct epu_device *edev, u32 id)
 	return epu_dev_set_d0(edev, &pd_info[id_1]);
 }
 
+/**
+ * PON can't be put int D3 if nobody is using it.
+ * It's because pon shell has internal reset register
+ * that caused it default in reset.
+ *
+ * EPU can't communicate with PON if it is in reset and
+ * EPU will stuck if no response from PON.
+ *
+ * This function is to make it out of reset so that EPU
+ * can communicate with PON and put it into D3.
+ */
+#define PON_SHELL_GEN_CTRL	0
+#define PON_RST_N		4
+#define PON_CLK_GATE		12
+static int epu_pon_shell_deassert(struct epu_device *edev)
+{
+	struct device_node *np = edev->dev->of_node;
+	struct device_node *pon_node;
+	void __iomem *ponshell_base;
+	struct resource res;
+	int idx;
+	u32 val;
+
+	pon_node = of_parse_phandle(np, "mxl,pon-shell", 0);
+	if (!pon_node)
+		return -ENODEV;
+
+	idx = of_property_match_string(pon_node, "reg-names", "pon_shell");
+	if (idx < 0)
+		return -ENODATA;
+
+	of_address_to_resource(pon_node, idx, &res);
+	ponshell_base = ioremap(res.start, resource_size(&res));
+	of_node_put(pon_node);
+
+	val = readl(ponshell_base + PON_SHELL_GEN_CTRL);
+	val |= BIT(PON_RST_N); /* 1 means reset inactive */
+	val &= ~BIT(PON_CLK_GATE); /* 0 means no clock gate */
+	writel(val, ponshell_base + PON_SHELL_GEN_CTRL);
+
+	iounmap(ponshell_base);
+
+	return 0;
+}
+
 /*
  * epu_pd_power_down() - This function is called when power domain is to
  * be powered off.
@@ -1516,6 +1639,12 @@ static int epu_pd_power_off(struct generic_pm_domain *genpd)
 
 	if (ret)
 		return ret;
+
+	if (pd_info->id == LGM_EPU_PD_PON) {
+		ret = epu_pon_shell_deassert(pd->edev);
+		if (ret)
+			return ret;
+	}
 
 	/* set to target state */
 	regmap_update_bits(regmap, pd_info->ctl, pd_info->mask, target_state);
@@ -2241,7 +2370,7 @@ static int epu_probe(struct platform_device *pdev)
 
 	edev->soc_data = soc_data;
 	edev->dev = dev;
-	spin_lock_init(&edev->i2c_lock);
+	raw_spin_lock_init(&edev->i2c_lock);
 
 	edev->aon_regmap = device_node_to_regmap(np);
 	if (IS_ERR(edev->aon_regmap)) {
@@ -2298,6 +2427,7 @@ static int epu_probe(struct platform_device *pdev)
 			irq0, ret);
 		return ret;
 	}
+	edev->irq[0] = irq0;
 
 	ret = devm_request_irq(dev, irq1, epu_interrupt_1, 0,
 			       "epu_intr1", edev);
@@ -2306,6 +2436,7 @@ static int epu_probe(struct platform_device *pdev)
 			irq1, ret);
 		return ret;
 	}
+	edev->irq[1] = irq1;
 
 	edev->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(edev->clk)) {
@@ -2355,6 +2486,7 @@ static int epu_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_out;
 
+	epu_dev = edev;
 	dev_info(dev, "EPU init done.\n");
 
 	return 0;
@@ -2363,6 +2495,31 @@ err_out:
 	clk_disable_unprepare(edev->clk);
 	epu_pm_domain_cleanup(edev);
 	return ret;
+}
+
+static void epu_shutdown(struct platform_device *pdev)
+{
+	struct epu_device *edev = platform_get_drvdata(pdev);
+	int i;
+
+	for (i = 0; i < 2; i++)
+		devm_free_irq(edev->dev, edev->irq[i], edev);
+
+	for (i = 0; i < 2; i++) {
+		devm_regulator_put(edev->vdd_cpu[i]);
+		edev->vdd_cpu[i] = 0;
+	}
+
+	devm_regulator_put(edev->vdd_adp);
+	edev->vdd_adp = 0;
+
+	blocking_notifier_chain_unregister(&epu_blocking_chain,
+					 &edev->blocking_notifier);
+	raw_notifier_chain_unregister(&epu_raw_chain, &edev->raw_notifier);
+
+	/* Hold HW lock to block EPU HW access */
+	if (spinlock_get_i2c_hw_lock(edev))
+		dev_err(edev->dev, "EPU shutdown: Failed to get I2C HW lock\n");
 }
 
 /*
@@ -2513,6 +2670,7 @@ static const struct of_device_id epu_pd_dt_ids[] = {
 
 static struct platform_driver epu_driver = {
 	.probe = epu_probe,
+	.shutdown = epu_shutdown,
 	.driver = {
 		.name = "mxl-epu",
 		.of_match_table = of_match_ptr(epu_pd_dt_ids),

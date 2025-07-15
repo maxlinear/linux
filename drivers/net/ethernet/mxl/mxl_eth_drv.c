@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2016-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -48,9 +48,7 @@
 #include <net/xfrm.h>
 #endif
 
-#if IS_ENABLED(CONFIG_MXL_XPCS)
 #include "../../datapath/xpcs/xpcs.h"
-#endif
 #if IS_ENABLED(CONFIG_EIP160S_MACSEC)
 #include <net/eip160.h>
 //#include "mxl_eth_macsec.h"
@@ -1693,11 +1691,17 @@ void unregister_macsec(struct net_device *netdev)
 #endif
 
 static int eth_dev_reg(struct eth_hw *hw, u32 xgmac_id_param,
-		       u32 lct_en, u32 dp_port, int start, int end)
+		       u32 lct_en, u32 dp_port, int start, int end,
+		       const char *label)
 {
 	int i, err, num = 1;
 	struct eth_priv *priv;
+	char name[IFNAMSIZ];
 
+	if (!label)
+		snprintf(name, IFNAMSIZ, "eth0_%d", hw->id[hw->num_devs]);
+	else
+		snprintf(name, IFNAMSIZ, "%s", label);
 	for (i = start; i < end; i++) {
 		eth_dev[hw->num_devs][i] =
 			alloc_etherdev_mq(sizeof(struct eth_priv),
@@ -1717,11 +1721,11 @@ static int eth_dev_reg(struct eth_hw *hw, u32 xgmac_id_param,
 		if (start == i && lct_en == 1) {
 			priv->lct_en = 1;
 			snprintf(eth_dev[hw->num_devs][i]->name, IFNAMSIZ,
-				 "eth0_%d_%d_lct", hw->id[hw->num_devs], num);
+				 "%s_%d_lct", name, num);
 		} else {
 			priv->lct_en = 0;
 			snprintf(eth_dev[hw->num_devs][i]->name, IFNAMSIZ,
-				 "eth0_%d_%d", hw->id[hw->num_devs], num);
+				 "%s_%d", name, num);
 		}
 		eth_dev[hw->num_devs][i]->netdev_ops = &eth_drv_ops;
 #ifdef CONFIG_XFRM_OFFLOAD
@@ -2245,11 +2249,12 @@ static int net_create_interface(struct eth_hw *hw, struct device_node *iface,
 	struct eth_priv *priv;
 	struct dp_dev_data dev_data = {0};
 	struct device_node *mac_np;
-	const __be32 *wan;
 	u32 dp_dev_port_param, dp_port_id_param, xgmac_id_param;
 	u32 lct_en_param = 0, extra_subif_param = 0;
 	struct net_device *dev;
 	dp_cb_t cb = {0};
+	const char *label = NULL;
+	const char *altname;
 	char name[16];
 	u32 dpid;
 	int ret;
@@ -2272,19 +2277,27 @@ static int net_create_interface(struct eth_hw *hw, struct device_node *iface,
 	priv->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
 
 	/* is this the wan interface ? */
-	wan = of_get_property(iface, "mxl,wan", NULL);
-	if (wan) {
+	if (of_get_property(iface, "mxl,wan", NULL))
 		priv->wan = 1;
-		snprintf(name, sizeof(name), wan_iface);
-	} else {
-		hw->id[hw->num_devs] = of_alias_get_id(iface, "eth0_");
-		if (hw->id[hw->num_devs] < 0) {
-			pr_err("failed to get alias id, errno %d\n",
-			       hw->id[hw->num_devs]);
-			return -EINVAL;
-		}
+	else
 		priv->wan = 0;
-		snprintf(name, sizeof(name), "eth0_%d", hw->id[hw->num_devs]);
+	/* use label name if available */
+	ret = of_property_read_string(iface, "label", &label);
+	if (!ret) {
+		snprintf(name, sizeof(name), label);
+	} else {
+		if (priv->wan) {
+			snprintf(name, sizeof(name), wan_iface);
+		} else {
+			hw->id[hw->num_devs] = of_alias_get_id(iface, "eth0_");
+			if (hw->id[hw->num_devs] < 0 && ret) {
+				pr_err("failed to get alias id, errno %d\n",
+				       hw->id[hw->num_devs]);
+				return -EINVAL;
+			}
+
+			snprintf(name, sizeof(name), "eth0_%d", hw->id[hw->num_devs]);
+		}
 	}
 
 	ret = of_property_read_u32(iface, "mxl,dp-dev-port",
@@ -2326,6 +2339,15 @@ static int net_create_interface(struct eth_hw *hw, struct device_node *iface,
 
 	p34x_xpcs_node = of_parse_phandle(iface, "p34x-xpcs-node", 0);
 	if (p34x_xpcs_node) {
+		struct mac_ops *ops;
+		// Reset and init xgmac
+		ops = gsw_get_mac_ops(0, priv->xgmac_id);
+		if (ops && ops->mac_reset && ops->init) {
+			ops->mac_reset(ops, 1);
+			ops->init(ops);
+		} else {
+			pr_info("xgmac %d not reset/init\n", priv->xgmac_id);
+		}
 		priv->phy_p34x = 1;
 	} else {
 		priv->phy_p34x = 0;
@@ -2469,7 +2491,7 @@ static int net_create_interface(struct eth_hw *hw, struct device_node *iface,
 	}
 	if (extra_subif_param >= 1) {
 		eth_dev_reg(&eth_hw, xgmac_id_param, lct_en_param,
-			    dp_port_id_param, priv->start, priv->end);
+			    dp_port_id_param, priv->start, priv->end, label);
 	}
 
 #if IS_ENABLED(CONFIG_MXL_ETH_THERMAL)
@@ -2478,6 +2500,16 @@ static int net_create_interface(struct eth_hw *hw, struct device_node *iface,
 			  eth_thermal_pending_timeout);
 #endif
 	hw->num_devs++;
+
+	altname = of_get_property(iface, "altname", NULL);
+	if (altname) {
+		ret = netdev_name_node_alt_create(dev, altname);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"failed to create altname %s\n",
+				altname);
+		}
+	}
 
 	return 0;
 

@@ -276,6 +276,10 @@ enum mod_flags {
 	MOD_DSLITE_DECP_BIT,
 	/*! DsLite tunnel was added */
 	MOD_DSLITE_ENCP_BIT,
+	/*! Eth over MPLS was removed (ipv4 inner)*/
+	MOD_MPLS_V4_DECP_BIT,
+	/*! Eth over MPLS was removed (ipv6 inner)*/
+	MOD_MPLS_V6_DECP_BIT,
 	/*! 6RD tunnel was added */
 	MOD_6RD_ENCP_BIT,
 	/*! 6RD tunnel was removed */

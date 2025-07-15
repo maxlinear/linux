@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -52,10 +52,6 @@ extern u32 ing_ldb2_offset;
 #define ING_FROM_CHK_PKTS_CNT_BASE                                             \
 	(ing_addr_offset +                                               \
 	 offsetof(struct ingress_uc_gdb, from_checker_pkts))
-#define ING_HASH_BIT_DB_BASE                                                  \
-	(ing_addr_offset + offsetof(struct ingress_uc_gdb, hb))
-#define ING_HASH_BIT_DB_OFF(id)                                             \
-	(ing_addr_offset + offsetof(struct ingress_uc_gdb, hb.hash_bit[id]))
 #define ING_MBOX_MSG_BASE                                                  \
 	(ing_addr_offset + offsetof(struct ingress_uc_gdb, ing_cmd))
 #define ING_MBOX_MSG_RSP                                                  \
@@ -83,6 +79,11 @@ extern u32 ing_ldb2_offset;
 #define ING_DFLT_PORT_PRIORITY_OFF(port_id)                                    \
 	(ing_ldb2_offset +                                                    \
 	 offsetof(struct ingress_uc_local_db_2, dflt_port_priority[port_id]))
+#define ING_HASH_BIT_DB_OFF(id)                                                \
+	(ing_ldb2_offset +                                                     \
+	 offsetof(struct ingress_uc_local_db_2, hb.hash_bit[id]))
+#define ING_HASH_BIT_DB_BASE                                                   \
+	(ing_ldb2_offset + offsetof(struct ingress_uc_local_db_2, hb))
 
 #define DCCM_EGRESS_ADDR(cpu, offset) (UC_DCCM(EGRESS, cpu, offset))
 

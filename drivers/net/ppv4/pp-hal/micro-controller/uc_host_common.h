@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * version 2, as published by the Free Software Foundation.
@@ -25,10 +25,10 @@
  * the version here
  */
 #define EGRESS_VER_MAJOR  1
-#define EGRESS_VER_MINOR  39
+#define EGRESS_VER_MINOR  48
 
 #define INGRESS_VER_MAJOR 1
-#define INGRESS_VER_MINOR 21
+#define INGRESS_VER_MINOR 26
 
 /* some attributes shortcuts */
 #ifndef __packed
@@ -44,8 +44,21 @@
 #define TDOX_CPU (2)
 #define TDOX_MAX_NON_AGGRESSIVE_SESSIONS (32)
 
-/* Enable this define both on Host & Fw side when bit hash debuging is required*/
-// #define DEBUG_HASH
+/* TDOX default configurations */
+#define TDOX_TIMER_TIMEOUT_USEC     (1000)
+#define TDOX_TIMER_MAX_TIMEOUT_USEC (5000)
+#define TDOX_MAX_REACH_TARGET       (250)
+#define TDOX_MAX_SUPP_RATIO         (30)
+#define TDOX_MAX_SUPP_BYTES         (1460 * 2 * TDOX_MAX_SUPP_RATIO)
+
+/* AQM/LLD related */
+#define MAX_LLD_CONTEXT    8
+#define MAX_AQM_CONTEXT    PP_QOS_MAX_SERVICE_FLOWS
+
+/* General */
+#define UC_CPUS_MAX        (4)
+#define UC_CPUS_REASS_MAX  (2)
+
 /* Enable this define both on Host & Fw side to debug WL_RULES */
 // #define DEBUG_WL_RULES_TIME
 
@@ -141,12 +154,14 @@ enum uc_mbox_cmd_type {
 	UC_CMD_TDOX_CONFIG_GET,
 	/* LLD conf set */
 	UC_CMD_LLD_CTX_CFG_SET,
+	/* AQM conf set */
+	UC_CMD_AQM_CTX_CFG_SET,
 	/* LLD allowed AQ set */
 	UC_CMD_LLD_ALLOWED_AQ_SET,
-	/* LLD hist get */
-	UC_CMD_LLD_HIST_GET,
+	/* AQM LLD hist get */
+	UC_CMD_AQM_LLD_HIST_GET,
 
-	UC_CMD_LAST = UC_CMD_LLD_HIST_GET,
+	UC_CMD_LAST = UC_CMD_AQM_LLD_HIST_GET,
 
 	UC_CMD_CNT,
 	UC_CMD_MAX  = U32_MAX,
@@ -238,6 +253,10 @@ struct eg_uc_init_info {
 	u64 chk_base;
 	/* classifier base address */
 	u64 cls_base;
+	/* wred_cfg base address */
+	u64 wred_cfg_base;
+	/* qos misc base address */
+	u64 qos_misc_base;
 	struct __packed {
 		/*! original pool base address */
 		u64 base;
@@ -311,6 +330,9 @@ struct mcast_stats {
 	u64 mirror_drop_pkt;
 };
 
+/**
+ * @struct ipsec_stats
+ */
 struct ipsec_stats {
 	/*! RX packet counter */
 	u64 rx_pkt;
@@ -321,15 +343,19 @@ struct ipsec_stats {
 };
 
 /**
- * @struct lld_stats
+ * @struct lld_sf_stats
  */
-struct lld_stats {
-	/*! RX packet counter */
+struct lld_sf_stats {
+	/*! RX total packet counter */
 	u64 rx_pkt;
+	/*! RX ECT0 packet counter */
+	u64 rx_ect0_pkt;
+	/*! RX ECT1 packet counter */
+	u64 rx_ect1_pkt;
+	/*! RX CE packet counter */
+	u64 rx_ce_pkt;
 	/*! TX packet counter */
 	u64 tx_pkt;
-	/*! error packet counter */
-	u64 error_pkt;
 	/*! mark packet counter */
 	u64 mark_pkt;
 	/*! saction packet counter */
@@ -339,11 +365,33 @@ struct lld_stats {
 };
 
 /**
- * @struct ipsec_lld_stats
+ * @struct aqm_sw_sf_stats
  */
-struct ipsec_lld_stats {
-	struct ipsec_stats ipsec;
-	struct lld_stats   lld;
+struct aqm_sw_sf_stats {
+	/*! rx packet counter */
+	u64 rx_pkt;
+	/*! tx packet counter */
+	u64 tx_pkt;
+	/*! bc drop packet counter */
+	u64 bc_drop_pkt;
+	/*! aqm drop packet counter */
+	u64 aqm_drop_pkt;
+};
+
+/**
+ * @struct aqm_lld_stats
+ */
+struct aqm_lld_stats {
+	/*! RX packet counter */
+	u64 rx_pkt;
+	/*! Context error packet counter */
+	u64 ctx_error_pkt;
+	/*! general error packet counter */
+	u64 error_pkt;
+	/*! lld stats per sf */
+	struct lld_sf_stats lld_sf[MAX_LLD_CONTEXT];
+	/*! aqm stats per sf */
+	struct aqm_sw_sf_stats aqm_sf[MAX_AQM_CONTEXT];
 };
 
 /**
@@ -413,7 +461,7 @@ struct remarking_stats {
 
 /**
  * @struct LRO stats
-*/
+ */
 struct lro_stats {
 	/*! RX packet counter */
 	u64 rx_pkt;
@@ -433,15 +481,10 @@ struct lro_stats {
 #define STAT_CNT_SIZE sizeof(u64)
 
 /**
- * @struct egress uc statistical 64 bit counters - up to 256 counters
+ * @struct egress cpu uc statistical 64 bit counters
  */
 struct egress_cpu_stats {
-	struct mcast_stats      mcast;
-	struct ipsec_lld_stats  ipsec_lld;
 	struct reassembly_stats reass;
-	struct frag_stats       frag;
-	struct remarking_stats  remark;
-	struct lro_stats        lro;
 };
 
 struct egr_glb_stats {
@@ -450,9 +493,18 @@ struct egr_glb_stats {
 	u64 bm_buf_oob;
 };
 
+/**
+ * @struct egress uc statistical 64 bit counters - up to 256 counters in total
+ */
 struct egress_stats {
-	struct egress_cpu_stats cpu[4];
-	struct egr_glb_stats glb;
+	struct egress_cpu_stats cpu[UC_CPUS_REASS_MAX];
+	struct ipsec_stats      ipsec;
+	struct mcast_stats      mcast;
+	struct frag_stats       frag;
+	struct remarking_stats  remark;
+	struct aqm_lld_stats    aqm_lld;
+	struct lro_stats        lro;
+	struct egr_glb_stats    glb;
 };
 
 /**
@@ -480,6 +532,13 @@ struct __packed reassembly_info {
 };
 
 /**
+ * @brief LLD network function info
+ */
+struct lld_info {
+	u16 nf_queue;
+} __aligned((4));
+
+/**
  * @brief IPSeC network function info
  */
 struct ipsec_info {
@@ -487,6 +546,14 @@ struct ipsec_info {
 	u16 tx_q;
 	u16 tx_subif;
 	u16 vpn_gpid;
+} __aligned((4));
+
+/**
+ * @brief IPSeC & LLD common network function info
+ */
+struct ipsec_lld_info {
+	struct ipsec_info ipsec;
+	struct lld_info lld;
 } __aligned((4));
 
 /**
@@ -593,13 +660,25 @@ struct mcast_sess_mirroring_cmd {
 #define MAX_BINS    (16)
 
 /**
- * @brief LLD context configuration
+ * @brief histogram configuration common for both lld and aqm
  */
-struct __packed lld_ctx_cfg {
+struct __packed hist_cfg {
+	/*! Histogram - Num bins. Set 0 to disable Histogram */
+	u32    num_hist_bins;
+	/*! Histogram - Bin edges */
+	u32    bin_edges[MAX_BINS - 1];
+};
+
+/**
+ * @brief LLD context parameters configuration
+ */
+struct __packed lld_cfg {
 	/* Valid Context */
 	u16    valid;
-	/* Context ID */
-	u16    ctx;
+	/* LLD Context ID */
+	u8     lld_ctx_id;
+	/* SF ID */
+	u8     sf_id;
 	/* Max rate (bps). 0 means no limit */
 	u64    max_rate;
 	/* buffer size */
@@ -612,24 +691,59 @@ struct __packed lld_ctx_cfg {
 	u8     qp_en;
 	/* LG Aging */
 	u8     lg_aging;
-	/* 1 << LG range */
-	u32    range;
+	/* 1 << LG range in ns */
+	u32    range_ns;
 	/* Min threshold in ns */
 	u32    minth_ns;
 	/* Max threshold in ns */
 	u32    maxth_ns;
-	/* Critical QL */
-	u32    critical_ql_us;
+	/* Critical QL in ns */
+	u32    critical_ql_ns;
 	/* Critical QL Product */
 	u64    critical_qL_product;
 	/* VQ interval */
 	u32    vq_interval;
 	/* EWMA Alpha */
 	u32    vq_ewma_alpha;
-	/*! Histogram - Num bins. Set 0 to disable Histogram */
-	u32    num_hist_bins;
-	/*! Histogram - Bin edges */
-	u32    bin_edges[MAX_BINS - 1];
+};
+
+/**
+ * @brief LLD context configuration
+ */
+struct __packed lld_ctx_cfg {
+	struct lld_cfg lld_cfg;
+	struct hist_cfg hist_cfg;
+};
+
+/**
+ * @brief AQM context parameters configuration
+ */
+struct __packed aqm_cfg {
+	/* Valid Context */
+	u32 valid;
+
+	/* AQM SF id */
+	u32 sf_id;
+
+	/*! AQM Latency Target for this Service Flow (milliseconds) */
+	u32 latency_target_ms;
+
+	/*! Service Flow configured Peak Rate, expressed in Bytes/sec */
+	u32 peak_rate;
+
+	/*! Service Flow configured MaxSustained Rate expressed in Bytes/sec */
+	u32 msr;
+
+	/*! SF buffer size for AQM alog, expressed in bytes*/
+	u32 buffer_size;
+};
+
+/**
+ * @brief AQM context configuration
+ */
+struct __packed aqm_ctx_cfg {
+	struct aqm_cfg aqm_cfg;
+	struct hist_cfg hist_cfg;
 };
 
 /**
@@ -642,14 +756,14 @@ struct lld_allowed_aq_set_cmd {
 	u32    allowed_aq;
 };
 
-struct lld_hist_get_in_cmd {
+struct aqm_lld_hist_get_in_cmd {
 	/* Context ID */
 	u32 ctx;
 	/* reset */
 	u32 reset;
 };
 
-struct lld_hist_get_out_cmd {
+struct aqm_lld_hist_get_out_cmd {
 	/* Num histogram bins */
 	u32 num_hist_bins;
 	/* Histogram counter per bin */
@@ -664,8 +778,9 @@ struct lld_hist_get_out_cmd {
 /** Ingress uC Specific Definitions **/
 /*************************************/
 
-#define UC_ING_MAX_HOST_CPU 4
+#define UC_ING_MAX_HOST_CPU    UC_CPUS_MAX
 #define UC_WHITELIST_MAX_RULES 32
+/* equal to PP_MAX_CPU_QUEUES define in pp_api.h file */
 #define UC_WHITELIST_NUM_PRIO 8
 #define UC_WHITELIST_LOWEST_PRIO (UC_WHITELIST_NUM_PRIO - 1)
 #define UC_GPID_GRP_CNT 8
@@ -674,9 +789,6 @@ struct lld_hist_get_out_cmd {
 /* equal to PP_DPL_HASH_BIT_MAX_ENTRIES define in pp_api.h file */
 #define UC_HASH_BIT_MAX_ENTRIES_SUPPORTED (2048)
 #define UC_HASH_BIT_MAX_WORDS (UC_HASH_BIT_MAX_ENTRIES_SUPPORTED / 32)
-#ifdef DEBUG_HASH
-#define UC_HASH_DEBUG_ENTRIES (32)
-#endif
 
 /**
  * @brief Enumeration for DPL white list fields to use
@@ -722,13 +834,9 @@ struct ing_stats {
  * @brief White list Database
  */
 struct hash_bit_db {
-	u32 bitHashFound[UC_ING_MAX_HOST_CPU];
-	u32 bitHashNotFound[UC_ING_MAX_HOST_CPU];
-	u32 priorityHigherThenBitHash[UC_ING_MAX_HOST_CPU];
-#ifdef DEBUG_HASH
-	u32 debugCurrentIdx[UC_ING_MAX_HOST_CPU];
-	u32 debug[UC_ING_MAX_HOST_CPU][UC_HASH_DEBUG_ENTRIES];
-#endif
+	u32 bitHashFound;
+	u32 bitHashNotFound;
+	u32 priorityHigherThenBitHash;
 	/* hash bit enable configured by Host */
 	u32 hash_bit[UC_HASH_BIT_MAX_WORDS];
 };
@@ -913,6 +1021,8 @@ struct ing_mbox_cmd_grp_rule_set {
 
 struct ing_mbox_cmd_lro_port_set {
 	u32 port;
+	u32 policy;
+	u32 ssb_pkt_sz;
 } __packed;
 
 union uc_ing_cmd_u {
@@ -948,8 +1058,10 @@ struct ingress_uc_gdb {
 	u32 host_policies_bmap;
 	/* soft lro port */
 	u32 lro_port;
-	/* hash bit support */
-	struct hash_bit_db hb;
+	/* soft lro ssb policy */
+	u32 lro_policy;
+	/* Max pkt size for ssb buf */
+	u32 ssb_buf_pkt_sz;
 	/* host mbox statistics */
 	struct ing_host_mbox_stat ing_mbox_stat;
 	/* ing host command */
@@ -985,6 +1097,8 @@ struct ingress_uc_local_db {
 struct ingress_uc_local_db_2 {
 	/* lowest priority per port. relevant when the port is in GPID group */
 	u8 dflt_port_priority[UC_WHITELIST_MAX_PORTS];
+	/* hash bit support */
+	struct hash_bit_db hb;
 };
 
 #endif /* __PP_UC_HOST_COMMON_H__ */

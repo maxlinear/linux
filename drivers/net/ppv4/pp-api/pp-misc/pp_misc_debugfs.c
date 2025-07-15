@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -598,6 +598,17 @@ static const char *pp_nf_str[PP_NF_NUM] = {
 	[PP_NF_REMARKING] = "Remarking",
 };
 
+static const char *pp_qos_sf_q_type_str[PP_QOS_SF_QUEUE_TYPE_NUM] = {
+	[PP_QOS_SF_QUEUE_TYPE_LOW]  = "low",
+	[PP_QOS_SF_QUEUE_TYPE_HIGH] = "high",
+	[PP_QOS_SF_QUEUE_TYPE_MGMT] = "management",
+};
+
+static const char *pp_qos_aqm_mode_str[PP_QOS_AQM_MODE_NUM] = {
+	[PP_QOS_AQM_MODE_NORMAL]  = "normal",
+	[PP_QOS_AQM_MODE_NO_DROP] = "no drop",
+};
+
 /**
  * @brief SGC file help
  */
@@ -1182,21 +1193,18 @@ void pp_uc_hashbit_enable_show(struct seq_file *f)
 	ulong bmap[BITS_TO_LONGS(PP_DPL_HASH_BIT_MAX_ENTRIES)] = { 0 };
 	int ret, i;
 	u8 cpu;
-#ifdef DEBUG_HASH
-	int entry;
-#endif
 
 	if (!f)
 		return;
 
-	db = kzalloc(sizeof(*db), GFP_KERNEL);
+	if (uc_ccu_maxcpus_get(UC_IS_ING, &cpu))
+		return;
+
+	db = kcalloc(cpu, sizeof(*db), GFP_KERNEL);
 	if (!db)
 		return;
 
-	if (uc_ccu_maxcpus_get(UC_IS_ING, &cpu))
-		goto free_mem;
-
-	ret = uc_ing_hash_bit_db_get(db);
+	ret = uc_ing_hash_bit_db_get(db, cpu);
 	if (ret) {
 		seq_printf(f, "Failed to read ingress DB, ret %d\n", ret);
 		goto free_mem;
@@ -1219,36 +1227,21 @@ void pp_uc_hashbit_enable_show(struct seq_file *f)
 
 	seq_printf(f, " | %-13s ", "FOUND");
 	for (i = 0 ; i < cpu ; i++)
-		seq_printf(f, "| %13u ", db->bitHashFound[i]);
+		seq_printf(f, "| %13u ", db[i].bitHashFound);
 	seq_puts(f, " |\n");
 
 	seq_printf(f, " | %-13s ", "NOT FOUND");
 	for (i = 0 ; i < cpu ; i++)
-		seq_printf(f, "| %13u ", db->bitHashNotFound[i]);
+		seq_printf(f, "| %13u ", db[i].bitHashNotFound);
 	seq_puts(f, " |\n");
 
 	seq_printf(f, " | %-13s ", "HIGH PRI");
 	for (i = 0 ; i < cpu ; i++)
-		seq_printf(f, "| %13u ", db->priorityHigherThenBitHash[i]);
+		seq_printf(f, "| %13u ", db[i].priorityHigherThenBitHash);
 	seq_puts(f, " |\n");
 
-#ifdef DEBUG_HASH
-	seq_printf(f, " | %-13s", "CURRENT Idx");
-	for (i = 0; i < cpu; i++)
-		seq_printf(f, " |  0x%08x ", db->debugCurrentIdx[i]);
-
-	seq_puts(f, " |\n");
-	seq_puts(f, " |          DEBUG   DB       |\n");
-	for (entry = 0 ; entry < UC_HASH_DEBUG_ENTRIES ; entry++)	{
-		seq_printf(f, " | Entry %3d     ", entry);
-		for (i = 0 ; i < cpu ; i++)
-			seq_printf(f, " |  0x%013x ", db->debug[i][entry]);
-
-		seq_puts(f, " |\n");
-	}
-
-#endif
-	bitmap_from_arr32(bmap, db->hash_bit, PP_DPL_HASH_BIT_MAX_ENTRIES);
+	/* dump the hash bit from the first CPU */
+	bitmap_from_arr32(bmap, db[0].hash_bit, PP_DPL_HASH_BIT_MAX_ENTRIES);
 	seq_printf(f, " | %-13s | %*pbl\n", "Hash Bits Map",
 		   PP_DPL_HASH_BIT_MAX_ENTRIES, bmap);
 	seq_puts(f, "\n");
@@ -1273,6 +1266,7 @@ enum sf_set_opts {
 	sf_set_opt_coupled,
 	sf_set_opt_num_q,
 	sf_set_opt_q,
+	sf_set_opt_q_type,
 	sf_set_opt_target,
 	sf_set_opt_peak,
 	sf_set_opt_msr,
@@ -1302,6 +1296,7 @@ static const match_table_t sf_set_tokens = {
 	{sf_set_opt_coupled,           "coupled=%u"},
 	{sf_set_opt_num_q,             "num_q=%u"},
 	{sf_set_opt_q,                 "q=%u"},
+	{sf_set_opt_q_type,            "q_type=%u"},
 	{sf_set_opt_target,            "target=%u"},
 	{sf_set_opt_peak,              "peak=%u"},
 	{sf_set_opt_msr,               "msr=%u"},
@@ -1335,6 +1330,7 @@ static s32 sf_set_args_parse(char *args_str,
 	char *tok;
 	s32 val;
 	u16 q_idx = 0;
+	u16 q_type_idx = 0;
 	u16 bin_idx = 0;
 
 	args_str = strim(args_str);
@@ -1351,6 +1347,12 @@ static s32 sf_set_args_parse(char *args_str,
 			if (match_int(&substr[0], &val))
 				goto opt_parse_err;
 			*sf_id = (u8)val;
+			val = pp_misc_sf_conf_get(*sf_id, cfg);
+			if (val) {
+				pr_err("failed to get sf %u config, ret %d\n",
+				       *sf_id, val);
+				return -EINVAL;
+			}
 			break;
 		case sf_set_opt_llsf:
 			if (match_int(&substr[0], &val))
@@ -1370,7 +1372,12 @@ static s32 sf_set_args_parse(char *args_str,
 		case sf_set_opt_q:
 			if (match_int(&substr[0], &val))
 				goto opt_parse_err;
-			cfg->queue_id[q_idx++] = (u32)val;
+			cfg->queue[q_idx++].id = (u32)val;
+			break;
+		case sf_set_opt_q_type:
+			if (match_int(&substr[0], &val))
+				goto opt_parse_err;
+			cfg->queue[q_type_idx++].type = (u32)val;
 			break;
 		case sf_set_opt_target:
 			if (match_int(&substr[0], &val) || cfg->llsf)
@@ -1473,6 +1480,9 @@ static s32 sf_set_args_parse(char *args_str,
 				goto opt_parse_err;
 			cfg->bin_edges[bin_idx++] = (u32)val;
 			break;
+		default:
+			pr_err("Failed to parse %s token\n", tok);
+			break;
 		}
 	}
 	return 0;
@@ -1484,21 +1494,30 @@ opt_parse_err:
 
 static void sf_set_help(void)
 {
+	u32 i;
+
 	pr_info("\n");
 	pr_info(" Brief: Set SF configuration\n");
 	pr_info(" Usage: echo id=<id> buf_sz=<sz> ... > sf_set\n");
 	pr_info("   help           - print this help\n");
-	pr_info("   id             - Context ID (0-15)\n");
+	pr_info("   id             - Context ID (0-15), mandatory, must be first\n");
 	pr_info("   llsf           - LL SF. 1 for LLD\n");
 	pr_info("   coupled        - Coupled SF. For ASF\n");
 	pr_info("   num_q          - Num queues\n");
 	pr_info("   q              - add queue\n");
+	pr_info("   q_type         - add queue type");
+	for (i = 0; i < PP_QOS_SF_QUEUE_TYPE_NUM; i++)
+		pr_cont("  %u:%s", i, pp_qos_sf_q_type_str[i]);
+	pr_cont("\n");
 	pr_info("   target         - AQM Target Latency\n");
 	pr_info("   peak           - AQM Peak rate\n");
 	pr_info("   msr            - AQM msr\n");
 	pr_info("   factor         - Coupling factor for Classic SF in ASF\n");
 	pr_info("   buf_sz         - AQM/LLD Config buffer size\n");
-	pr_info("   mode           - AQM mode: 0-regular 1-no drop\n");
+	pr_info("   mode           - AQM mode:");
+	for (i = 1; i < PP_QOS_AQM_MODE_NUM; i++)
+		pr_cont("  %u:%s", i, pp_qos_aqm_mode_str[i]);
+	pr_cont("\n");
 	pr_info("   iaqm           - LLD iaqm enable\n");
 	pr_info("   qp             - LLD Queue Protection enable\n");
 	pr_info("   maxth          - LLD max threshold\n");
@@ -1512,23 +1531,23 @@ static void sf_set_help(void)
 	pr_info("   bin            - Bin edge\n");
 }
 
-void sf_set_write(char *args_str, void *data)
+static void sf_set_write(char *args_str, void *data)
 {
-	u8 sf_id;
 	struct pp_qos_aqm_lld_sf_config cfg = {0};
-	bool help;
-	s32 ret = 0;
+	s32 ret;
+	u8 sf_id;
+	bool help = false;
 
 	cfg.coupled_sf = PP_QOS_MAX_SERVICE_FLOWS;
-	help = false;
 
 	/* set defaults */
 	cfg.coupling_factor = 2;
 	cfg.weight = 20;
 
-	ret = sf_set_args_parse(args_str, &cfg, &sf_id, &help);
-	if (unlikely(ret))
+	if (sf_set_args_parse(args_str, &cfg, &sf_id, &help) || help) {
+		sf_set_help();
 		return;
+	}
 
 	/* set defaults in case this is LL */
 	if (cfg.llsf) {
@@ -1540,12 +1559,8 @@ void sf_set_write(char *args_str, void *data)
 		cfg.cfg.lld_cfg.vq_ewma_alpha = 7;
 	}
 
-	if (help) {
-		sf_set_help();
-		return;
-	}
-
-	if (unlikely(ret = pp_misc_sf_set(sf_id, &cfg)))
+	ret = pp_misc_sf_set(sf_id, &cfg);
+	if (ret)
 		pr_err("failed to configure SF, ret %d\n", ret);
 }
 PP_DEFINE_DEBUGFS(sf_set, NULL, sf_set_write);
@@ -1675,20 +1690,61 @@ static void sf_show_help(void)
 	pr_info(" For showing all existing SF use: cat sf_show\n");
 }
 
-void sf_show_write(char *args_str, void *data)
+static void sf_conf_dump(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 {
-	u8 sf_id;
-	bool help;
-	s32 ret = 0;
-	struct pp_qos_aqm_lld_sf_config sf_cfg;
-	u8 fw_ctx;
 	u8 queue_idx;
-	volatile u32 *ptr;
+	u8 fw_ctx;
 
-	help = false;
+	pr_info("SF %u configuration [%s]:\n", sf_id, sf_cfg->llsf ? "LLD" : "AQM");
+	pr_info("==========================\n");
 
-	ret = sf_show_args_parse(args_str, &sf_id, &help);
-	if (unlikely(ret))
+	pr_info("num queues %u\n", sf_cfg->num_queues);
+	for (queue_idx = 0; queue_idx < sf_cfg->num_queues; queue_idx++)
+		pr_info("\tQ[%u] %u (%s)\n",
+		queue_idx, sf_cfg->queue[queue_idx].id,
+		pp_qos_sf_q_type_str[sf_cfg->queue[queue_idx].type]);
+	pr_info("buffer_size %u\n", sf_cfg->buffer_size);
+	pr_info("coupled SF %u\n", sf_cfg->coupled_sf);
+	pr_info("amsr %u\n", sf_cfg->amsr);
+	pr_info("msr_l %u\n", sf_cfg->msr_l);
+	pr_info("couling factor %u\n", sf_cfg->coupling_factor);
+	pr_info("weight %u\n", sf_cfg->weight);
+	pr_info("num bins %u\n", sf_cfg->num_hist_bins);
+	pr_info("aqm_mode %u, %s\n", sf_cfg->aqm_mode,
+		pp_qos_aqm_mode_str[sf_cfg->aqm_mode]);
+
+	if (sf_cfg->llsf) {
+		if (pp_misc_fw_lld_ctx_get(sf_id, &fw_ctx))
+			return;
+
+		pr_info("fw_lld_ctx %u\n", fw_ctx);
+		pr_info("iaqm_en %u\n", sf_cfg->cfg.lld_cfg.iaqm_en);
+		pr_info("qp_en %u\n", sf_cfg->cfg.lld_cfg.qp_en);
+		pr_info("maxth %u\n", sf_cfg->cfg.lld_cfg.maxth_us);
+		pr_info("LG Aging %u\n", sf_cfg->cfg.lld_cfg.lg_aging);
+		pr_info("LG Range %u\n", sf_cfg->cfg.lld_cfg.lg_range);
+		pr_info("Critical QL %u\n", sf_cfg->cfg.lld_cfg.critical_ql_us);
+		pr_info("Critical QL Score %u\n",
+			sf_cfg->cfg.lld_cfg.critical_ql_score_us);
+		pr_info("VQ interval %u\n", sf_cfg->cfg.lld_cfg.vq_interval);
+		pr_info("VQ Alpha %u\n", sf_cfg->cfg.lld_cfg.vq_ewma_alpha);
+	} else {
+		pr_info("latency_target_ms %u\n",
+			sf_cfg->cfg.aqm_cfg.latency_target_ms);
+		pr_info("peak_rate %u\n", sf_cfg->cfg.aqm_cfg.peak_rate);
+		pr_info("msr %u [%u bits]\n", sf_cfg->cfg.aqm_cfg.msr,
+			sf_cfg->cfg.aqm_cfg.msr * 8);
+		pr_info("\n");
+	}
+}
+
+static void sf_show_write(char *args_str, void *data)
+{
+	struct pp_qos_aqm_lld_sf_config sf_cfg;
+	bool help = false;
+	u8 sf_id;
+
+	if (sf_show_args_parse(args_str, &sf_id, &help))
 		return;
 
 	if (help) {
@@ -1696,67 +1752,21 @@ void sf_show_write(char *args_str, void *data)
 		return;
 	}
 
-	ret = pp_misc_sf_conf_get(sf_id, &sf_cfg);
-	if (unlikely(ret))
+	if (pp_misc_sf_conf_get(sf_id, &sf_cfg))
 		return;
-
-	pr_info("SF %u configuration [%s]:\n", sf_id, sf_cfg.llsf ? "LLD" : "AQM");
-	pr_info("==========================\n");
-
-	pr_info("num queues %u\n", sf_cfg.num_queues);
-	for (queue_idx = 0; queue_idx < sf_cfg.num_queues; queue_idx++)
-		pr_info("\tQ[%u] %u\n", queue_idx, sf_cfg.queue_id[queue_idx]);
-	pr_info("buffer_size %u\n", sf_cfg.buffer_size);
-	pr_info("coupled SF %u\n", sf_cfg.coupled_sf);
-	pr_info("amsr %u\n", sf_cfg.amsr);
-	pr_info("msr_l %u\n", sf_cfg.msr_l);
-	pr_info("couling factor %u\n", sf_cfg.coupling_factor);
-	pr_info("weight %u\n", sf_cfg.weight);
-	pr_info("num bins %u\n", sf_cfg.num_hist_bins);
-	pr_info("aqm_mode %u\n", sf_cfg.aqm_mode);
-
-	if (sf_cfg.llsf) {
-		ret = pp_misc_fw_lld_ctx_get(sf_id, &fw_ctx);
-		if (unlikely(ret))
-			return;
-
-		pr_info("fw_lld_ctx %u\n", fw_ctx);
-		pr_info("iaqm_en %u\n", sf_cfg.cfg.lld_cfg.iaqm_en);
-		pr_info("qp_en %u\n", sf_cfg.cfg.lld_cfg.qp_en);
-		pr_info("maxth %u\n", sf_cfg.cfg.lld_cfg.maxth_us);
-		pr_info("LG Aging %u\n", sf_cfg.cfg.lld_cfg.lg_aging);
-		pr_info("LG Range %u\n", sf_cfg.cfg.lld_cfg.lg_range);
-		pr_info("Critical QL %u\n", sf_cfg.cfg.lld_cfg.critical_ql_us);
-		pr_info("Critical QL Score %u\n", sf_cfg.cfg.lld_cfg.critical_ql_score_us);
-		pr_info("VQ interval %u\n", sf_cfg.cfg.lld_cfg.vq_interval);
-		pr_info("VQ Alpha %u\n", sf_cfg.cfg.lld_cfg.vq_ewma_alpha);
-	} else {
-		pr_info("latency_target_ms %u\n", sf_cfg.cfg.aqm_cfg.latency_target_ms);
-		pr_info("peak_rate %u\n", sf_cfg.cfg.aqm_cfg.peak_rate);
-		pr_info("msr %u\n", sf_cfg.cfg.aqm_cfg.msr);
-		if (sf_cfg.coupled_sf != PP_QOS_MAX_SERVICE_FLOWS) {
-			ptr = (pp_phys_to_virt(
-				(ulong)uc_egr_lld_aqm_info_phys_addr_get() +
-				4 * sf_id));
-			pr_info("Current probCL [addr %lx] %u\n",
-				(ulong)uc_egr_lld_aqm_info_phys_addr_get(),
-				(ptr ? *ptr : 0));
-		}
-		pr_info("\n");
-	}
+	
+	sf_conf_dump(sf_id ,&sf_cfg);
 }
 
-void sf_show_read(struct seq_file *f)
+static void sf_show_read(struct seq_file *f)
 {
 	u8 sf_id;
-	s32 ret = 0;
 	struct pp_qos_aqm_lld_sf_config sf_cfg;
 	char buf[6]; /* 5 chars for "id=xx" + null terminator */
 
 	/* iterate all SF and call sf_show_write() for each active one */
 	for (sf_id=0; sf_id < PP_QOS_MAX_SERVICE_FLOWS; sf_id++) {
-		ret = pp_misc_sf_conf_get(sf_id, &sf_cfg);
-		if (unlikely(ret))
+		if (pp_misc_sf_conf_get(sf_id, &sf_cfg))
 			return;
 
 		if (sf_cfg.num_queues == 0)
@@ -1884,6 +1894,48 @@ static void allowed_aq_show(struct seq_file *f)
 
 PP_DEFINE_DEBUGFS(allowed_aq, allowed_aq_show, allowed_aq_set);
 
+static void aqm_engine_set(char *args, void *data)
+{
+	unsigned int aqm_engine;
+	s32 ret = 0;
+
+	if (unlikely(sscanf(args, "%u", &aqm_engine) != 1)) {
+		pr_err("sscanf error\n");
+		return;
+	}
+
+	if (aqm_engine != PP_AQM_SW && aqm_engine != PP_AQM_HW) {
+	    pr_err("Invalid aqm engine mode, select %u for %s or %u for %s\n",
+			   PP_AQM_SW, "PP_AQM_SW", PP_AQM_HW, "PP_AQM_HW");
+	    return;
+	}
+
+	ret = pp_misc_set_aqm_engine((u8)aqm_engine);
+	if (unlikely(ret)) {
+		pr_err("Failed to set aqm engine mode\n");
+		return;
+	}
+	pr_info("warning: changing aqm engine requires reinit MAC\n");
+}
+
+static void aqm_engine_set_show(struct seq_file *f)
+{
+
+	u8 aqm_engine;
+	s32 ret = 0;
+
+	ret = pp_misc_get_aqm_engine(&aqm_engine);
+	if (unlikely(ret)) {
+		pr_err("Failed to get aqm engine mode\n");
+		return;
+	}
+
+	seq_printf(f, "aqm engine is %u (%s)\n", aqm_engine,
+		   aqm_engine == PP_AQM_SW ? "PP_AQM_SW" : "PP_AQM_HW");
+}
+
+PP_DEFINE_DEBUGFS(aqm_engine, aqm_engine_set_show, aqm_engine_set);
+
 #ifdef CONFIG_PPV4_HW_MOD_REGS_LOGS
 
 /**
@@ -1932,6 +1984,7 @@ static struct debugfs_file files[] = {
 	{"sf_show", &PP_DEBUGFS_FOPS(sf_show)},
 	{"sf_hist_show", &PP_DEBUGFS_FOPS(sf_hist_show)},
 	{"lld_allowed_aq", &PP_DEBUGFS_FOPS(allowed_aq)},
+	{"aqm_engine", &PP_DEBUGFS_FOPS(aqm_engine)},
 #if IS_ENABLED(CONFIG_PPV4_HW_MOD_REGS_LOGS)
 	{"module_reg_log_en", &PP_DEBUGFS_FOPS(mod_reg_log_en)},
 #endif

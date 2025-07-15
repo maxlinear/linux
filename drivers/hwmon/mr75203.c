@@ -21,6 +21,7 @@
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 #include <linux/units.h>
 
 /* PVT Common register */
@@ -204,6 +205,9 @@ struct pvt_device {
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	int			irq;
 	u32			int_en;
+	u32			irq_cnt;
+	struct delayed_work	work;
+	u32			irq_test_cnt;
 #endif
 };
 
@@ -623,6 +627,50 @@ static int interrupt_en_get(void *data, u64 *val)
 	return 0;
 }
 
+static void pvt_ts_handle_test_work(struct work_struct *work)
+{
+	struct pvt_device *pvt = container_of(work, struct pvt_device, work.work);
+	int cpu = smp_processor_id();
+
+	epu_notifier_blocking_chain(I2C_SEM_EVENT_REQUEST, &cpu);
+	epu_notifier_blocking_chain(I2C_SEM_EVENT_RELEASE, &cpu);
+
+	pvt->irq_cnt++;
+
+	if (pvt->irq_cnt < pvt->irq_test_cnt)
+		schedule_delayed_work(&pvt->work, usecs_to_jiffies(1));
+}
+
+static int interrupt_trg_set(void *data, u64 val)
+{
+	struct pvt_device *pvt = data;
+
+	/* disable interrupt if pseudo interrupt handling is enabled */
+	if (!val) {
+		cancel_delayed_work_sync(&pvt->work);
+		pvt->irq_cnt = 0;
+		enable_irq(pvt->irq);
+	} else {
+		cancel_delayed_work_sync(&pvt->work);
+		disable_irq(pvt->irq);
+		pvt->irq_cnt = 0;
+		schedule_delayed_work(&pvt->work, usecs_to_jiffies(2));
+	}
+	pvt->int_en = !!val;
+	pvt->irq_test_cnt = (u32)val;
+
+	return 0;
+}
+
+static int interrupt_trg_get(void *data, u64 *val)
+{
+	struct pvt_device *pvt = data;
+
+	*val = pvt->irq_cnt;
+
+	return 0;
+}
+
 DEFINE_DEBUGFS_ATTRIBUTE(rising_alarm_fops, rising_alarm_get,
 			 rising_alarm_set, "%llu\n");
 DEFINE_DEBUGFS_ATTRIBUTE(rising_hyst_fops, rising_hyst_get,
@@ -633,6 +681,8 @@ DEFINE_DEBUGFS_ATTRIBUTE(falling_hyst_fops, falling_hyst_get,
 			 falling_hyst_set, "%llu\n");
 DEFINE_DEBUGFS_ATTRIBUTE(interrupt_en_fops, interrupt_en_get,
 			 interrupt_en_set, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(interrupt_trg_fops, interrupt_trg_get,
+			 interrupt_trg_set, "%llu\n");
 
 void pvt_debugfs_init(struct pvt_device *pvt)
 {
@@ -666,6 +716,13 @@ void pvt_debugfs_init(struct pvt_device *pvt)
 				   &interrupt_en_fops);
 	if (!file)
 		goto err;
+
+	file = debugfs_create_file("pseudo_interrupt", 0644, pvt_dir, pvt,
+				   &interrupt_trg_fops);
+	if (!file)
+		goto err;
+
+	INIT_DELAYED_WORK(&pvt->work, pvt_ts_handle_test_work);
 
 	return;
 err:

@@ -20,7 +20,7 @@
 #ifndef __VPN_GENCONF_H_
 #define __VPN_GENCONF_H_
 
-#define FW_COMPATIBLE_ID    0x9
+#define FW_COMPATIBLE_ID    0xB
 
 #define MAX_VERSION_DESC_LEN 8 /*!< Maximum FW version description string
 				* length
@@ -44,8 +44,8 @@
 #define CTX_SIZE 32 /*!< Size of CTX in number of DWORDS */
 #define CD_SIZE 12 /*!< Size of CD words in number of DWORDS */
 #define RD_SIZE 12 /*!< Size of RD words in number of DWORDS */
-#define IPSEC_TUN_MAX 8 /*!< MAX IPSEC Tunnel number supported. */
-#define IPSEC_TUN_SESS_MAX 7 /*!< MAX sessions per tunnel */
+#define IPSEC_TUN_MAX 16 /*!< MAX IPSEC Tunnel number supported. */
+#define IPSEC_TUN_SESS_MAX 4 /*!< MAX sessions per tunnel */
 
 #define MAX_DC_PORT_DEQ_SIZE 32 /*!< MAX ring used in the DC DEQ port (1..32) */
 #define MAX_DC_PORT_ENQ_SIZE 32 /*!< MAX ring used in the DC ENQ port (1..32) */
@@ -792,8 +792,7 @@ enum FW_LOAD_STATUS {
 	VPN_FW_ACK_IA,
 	INT_DBG_WRITE,
 	INT_DBG_IO,
-	INT_TUNL_UPD_IN,
-	INT_TUNL_UPD_OUT,
+	INT_TUNL_UPD,
 	INT_TUNL_CFG,
 	INT_TXIN_UPDATE
 };
@@ -996,44 +995,23 @@ struct genconf {
 	/* IPSEC Tunnel Info base address. VPN HAL defines them per IPSEC
 	 * tunnel
 	 */
-	/*!< IPSEC Tunnel inbound info(Decryption) */
-	struct ipsec_info ipsec_in[IPSEC_TUN_MAX];
-	 /*!< IPSEC Tunnel outbound info (Encryption) */
-	struct ipsec_info ipsec_out[IPSEC_TUN_MAX];
+	/*!< IPSEC Tunnel inbound info */
+	struct ipsec_info ipsec_info[IPSEC_TUN_MAX];
 
 	/* IPSEC Tunnel Flag */
-	u16 ipsec_out_flag; /*!< Tunnel flag: 0 --its configuration not
-			     * valid, 1 --valid, 2 --update
-			     * bit [1:0] for tunnel[0], bit [3:2] for tunnel[1]
-			     * and so on
-			     */
-	u16 ipsec_in_flag; /*!< Tunnel flag: 0 --its configuration not
-			    * valid, 1 --valid, 2 --update
-			    * bit [1:0] for tunnel[0], bit [3:2] for tunnel[1]
-			    * and so on
-			    */
+	u32 ipsec_flag; /*!< Tunnel flag: 0 --its configuration not
+			 * valid, 1 --valid, 2 --update
+			 * bit [1:0] for tunnel[0], bit [3:2] for tunnel[1]
+			 * and so on
+			 */
+
 	/* It is base address per tunnel. VPN HAL need to allocate the buffer
 	 * for IPSEC traffic. VPN FW copies ACD info from VPN HAL to this
 	 * location and do necessary editing before passed to Eip197
 	 */
-	struct tkn acd_in[IPSEC_TUN_MAX]; /*!< VPN HAL alloc per ACD
-					   * input buffer
-					   * EIP97_ACD_MAX_SIZE
-					   */
-	struct tkn acd_out[IPSEC_TUN_MAX]; /*!< VPN HAL alloc per ACD
-					    * output buffer
-					    * EIP97_ACD_MAX_SIZE
-					    */
+	struct tkn acd_tmpl[IPSEC_TUN_MAX]; /*!< VPN HAL alloc per ACD buffer */
+	struct ipsec_act dwt[IPSEC_TUN_MAX]; /*!< DMA descriptor template */
 
-	struct ipsec_act in_dwt[IPSEC_TUN_MAX]; /*!< DMA descriptor
-						 * template for inbound
-						 * HAL writes
-						 */
-	struct ipsec_act out_dwt[IPSEC_TUN_MAX]; /*!< DMA descriptor
-						  * template for
-						  * outbound.
-						  * HAL writes
-						  */
 	/*!< ENC session action */
 	struct ipsec_act sess_act_out[IPSEC_TUN_MAX]
 						[IPSEC_TUN_SESS_MAX];
@@ -1070,12 +1048,7 @@ struct genconf {
 	/*!< Second partition SRAM */
 	/* ARC and Host and EIP197 access */
 	u32 genconf_2nd_part __aligned(GC_PART_SIZE);
-	struct ctx ctx_in[IPSEC_TUN_MAX]; /*!< IPSEC Tunnel SA info
-					   * for Decryption
-					   */
-	struct ctx ctx_out[IPSEC_TUN_MAX]; /*!< IPSEC Tunnel SA info
-					    * for Encryption
-					    */
+	struct ctx ctx[IPSEC_TUN_MAX]; /*!< IPSEC Tunnel SA info */
 
 	/*!< Third partition SRAM */
 	/* ARC and EIP197 access only */

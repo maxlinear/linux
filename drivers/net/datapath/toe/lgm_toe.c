@@ -3167,6 +3167,7 @@ static int toe_alloc_buf(struct toe_dev *toe)
 		toe->oc_mode = EXT_OC_INT;
 
 	ddr_sz = (TSO_MAX_GATHER_BUF - toe->gb_num) * TSO_GATHER_BUF_SZ;
+	ddr_sz = ALIGN(ddr_sz, SZ_4K);
 
 	for (i = 0; i < FW_DOM_MAX; i++) {
 		toe->sai[i] = -1;
@@ -3180,11 +3181,9 @@ static int toe_alloc_buf(struct toe_dev *toe)
 	data.sai = toe->sai[FW_DOM_TOE_DMA];
 	data.perm = FW_READ_WRITE;
 	data.opt = MXL_FW_OPT_USE_NONCOHERENT;
-	toe->ddr_va = gen_pool_alloc_algo(toe->ddr_pool, ddr_sz,
-					  mxl_soc_pool_algo, &data);
+	toe->ddr_va = mxl_soc_pool_alloc(toe->ddr_pool, ddr_sz, &data);
 	if (!toe->ddr_va)
 		return -ENOMEM;
-
 	toe->ddr_sz = ddr_sz;
 
 	ddr = ioc_addr_to_nioc_addr(toe_get_phys_addr(toe->dev,

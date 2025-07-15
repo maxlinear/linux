@@ -185,6 +185,13 @@ static int sso_gpio_hw_init(struct sso_gpio_priv *priv)
 	int err;
 	u32 activate;
 
+	/* Clear all duty cycles */
+	for (i = 0; i < priv->pins; i++) {
+		err = regmap_write(priv->mmap, DUTY_CYCLE(i), 0);
+		if (err)
+			return err;
+	}
+
 	/* 4 groups for total 32 pins */
 	for (i = 1; i <= MAX_GROUP_NUM; i++) {
 		activate = !!(i * PINS_PER_GROUP <= priv->pins ||
@@ -195,44 +202,25 @@ static int sso_gpio_hw_init(struct sso_gpio_priv *priv)
 			return err;
 	}
 
-	/* set defaults for non-allocated pins */
-
-	/* Clear all duty cycles, if not allocated by gpio-hog */
-	for (i = 0; i < priv->pins; i++) {
-		if (!(priv->alloc_bitmap & BIT(i))) {
-			err = regmap_write(priv->mmap, DUTY_CYCLE(i), 0);
-			if (err)
-				return err;
-		}
-	}
-
 	/* NO HW directly controlled pin by default */
-	if (regmap_update_bits(priv->mmap, SSO_CON3,
-			       (~priv->alloc_bitmap & GENMASK(priv->pins, 0)),
-			       0))
+	if (regmap_write(priv->mmap, SSO_CON3, 0))
 		return -ENOTSUPP;
 
 	/* NO BLINK for all pins */
-	if (regmap_update_bits(priv->mmap, SSO_CON2,
-			       (~priv->alloc_bitmap & GENMASK(priv->pins, 0)),
-			       0))
+	if (regmap_write(priv->mmap, SSO_CON2, 0))
 		return -ENOTSUPP;
 
 	/* OUTPUT 0 by default */
-	if (regmap_update_bits(priv->mmap, SSO_CPU,
-			       (~priv->alloc_bitmap & GENMASK(priv->pins, 0)),
-			       0))
+	if (regmap_write(priv->mmap, SSO_CPU, 0))
 		return -ENOTSUPP;
 
 	/* update edge */
 	if (sso_gpio_update_bit(priv->mmap, SSO_CON0, RZFL, priv->edge))
 		return -ENOTSUPP;
 
-	/* Blink rate same as update rate */
+	/* SW mode by default */
 	if (sso_gpio_update_bit(priv->mmap, SSO_CON0, BLINK_R, 0))
 		return -ENOTSUPP;
-
-	/* SW mode by default */
 	if (sso_gpio_write_mask(priv->mmap, SSO_CON1, US, US_MASK, 0))
 		return -ENOTSUPP;
 
@@ -313,11 +301,11 @@ static int intel_sso_gpio_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->mmap);
 	}
 
-	ret = sso_gpio_gc_init(priv, dev, drv_name);
+	ret = sso_gpio_hw_init(priv);
 	if (ret)
 		goto err;
 
-	ret = sso_gpio_hw_init(priv);
+	ret = sso_gpio_gc_init(priv, dev, drv_name);
 	if (ret)
 		goto err;
 

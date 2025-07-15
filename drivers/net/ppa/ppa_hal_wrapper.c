@@ -7,7 +7,7 @@
  ** DATE	: 18 Feb 2014
  ** AUTHOR	: Kamal Eradath
  ** DESCRIPTION : PPA Wrapper for HAL Selector layer
- ** COPYRIGHT	: Copyright (c) 2020-2023 MaxLinear, Inc.
+ ** COPYRIGHT	: Copyright (c) 2020-2025 MaxLinear, Inc.
  ** COPYRIGHT	: Copyright (c) 2017 Intel Corporation
  ** Copyright (c) 2014 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
  ** HISTORY
@@ -196,23 +196,6 @@ uint32_t ppa_hsel_hal_exit(uint32_t flag, uint32_t hal_id)
 		return PPA_FAILURE;
 
 	return ppa_drv_hal_hook[hal_id](PPA_GENERIC_HAL_EXIT, (void *)NULL, flag);
-}
-
-uint32_t ppa_hsel_get_hal_id(PPA_VERSION *v, uint32_t flag, uint32_t hal_id)
-{
-	if (!ppa_drv_hal_hook[hal_id])
-		return PPA_FAILURE;
-
-	return ppa_drv_hal_hook[hal_id](PPA_GENERIC_HAL_GET_HAL_VERSION, (void *)v, flag);
-}
-
-uint32_t ppa_hsel_get_firmware_id(PPA_VERSION *v, uint32_t flag, uint32_t hal_id)
-{
-
-	if (!ppa_drv_hal_hook[hal_id])
-		return PPA_FAILURE;
-
-	return ppa_drv_hal_hook[hal_id](PPA_GENERIC_HAL_GET_PPE_FW_VERSION, (void *)v, flag);
 }
 
 uint32_t ppa_hsel_get_number_of_phys_port(PPA_COUNT_CFG *count, uint32_t flag, uint32_t hal_id)
@@ -580,26 +563,6 @@ uint32_t ppa_drv_hal_exit(uint32_t flag)
 }
 
 /*****************************************************************************************/
-/*  return the id of all registred HAL layers						 */
-/*****************************************************************************************/
-uint32_t ppa_drv_get_hal_id(PPA_VERSION *v, uint32_t flag)
-{
-	return ppa_hsel_get_hal_id(v, flag, get_platform_hal(0));
-}
-
-/*****************************************************************************************/
-/*  return the firmware id of all registred HAL layers					 */
-/*****************************************************************************************/
-uint32_t ppa_drv_get_firmware_id(PPA_VERSION *v, uint32_t flag)
-{
-uint32_t hal_id = PPE_HAL;
-#ifndef CONFIG_PPA_PUMA7
-	return ppa_hsel_get_firmware_id(v, flag, hal_id);
-#endif
-	return PPA_FAILURE;
-}
-
-/*****************************************************************************************/
 /* This function returns the number of physical port at the system level*/
 /* Since PAE has the physical ports in the iRX500 system connected to it, we need to query only PAE*/
 /* in case of legacy platforms we need to call PPE HAL*/
@@ -929,7 +892,6 @@ EXPORT_SYMBOL(ppa_group_hals_in_capslist);
 EXPORT_SYMBOL(ppa_set_wan_itf);
 EXPORT_SYMBOL(ppa_drv_hal_init);
 EXPORT_SYMBOL(ppa_drv_hal_exit);
-EXPORT_SYMBOL(ppa_drv_get_hal_id);
 EXPORT_SYMBOL(ppa_drv_get_max_entries);
 EXPORT_SYMBOL(ppa_drv_set_route_cfg);
 EXPORT_SYMBOL(ppa_drv_get_ports_mib);
@@ -937,7 +899,6 @@ EXPORT_SYMBOL(ppa_hsel_get_generic_itf_mib);
 EXPORT_SYMBOL(ppa_drv_get_itf_mib);
 EXPORT_SYMBOL(ppa_drv_set_acc_mode);
 EXPORT_SYMBOL(ppa_drv_get_acc_mode);
-EXPORT_SYMBOL(ppa_drv_get_firmware_id);
 EXPORT_SYMBOL(ppa_drv_get_phys_port_info);
 EXPORT_SYMBOL(ppa_drv_get_number_of_phys_port);
 EXPORT_SYMBOL(ppa_drv_is_ipv6_enabled);

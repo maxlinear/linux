@@ -59,12 +59,16 @@ struct mxl_pool_event_data {
 #if IS_ENABLED(CONFIG_MXL_SEC_GEN_POOL)
 void mxl_soc_pool_free(struct gen_pool *pool,
 		       struct gen_pool_chunk *chunk, void *data);
+#if 0
+/* This API is deprecated, instead use mxl_soc_pool_alloc */
+
 unsigned long
 mxl_soc_pool_algo(unsigned long *map, unsigned long size,
 		  unsigned long start, unsigned int nr, void *data,
 		  struct gen_pool *pool, unsigned long start_addr);
-
+#endif
 int mxl_noc_genpl_notifier_blocking_chain(unsigned long val, void *v);
+unsigned long mxl_soc_pool_alloc(struct gen_pool *pool, size_t size, void *allocdata);
 #else
 static inline int mxl_noc_genpl_notifier_blocking_chain(unsigned long val,
 							void *v)

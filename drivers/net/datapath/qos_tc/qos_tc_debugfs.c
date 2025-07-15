@@ -10,7 +10,6 @@
 #include <linux/fs.h>
 #include <uapi/linux/stat.h> /* S_IRUSR */
 
-#include "qos_tc_compat.h"
 #include "qos_tc_ext_vlan.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_pce.h"

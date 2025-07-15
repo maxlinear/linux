@@ -265,8 +265,8 @@ lqasc_rx_chars(struct uart_port *port)
 
 	uart_unlock_and_check_sysrq(port);
 
-	if (ch != 0)
-		tty_flip_buffer_push(tport);
+	/* always call tty_flip_buffer_push() to fix UART receive timeout issue */
+	tty_flip_buffer_push(tport);
 
 	return 0;
 }

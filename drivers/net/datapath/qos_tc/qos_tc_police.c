@@ -15,7 +15,6 @@
 #include <linux/list.h>
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_police.h"
@@ -63,114 +62,6 @@ static bool qos_tc_police_match(struct policer_data *p1,
 	return false;
 }
 
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-static bool qos_tc_police_parse_actions(struct flow_cls_offload *f,
-					struct policer_data *pd,
-					dp_subif_t *subif, bool ingress)
-{
-	struct dp_meter_cfg *meter_cfg = &pd->meter_cfg;
-	struct policer_data *p = NULL;
-	struct net_device *indev;
-	const struct tc_action *a;
-#if (KERNEL_VERSION(4, 15, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
-	int i;
-#endif
-	u64 burst;
-
-	pd->acts = 0;
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (tc_no_actions(f->exts))
-#else
-	if (!tcf_exts_has_actions(f->exts))
-#endif
-		return false;
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		if (!(pd->acts & QOS_TC_COLMARK_ACTION) && is_tcf_colmark(a)) {
-			/* The enumerations in the TC colmark are matching
-			 * enumerations in the dp manager.
-			 */
-			meter_cfg->col_mode = tcf_colmark_mode(a);
-			meter_cfg->mode = tcf_colmark_precedence(a);
-			meter_cfg->type = tcf_colmark_mtype(a);
-
-			netdev_dbg(pd->dev,
-				   "%s: col_mode %d mode %d type %d\n",
-				   __func__,
-				   meter_cfg->col_mode,
-				   meter_cfg->mode,
-				   meter_cfg->type);
-
-			/* Only mode is used for color marking */
-			if (tcf_colmark_flags(a) & COLMARK_F_DROP_PRECEDENCE)
-				pd->acts |= QOS_TC_COLMARK_ACTION;
-		}
-
-		if (!(pd->acts & QOS_TC_POLICE_ACTION) && is_tcf_police(a)) {
-			burst = tcf_police_rate_bytes_ps(a);
-			burst *= PSCHED_NS2TICKS(tcf_police_tcfp_burst(a));
-			burst = div_u64(burst, PSCHED_TICKS_PER_SEC);
-			/* Convert rates from bytes/s to kbit/s */
-			meter_cfg->cir = tcf_police_rate_bytes_ps(a) * 8;
-			meter_cfg->pir = tcf_police_peak_bytes_ps(a) * 8;
-			meter_cfg->cbs = burst;
-			meter_cfg->pbs = tcf_police_tcfp_mtu(a);
-
-			netdev_dbg(pd->dev,
-				   "%s: cir %llu pir %llu cbs %u pbs %u\n",
-				   __func__,
-				   meter_cfg->cir,
-				   meter_cfg->pir,
-				   meter_cfg->cbs,
-				   meter_cfg->pbs);
-
-			pd->acts |= QOS_TC_POLICE_ACTION;
-		}
-	}
-	netdev_dbg(pd->dev, "%s: acts: %d\n", __func__, pd->acts);
-
-	meter_cfg->dir = ingress ? DP_DIR_INGRESS : DP_DIR_EGRESS;
-
-	indev = qos_tc_get_indev(pd->dev, f);
-
-	/* On the pmapper and when the indev is the same as the normal dev
-	 * we should use the bridge port.
-	 */
-	if (subif->flag_pmapper || (indev && indev == pd->dev)) {
-		pd->flags |= DP_METER_ATTACH_BRPORT;
-		pd->flow_based = ingress ? false : true;
-	} else {
-		pd->flags |= DP_METER_ATTACH_CTP;
-	}
-
-	netdev_dbg(pd->dev, "%s: flags: %d\n", __func__, pd->flags);
-
-	/* BP config get failed which should never happen!*/
-	if (meter_cfg->dp_pce.flow < 0)
-		return false;
-
-	list_for_each_entry(p, &policer_list, list) {
-		if (qos_tc_police_match(p, pd)) {
-			netdev_err(pd->dev,
-				   "%s: policer already on this device\n",
-				   __func__);
-			return false;
-		}
-	}
-
-	if (pd->acts && pd->acts <= 3)
-		return true;
-
-	return false;
-}
-#else
 static bool qos_tc_police_parse_actions(struct flow_cls_offload *f,
 					struct policer_data *pd,
 					dp_subif_t *subif, bool ingress)
@@ -262,7 +153,6 @@ static bool qos_tc_police_parse_actions(struct flow_cls_offload *f,
 
 	return false;
 }
-#endif
 
 static int qos_tc_police_config(struct policer_data *pd, bool en)
 {

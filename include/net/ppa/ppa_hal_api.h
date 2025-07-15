@@ -10,7 +10,7 @@
  ** DATE         : 04 NOV 2008
  ** AUTHOR       : Xu Liang
  ** DESCRIPTION  : PPA Firmware Hardware/Firmware Adaption Layer Header File
- ** Copyright (c) 2020 - 2023 MaxLinear, Inc.
+ ** Copyright (c) 2020 - 2025 MaxLinear, Inc.
  ** COPYRIGHT   : Copyright (c) 2017 Intel Corporation
  ** Copyright (c) 2010 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
  **
@@ -130,8 +130,6 @@ typedef enum {
 	PPA_GENERIC_HAL_GET_FEATURE_LIST, /*get featuer list*/
 	/*Fix warning message when exports API from different PPE FW Driver--begin*/
 	PPA_GENERIC_HAL_GET_MAX_ENTRIES,  /*get maximum ipv4 routing entry number*/
-	PPA_GENERIC_HAL_GET_HAL_VERSION,  /*get hal version number*/
-	PPA_GENERIC_HAL_GET_PPE_FW_VERSION,  /*get ppe fw version number*/
 	PPA_GENERIC_HAL_GET_PHYS_PORT_NUM,  /*get maixum physical port number*/
 	PPA_GENERIC_HAL_GET_PHYS_PORT_INFO,  /*get physical port information*/
 	PPA_GENERIC_HAL_SET_MIX_WAN_VLAN_ID,  /*set WAN interface's vlan range for mixed mode*/

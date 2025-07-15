@@ -148,6 +148,7 @@ static void codel_offload(struct Qdisc *sch)
 	qopt.cparams.interval = q->params.interval;
 	qopt.cparams.mtu = q->params.mtu;
 	qopt.cparams.ecn = q->params.ecn;
+	qopt.cparams.limit = sch->limit;
 
 	dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_CODEL, &qopt);
 }

@@ -24,6 +24,7 @@ enum {
 	TCA_ACT_FLAGS,
 	TCA_ACT_HW_STATS,
 	TCA_ACT_USED_HW_STATS,
+	TCA_ACT_IN_HW_COUNT,
 	__TCA_ACT_MAX
 };
 
@@ -237,6 +238,7 @@ enum {
 	TCA_U32_MARK,
 	TCA_U32_FLAGS,
 	TCA_U32_PAD,
+	TCA_U32_EXTMARK,
 	__TCA_U32_MAX
 };
 
@@ -591,6 +593,13 @@ enum {
 	TCA_FLOWER_KEY_HASH,		/* u32 */
 	TCA_FLOWER_KEY_HASH_MASK,	/* u32 */
 
+	TCA_FLOWER_KEY_NUM_OF_VLANS,    /* u8 */
+
+	TCA_FLOWER_KEY_PPPOE_SID,	/* be16 */
+	TCA_FLOWER_KEY_PPP_PROTO,	/* be16 */
+
+	TCA_FLOWER_KEY_L2TPV3_SID,	/* be32 */
+
 	TCA_FLOWER_KEY_CFM,
 
 	__TCA_FLOWER_MAX,
@@ -620,6 +629,10 @@ enum {
 					 */
 	TCA_FLOWER_KEY_ENC_OPTS_ERSPAN,	/* Nested
 					 * TCA_FLOWER_KEY_ENC_OPT_ERSPAN_
+					 * attributes
+					 */
+	TCA_FLOWER_KEY_ENC_OPTS_GTP,	/* Nested
+					 * TCA_FLOWER_KEY_ENC_OPT_GTP_
 					 * attributes
 					 */
 	__TCA_FLOWER_KEY_ENC_OPTS_MAX,

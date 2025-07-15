@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -230,6 +230,7 @@ struct fw_sec_info {
  * @reserved_queues       These queues are reserved for contiguous queue
  *                        allocation
  * @bm_base               bm base address
+ * @aqm_engine            AQM engine type
  * @dbgfs                 debugfs parent folder
  * @sysfs                 sysfs parent folder
  */
@@ -252,6 +253,7 @@ struct pp_qos_init_param {
 	u32                reserved_ports[PP_QOS_MAX_PORTS];
 	u32                reserved_queues;
 	phys_addr_t        bm_base;
+	u32                aqm_engine;
 	struct dentry     *dbgfs;
 	struct kobject    *sysfs;
 };
@@ -1500,6 +1502,20 @@ s32 _qos_shared_limit_group_modify(struct pp_qos_dev *qos_dev, u32 id,
 s32 _qos_shared_limit_group_get_members(struct pp_qos_dev *qos_dev, u32 id,
 					uint16_t *members, u32 size,
 					u32 *members_num);
+
+
+/**
+ * @brief Add/Remove a queue from aqm context
+ * @param qos_dev handle to qos device instance obtained from
+ *        pp_qos_dev_open
+ * @param op operation (add/remove)
+ * @param queue_id queue id
+ * @param ctx aqm context
+ * @return s32 0 on success, error code otherwise
+ */
+s32 qos_aqm_q_to_ctx(struct pp_qos_dev *qdev, enum wred_ctx_ops op,
+		u32 queue_id, u16 ctx);
+
 #ifdef CONFIG_DEBUG_FS
 /**
  * @brief qos debug init

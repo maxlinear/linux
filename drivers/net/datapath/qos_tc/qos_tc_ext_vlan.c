@@ -17,7 +17,6 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_vlan.h>
 #include <uapi/linux/tc_act/tc_vlan.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_vlan_storage.h"
@@ -486,35 +485,6 @@ err:
 	return err;
 }
 
-static void qos_tc_ext_vlan_bp_dev_put(void *rule, enum tc_flower_vlan_tag tag)
-{
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	struct dp_vlan0 *rule0;
-	struct dp_vlan1 *rule1;
-	struct dp_vlan2 *rule2;
-
-	switch (tag) {
-	case TC_VLAN_UNTAGGED:
-		rule0 = (struct dp_vlan0 *)rule;
-		if (rule0->act.ract.bp_dev)
-			dev_put(rule0->act.ract.bp_dev);
-		break;
-	case TC_VLAN_SINGLE_TAGGED:
-		rule1 = (struct dp_vlan1 *)rule;
-		if (rule1->act.ract.bp_dev)
-			dev_put(rule1->act.ract.bp_dev);
-		break;
-	case TC_VLAN_DOUBLE_TAGGED:
-		rule2 = (struct dp_vlan2 *)rule;
-		if (rule2->act.ract.bp_dev)
-			dev_put(rule2->act.ract.bp_dev);
-		break;
-	default:
-		break;
-	}
-#endif
-}
-
 #define bp_ract_present(p, node)					\
 	({								\
 		typeof (p) _p = (p);					\
@@ -566,17 +536,14 @@ int qos_tc_ext_vlan_del(struct net_device *dev, void *vlan_storage, void *rule)
 	switch (node->tag) {
 	case TC_VLAN_UNTAGGED:
 		rule0 = rule;
-		qos_tc_ext_vlan_bp_dev_put(rule0, node->tag);
 		list_del(&rule0->list);
 		break;
 	case TC_VLAN_SINGLE_TAGGED:
 		rule1 = rule;
-		qos_tc_ext_vlan_bp_dev_put(rule1, node->tag);
 		list_del(&rule1->list);
 		break;
 	case TC_VLAN_DOUBLE_TAGGED:
 		rule2 = rule;
-		qos_tc_ext_vlan_bp_dev_put(rule2, node->tag);
 		list_del(&rule2->list);
 		break;
 	default:

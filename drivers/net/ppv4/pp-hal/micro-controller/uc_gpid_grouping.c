@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 MaxLinear, Inc.
+ * Copyright (C) 2022-2025 MaxLinear, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -238,14 +238,22 @@ s32 uc_ing_gpid_group_queue_set(u32 grp_id, u32 host_cid, u32 prio, u32 phy_qid)
 
 }
 
-s32 uc_ing_hash_bit_db_get(struct hash_bit_db *dst)
+s32 uc_ing_hash_bit_db_get(struct hash_bit_db *dst, u32 cnt)
 {
-	u64 addr = UC_SSRAM(INGRESS, ING_HASH_BIT_DB_BASE);
+	u32 cid, i = 0;
+	u64 addr;
 
 	if (ptr_is_null(dst))
 		return -EINVAL;
 
-	memcpy_fromio(dst, (void *)addr, sizeof(*dst));
+	/* get the hash bit db from each CPU */
+	for_each_ing_active_cpu(cid) {
+		if (i >= cnt)
+			break;
+		addr = DCCM_INGRESS_ADDR(cid, ING_HASH_BIT_DB_BASE);
+		memcpy_fromio(&dst[i], (void *)addr, sizeof(*dst));
+		i++;
+	}
 
 	return 0;
 }
@@ -254,24 +262,34 @@ s32 uc_ing_hash_bit_enable(u32 index)
 {
 	u16 bit = index % 32;
 	u16 word = index / 32;
-	unsigned long val;
+	u32 cid, word_val;
+	u64 *word_addr;
 
 	if (index >= PP_DPL_HASH_BIT_MAX_ENTRIES) {
 		pr_err("%s : index %d not supported\n", __func__, index);
 		return -EINVAL;
 	}
 
-	val = PP_REG_RD32(UC_SSRAM(INGRESS, ING_HASH_BIT_DB_OFF(word)));
-	if (test_bit(bit, &val)) {
+	/* get the val from the first CPU */
+	cid = find_first_bit(&in_cpu_act_bmap, UC_CPUS_MAX);
+	word_addr = (u64 *)DCCM_INGRESS_ADDR(cid, ING_HASH_BIT_DB_OFF(word));
+
+	memcpy_fromio(&word_val, word_addr, sizeof(word_val));
+
+	if (test_bit(bit, (unsigned long *)&word_val)) {
 		/* already enabled */
 		pr_err("%s : index %u already enabled\n", __func__, index);
 		return -EINVAL;
 	}
 
-	set_bit(bit, &val);
+	set_bit(bit, (unsigned long *)&word_val);
 
-	/* lastly, enable the id in the enable bitmap */
-	PP_REG_WR32(UC_SSRAM(INGRESS, ING_HASH_BIT_DB_OFF(word)), val);
+	/* lastly, enable the id in the enable bitmap on all CPUs */
+	for_each_ing_active_cpu(cid) {
+		word_addr = (u64 *)DCCM_INGRESS_ADDR(cid,
+						     ING_HASH_BIT_DB_OFF(word));
+		memcpy_toio(word_addr, &word_val, sizeof(word_val));
+	}
 
 	return 0;
 }
@@ -280,24 +298,34 @@ s32 uc_ing_hash_bit_disable(u32 index)
 {
 	u16 bit = index % 32;
 	u16 word = index / 32;
-	unsigned long val;
+	u32 cid, word_val;
+	u64 *word_addr;
 
 	if (index >= PP_DPL_HASH_BIT_MAX_ENTRIES) {
 		pr_err("%s : index %d not supported\n", __func__, index);
 		return -EINVAL;
 	}
 
-	val = PP_REG_RD32(UC_SSRAM(INGRESS, ING_HASH_BIT_DB_OFF(word)));
-	if (test_bit(bit, &val)) {
-		clear_bit(bit, &val);
+	/* get the val from the first CPU */
+	cid = find_first_bit(&in_cpu_act_bmap, UC_CPUS_MAX);
+	word_addr = (u64 *)DCCM_INGRESS_ADDR(cid, ING_HASH_BIT_DB_OFF(word));
+
+	memcpy_fromio(&word_val, word_addr, sizeof(word_val));
+
+	if (test_bit(bit, (unsigned long *)&word_val)) {
+		clear_bit(bit, (unsigned long *)&word_val);
 	} else {
 		/* already disabled */
 		pr_err("%s : index %u already disabled\n", __func__, index);
 		return -EINVAL;
 	}
 
-	/* lastly, enable the id in the enable bitmap */
-	PP_REG_WR32(UC_SSRAM(INGRESS, ING_HASH_BIT_DB_OFF(word)), val);
+	/* lastly, update the id in the bitmap */
+	for_each_ing_active_cpu(cid) {
+		word_addr = (u64 *)DCCM_INGRESS_ADDR(cid,
+						     ING_HASH_BIT_DB_OFF(word));
+		memcpy_toio(word_addr, &word_val, sizeof(word_val));
+	}
 
 	return 0;
 }
@@ -305,10 +333,13 @@ s32 uc_ing_hash_bit_disable(u32 index)
 s32 uc_ing_hash_bit_reset(void)
 {
 	u64 addr;
+	u32 cid;
 	struct hash_bit_db *hash_bit_db;
 
-	addr = UC_SSRAM(INGRESS, ING_HASH_BIT_DB_OFF(0));
-	memset_io((void *)addr, 0, sizeof(hash_bit_db->hash_bit));
+	for_each_ing_active_cpu(cid) {
+		addr = DCCM_INGRESS_ADDR(cid, ING_HASH_BIT_DB_OFF(0));
+		memset_io((void *)addr, 0, sizeof(hash_bit_db->hash_bit));
+	}
 	return 0;
 }
 

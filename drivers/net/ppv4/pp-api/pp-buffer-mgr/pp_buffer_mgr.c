@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -2205,6 +2205,36 @@ unlock:
 reset_cfg_db:
 	memset(&db->cfg, 0, sizeof(struct pp_bmgr_init_param));
 	return ret;
+}
+
+s32 pp_bmgr_ssb_policy_get(u32 *policy_id)
+{
+	struct pp_bmgr_policy_params *policy;
+	struct pp_bmgr_pool_params *pool;
+	u32 id, i;
+	u8  pool_id;
+
+	if (unlikely(!__bmgr_is_ready()))
+		return -EPERM;
+
+	if (!policy_id)
+		return -EINVAL;
+
+	BM_FOR_EACH_POLICY(db, id) {
+		policy = &db->policies[id].params;
+		for (i = 0; i < policy->num_pools_in_policy; i++) {
+			pool_id = policy->pools_in_policy[i].pool_id;
+			pool = &db->pools[pool_id].params;
+			if (pool->flags & POOL_SSB)
+				goto found;
+		}
+	}
+
+	return -EINVAL;
+
+found:
+	*policy_id = id;
+	return 0;
 }
 
 s32 pp_bmgr_config_get(struct pp_bmgr_init_param * const cfg)

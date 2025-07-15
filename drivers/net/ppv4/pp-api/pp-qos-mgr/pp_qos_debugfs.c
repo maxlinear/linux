@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -32,8 +32,10 @@
 #include "pp_regs.h"
 #include "infra.h"
 #include "pp_desc.h"
+#include "qos_wred_regs.h"
 
 #define PP_QOS_DEBUGFS_DIR "ppv4_qos"
+#define AQM_FRACTIONAL_BITS (24)
 
 static u16 g_node;
 
@@ -1089,6 +1091,9 @@ void pp_qos_dbg_stat_show(struct seq_file *s)
 		seq_puts(s, "Queue\n");
 		memset(&qstat, 0, sizeof(qstat));
 		if (pp_qos_queue_stat_get(qdev, id, &qstat) == 0) {
+			seq_printf(s, "queue_average_size_bytes:%u\n",
+				   qstat.queue_average_size_bytes);
+		
 			seq_printf(s, "queue_packets_occupancy:%u\n",
 				   qstat.queue_packets_occupancy);
 
@@ -1513,6 +1518,11 @@ void pp_qos_dbg_gen_show(struct seq_file *s)
 		   qdev->init_params.wred_total_avail_resources);
 	seq_printf(s, "Num fast queues:\t%u\n",
 		   qdev->num_fast_queues);
+	seq_printf(s, "AQM engine:\t%u (%s)\n",
+		   qdev->init_params.aqm_engine,
+		   (qdev->init_params.aqm_engine == PP_AQM_SW
+			? "PP_AQM_SW"
+			: "PP_AQM_HW"));
 }
 
 PP_DEFINE_DEBUGFS(gen_show, pp_qos_dbg_gen_show, NULL);
@@ -2477,12 +2487,28 @@ void aqm_cfg_show(struct seq_file *f)
 
 	if (conf->enable) {
 		seq_printf(f, "enable %d\n", conf->enable);
-		seq_printf(f, "%-30s  %u\n", "peak_rate", conf->peak_rate);
-		seq_printf(f, "%-30s  %u\n", "msr", conf->msr);
 		seq_printf(f, "%-30s  %u\n", "buffer_size", conf->buffer_size);
-		seq_printf(f, "%-30s  0x%x\n", "msrtokens_addr",
-				conf->msrtokens_addr);
 		seq_printf(f, "%-30s  %u\n", "num_queues", conf->num_queues);
+		seq_printf(f, "%-30s  %u\n", "llsf", conf->llsf);
+		seq_printf(f, "%-30s  %u\n", "coupled_sf", conf->coupled_sf);
+		seq_printf(f, "%-30s  %u\n", "num_hist_bins", conf->num_hist_bins);
+		if (!conf->llsf) {
+			seq_printf(f, "%-30s  %u\n", "msr", conf->msr);
+			if (conf->coupled_sf == WRED_AQM_NUM_CONTEXTS) {
+				seq_printf(f, "%-30s  %u\n", "peak_rate", conf->peak_rate);
+				seq_printf(f, "CONTEXT %d is single AQM\n",
+					   db->dbg_aqm_context_id);
+			} else {
+				seq_printf(f, "%-30s  %u\n", "msr_l", conf->msr_l);
+				seq_printf(f, "%-30s  %u\n", "weight", conf->weight);
+				seq_printf(f, "%-30s  %u\n", "coupling_factor",
+					   conf->coupling_factor);
+				seq_printf(f, "CONTEXT %d is classic AQM\n",
+					   db->dbg_aqm_context_id);
+			}
+		} else {
+			seq_printf(f, "CONTEXT %d is LLD\n", db->dbg_aqm_context_id);
+		}
 	} else {
 		seq_printf(f, "CONTEXT %d is disabled\n",
 				db->dbg_aqm_context_id);
@@ -2513,8 +2539,12 @@ void aqm_enable_show(struct seq_file *f)
 
 	qos_get_aqm_info(qdev, aqm_db);
 
-	seq_printf(f, "ENABLE CONTEXTS : 0x%x\n",
-			aqm_db->wred_aqm_enable_bitmap);
+	seq_printf(f, "AQM engine is %u (%s)\n",
+		   aqm_db->aqm_engine,
+		   aqm_db->aqm_engine == PP_AQM_SW ? "PP_AQM_SW" : "PP_AQM_HW");
+
+	seq_printf(f, "ENABLE CONTEXTS BITMAP: 0x%x\n",
+		   aqm_db->wred_aqm_enable_bitmap);
 
 	kfree(aqm_db);
 	return;
@@ -2557,8 +2587,10 @@ void aqm_dbg_show(struct seq_file *f)
 				aqm_dbg->prev_qdelay_status);
 		seq_printf(f, "%-30s %u\n", "prev_burst_state",
 				aqm_dbg->prev_burst_state);
-		seq_printf(f, "%-30s %u\n", "prev_drop_cnt",
-				aqm_dbg->prev_drop_cnt);
+		seq_printf(f, "%-30s %u\n", "prev_drop_pkt_cnt",
+				aqm_dbg->prev_drop_pkt_cnt);
+		seq_printf(f, "%-30s %u\n", "prev_drop_byte_cnt",
+				aqm_dbg->prev_drop_byte_cnt);
 		seq_printf(f, "%-30s %u\n", "prev_burst_allow_val",
 				aqm_dbg->prev_burst_allow_val);
 		seq_printf(f, "%-30s %u\n", "interrupt_count",
@@ -2607,6 +2639,129 @@ void sfid_show(struct seq_file *f)
 }
 
 PP_DEFINE_DEBUGFS(aqm_sfid, sfid_show, sfid_set);
+
+s32 pp_qos_aqm_sf_stats_get(void *_stats, u32 num_stats, void *data)
+{
+	struct pp_qos_dev *qdev;
+	struct pp_qos_aqm_sf_stats *stats;
+	wred_aqm_db_t *aqm_db;
+	wred_aqm_ctx_t *ctx;
+	s32 ret = 0;
+	u32 sf;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return -EINVAL;
+
+	aqm_db = kzalloc(sizeof(*aqm_db), GFP_KERNEL);
+	if (!aqm_db)
+		return -EINVAL;
+
+	ret = qos_get_aqm_info(qdev, aqm_db);
+	stats = (struct pp_qos_aqm_sf_stats *)_stats;
+	for (sf = 0; sf < num_stats; sf++) {
+		ctx = &aqm_db->aqm_ctx[sf];
+		stats[sf].occupancy = PP_REG_RD32
+			(PP_QOS_WRED_AQM_OCCUPANCY_CNT_REG_IDX(sf));
+		stats[sf].burst_state = PP_REG_RD32
+			(PP_QOS_WRED_AQM_BURST_STATE_REG_IDX(sf));
+		stats[sf].drop_prob = PP_REG_RD32
+			(PP_QOS_WRED_AQM_DROP_PROB_REG_IDX(sf));
+		stats[sf].hist_updates = ctx->hist_updates;
+		stats[sf].max_latency = ctx->max_latency;
+		stats[sf].last_total_accepts = ctx->last_total_accepts;
+	}
+
+	return ret;
+}
+
+s32 pp_qos_aqm_sf_stats_diff(void *pre, u32 num_pre, void *post,
+				 u32 num_post, void *delta, u32 num_delta,
+				 void *data)
+{
+	struct pp_qos_aqm_sf_stats *__pre, *__post, *__delta;
+	u32 i;
+
+	if (unlikely(ptr_is_null(pre) || ptr_is_null(post) ||
+		     ptr_is_null(delta)))
+		return -EINVAL;
+
+	__pre   = pre;
+	__post  = post;
+	__delta = delta;
+	for (i = 0; i < num_pre; i++)
+		U64_STRUCT_DIFF(&__pre[i], &__post[i], &__delta[i]);
+
+	return 0;
+}
+
+s32 pp_qos_aqm_sf_stats_show(char *buf, size_t sz, size_t *n, void *s,
+				 u32 num, void *data)
+{
+	struct pp_qos_aqm_sf_stats *stats, *it;
+	u32 sf;
+	char **str;
+	static const char *const cntrs_str[] = {
+		"occupancy", "burst_state", "drop_prob",
+		"hist_updates", "max_latency", "last_total_accepts"
+	};
+
+	pr_buf(buf, sz, *n, "\n");
+	pr_buf_cat(buf, sz, *n,
+			"|====================================================================================================|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|                                         AQM QOS SF Statistics                                      |\n");
+	pr_buf_cat(buf, sz, *n,
+			"|====================================================================================================|\n");
+	pr_buf_cat(buf, sz, *n,
+			"| %-2s ", "SF");
+	for_each_arr_entry(str, cntrs_str, ARRAY_SIZE(cntrs_str))
+		pr_buf_cat(buf, sz, *n, "| %-12s ", *str);
+	pr_buf_cat(buf, sz, *n, "|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|----+--------------+--------------+--------------+--------------+--------------+--------------------|\n");
+
+	stats = (struct pp_qos_aqm_sf_stats *)s;
+	for (sf = 0; sf < num; sf++) {
+		it = &stats[sf];
+		pr_buf_cat(buf, sz, *n, "| %2u ", sf);
+		pr_buf_cat(buf, sz, *n, "| %12u ", it->occupancy);
+		pr_buf_cat(buf, sz, *n, "| %12u ", it->burst_state);
+		pr_buf_cat(buf, sz, *n, "| %12u ", it->drop_prob);
+		pr_buf_cat(buf, sz, *n, "| %12u ", it->hist_updates);
+		pr_buf_cat(buf, sz, *n, "| %12u ", it->max_latency);
+		pr_buf_cat(buf, sz, *n, "| %18u ", it->last_total_accepts);
+		pr_buf_cat(buf, sz, *n, "|\n");
+	}
+	pr_buf_cat(buf, sz, *n,
+			"|====================================================================================================|\n");
+	pr_buf_cat(buf, sz, *n,
+		   "NOTE: drop_prob value is fixed point (from HW), for "
+		   "accurate value should be divided by %u\n",
+		   1 << AQM_FRACTIONAL_BITS);
+	return 0;
+}
+
+void pp_qos_dbg_aqm_sf_stats_show(struct seq_file *f)
+{
+	pp_stats_show_seq(f, sizeof(struct pp_qos_aqm_sf_stats),
+			  PP_QOS_MAX_SERVICE_FLOWS,
+			  pp_qos_aqm_sf_stats_get,
+			  pp_qos_aqm_sf_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(aqm_sf_stats, pp_qos_dbg_aqm_sf_stats_show, NULL);
+
+void pp_qos_dbg_aqm_sf_pps_show(struct seq_file *f)
+{
+	pp_pps_show_seq(f, sizeof(struct pp_qos_aqm_sf_stats),
+			PP_QOS_MAX_SERVICE_FLOWS,
+			pp_qos_aqm_sf_stats_get,
+			pp_qos_aqm_sf_stats_diff,
+			pp_qos_aqm_sf_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(aqm_sf_pps, pp_qos_dbg_aqm_sf_pps_show, NULL);
 
 static struct debugfs_file qos_debugfs_files[] = {
 	{"ver", &PP_DEBUGFS_FOPS(qos_ver)},
@@ -2661,6 +2816,8 @@ static struct debugfs_file aqm_debugfs_files[] = {
 	{"enable", &PP_DEBUGFS_FOPS(aqm_enable)},
 	{"cfg", &PP_DEBUGFS_FOPS(aqm_cfg)},
 	{"dbg", &PP_DEBUGFS_FOPS(aqm_dbg)},
+	{"sf_stats", &PP_DEBUGFS_FOPS(aqm_sf_stats)},
+	{"sf_pps", &PP_DEBUGFS_FOPS(aqm_sf_pps)},
 };
 
 #define MAX_DIR_NAME 11

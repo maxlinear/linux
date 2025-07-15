@@ -10,8 +10,10 @@
 
 #define CODEL_DFLT_TARGET_DELAY_MSEC	(5)
 #define CODEL_DFLT_INTERVAL_TIME_MSEC	(100)
+/* codel limit is set to 1000 by default in sch_codel.c */
+#define DEFAULT_CODEL_LIMIT	(1000)
 #define QOS_HAL_QWRED_MIN_GUARANTEED	(64)
-#define QOS_HAL_QWRED_MAX_ALLOWED	(1024)
+#define QOS_HAL_QWRED_MAX_ALLOWED	(3072)
 
 static int qos_tc_codel_remove(struct net_device *dev, u32 handle, u32 parent)
 {
@@ -77,7 +79,8 @@ int qos_tc_codel_add(struct qos_tc_qdisc *sch, struct qos_tc_q_data *qdata,
 	q_cfg.min_size[0] = 0;
 	q_cfg.min_size[1] = 0;
 	q_cfg.wred_min_guaranteed = QOS_HAL_QWRED_MIN_GUARANTEED;
-	q_cfg.wred_max_allowed = QOS_HAL_QWRED_MAX_ALLOWED;
+	q_cfg.wred_max_allowed = (opt->cparams.limit != DEFAULT_CODEL_LIMIT) ? opt->cparams.limit :
+		QOS_HAL_QWRED_MAX_ALLOWED;
 	if (dp_queue_conf_set(&q_cfg, 1) != DP_SUCCESS) {
 		netdev_err(sch->dev, "%s: dp_queue_conf_set failed\n", __func__);
 		return -EINVAL;
@@ -169,6 +172,12 @@ int qos_tc_codel_offload(struct net_device *dev,
 {
 	int ret = 0;
 	struct tc_codel_qopt_offload *opt = type_data;
+
+	/* CoDel is not supported on PON vUNI due to FSQM buffer issues */
+	if (qos_tc_is_vuni_dev(dev)) {
+		netdev_err(dev, "CoDel is not supported on PON vUNI interface\n");
+		return -EOPNOTSUPP;
+	}
 
 	switch (opt->command) {
 	case TC_CODEL_REPLACE:

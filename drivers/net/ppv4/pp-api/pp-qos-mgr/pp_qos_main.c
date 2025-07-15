@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -43,7 +43,14 @@ u64 qos_wred_base_addr;
 
 #define QOS_RC_SKIP_CMDS (0xFCFC)
 
+#define QOS_MAX_AQM_WRED_MAX_ALLOWED        (0x2000)
+#define QOS_MAX_AQM_WRED_MAX_ALLOWED_AQM_SW (0x4000)
+
 /* #define QOS_ASSERT_UPON_FAILURE */
+
+#define QOS_WRED_ACTIVE_BUFFER_THRESHOLD  (50000)
+#define QOS_WRED_ACTIVE_MSR_THRESHOLD     (125000)
+#define QOS_WRED_BUFFER_REDUCE_PERCENTAGE (86)
 
 void stop_run(void)
 {
@@ -2829,6 +2836,7 @@ static s32 __qos_queue_stat_get(struct pp_qos_dev *qdev, u32 id,
 		goto out;
 	}
 
+	stat->queue_average_size_bytes = qstat.queue_average_size_bytes;
 	stat->queue_packets_occupancy = qstat.queue_size_entries;
 	stat->queue_bytes_occupancy = qstat.queue_size_bytes;
 	stat->total_packets_accepted = qstat.total_accepts;
@@ -3024,19 +3032,11 @@ s32 __qos_aqm_rlms_attach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 	/* Iterate through queue list */
 	for (queue_idx = 0; queue_idx < sf_cfg->num_queues; queue_idx++) {
 		node = get_conform_node(qdev,
-					sf_cfg->queue_id[queue_idx],
+					sf_cfg->queue[queue_idx].id,
 					node_queue);
 		if (unlikely(!node)) {
 			QOS_LOG_ERR("SF %u. queue %u invalid\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
-			rc = -EINVAL;
-			goto out;
-		}
-
-		/* WRED is not allowed in parallel to AQM */
-		if (QOS_BITS_IS_SET(node->flags, NODE_FLAGS_QUEUE_WRED_EN)) {
-			QOS_LOG_ERR("SF %u. queue %u wred is enabled\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}
@@ -3050,23 +3050,49 @@ s32 __qos_aqm_rlms_attach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 
 		/* Set max allowed to support AQM buffer */
 		rc = _pp_qos_queue_conf_get(qdev,
-					    sf_cfg->queue_id[queue_idx],
+					    sf_cfg->queue[queue_idx].id,
 					    &conf);
 		if (unlikely(rc)) {
 			QOS_LOG_ERR("SF %u. queue %u conf get failed\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}
 
-		/* Handle worst case in which all buffers are 64 bytes long */
-		conf.wred_max_allowed = sf_cfg->buffer_size >> 6;
+		/* adjustments for buffer control - skip management queue */
+		if (sf_cfg->queue[queue_idx].type != PP_QOS_SF_QUEUE_TYPE_MGMT) {
+			if (sf_cfg->buffer_size < QOS_WRED_ACTIVE_BUFFER_THRESHOLD) {
+				conf.common_prop.max_burst = 0; /* configure queue quanta */
+				conf.wred_enable = 1;
+				conf.wred_slope_green = 100;
+				conf.wred_max_avg_green = (sf_cfg->buffer_size *
+								QOS_WRED_BUFFER_REDUCE_PERCENTAGE) / 100;
+				conf.wred_min_avg_green = (sf_cfg->buffer_size *
+								QOS_WRED_BUFFER_REDUCE_PERCENTAGE) / 100;
+				/* set queue bw limit from sf in kbit */
+				conf.common_prop.bandwidth_limit =
+								(sf_cfg->cfg.aqm_cfg.msr * 8) / 1024;
+			}
+		}
+
+		if (qdev->init_params.aqm_engine == PP_AQM_SW &&
+		    sf_cfg->aqm_mode == PP_QOS_AQM_MODE_NORMAL) {
+			conf.wred_max_allowed = min_t(u32,
+						      sf_cfg->buffer_size >> 6,
+						      QOS_MAX_AQM_WRED_MAX_ALLOWED_AQM_SW);
+		} else {
+			/* Handle worst case in which all buffers are 64 bytes long */
+			conf.wred_max_allowed = min_t(u32,
+						      sf_cfg->buffer_size >> 6,
+						      QOS_MAX_AQM_WRED_MAX_ALLOWED);
+		}
+
 		rc = _pp_qos_queue_set(qdev,
-				       sf_cfg->queue_id[queue_idx],
+				       sf_cfg->queue[queue_idx].id,
 				       &conf, QOS_INVALID_RLM);
 		if (unlikely(rc)) {
 			QOS_LOG_ERR("SF %u. queue %u conf get failed\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}
@@ -3190,6 +3216,71 @@ out:
 }
 EXPORT_SYMBOL(pp_qos_aqm_lld_sf_set);
 
+/**
+ * pp_qos_pci_addr_set() - set pci ready state & reg address in qos fw
+ * @qos_dev:  handle to qos dev instance obtained previously from qos_dev_init
+ * @pci_addr: addr structure holding register address
+ * Return: 0 on success
+ */
+s32 pp_qos_pci_addr_set(struct pp_qos_dev *qdev, struct pp_qos_pci_addr *pci_addr)
+{
+	s32 rc = 0;
+
+	QOS_LOG_API_DEBUG("set pci address in qos fw\n");
+
+	if (unlikely(ptr_is_null(qdev)) || unlikely(ptr_is_null(pci_addr)))
+		return -EINVAL;
+
+	QOS_LOCK(qdev);
+	PP_QOS_ENTER_FUNC();
+	if (!qos_device_ready(qdev)) {
+		rc = -EINVAL;
+		goto out;
+	}
+	create_set_pci_addr_cmd(qdev, pci_addr);
+	update_cmd_id(&qdev->drvcmds);
+	rc = transmit_cmds(qdev);
+out:
+	QOS_UNLOCK(qdev);
+	return rc;
+}
+EXPORT_SYMBOL(pp_qos_pci_addr_set);
+
+/**
+ * pp_qos_set_aqm_engine() - function set the aqm engine type in the QOS FW
+ * @qos_dev:  handle to qos dev instance obtained previously from qos_dev_init
+ * @aqm_engine: hw or sw engine
+ * Return: 0 on success
+ */
+s32 pp_qos_set_aqm_engine(struct pp_qos_dev *qdev, u8 aqm_engine)
+{
+	s32 rc = 0;
+
+	QOS_LOG_API_DEBUG("set aqm engine in qos fw\n");
+
+	if (unlikely(ptr_is_null(qdev)))
+		return -EINVAL;
+
+	if (aqm_engine != PP_AQM_SW && aqm_engine != PP_AQM_HW) {
+		QOS_LOG_ERR("Invalid AQM engine value: %u\n", aqm_engine);
+		return -EINVAL;
+	}
+
+	QOS_LOCK(qdev);
+	PP_QOS_ENTER_FUNC();
+	if (!qos_device_ready(qdev)) {
+		rc = -EINVAL;
+		goto out;
+	}
+	create_set_aqm_engine_cmd(qdev, aqm_engine);
+	update_cmd_id(&qdev->drvcmds);
+	rc = transmit_cmds(qdev);
+out:
+	QOS_UNLOCK(qdev);
+	return rc;
+}
+EXPORT_SYMBOL(pp_qos_set_aqm_engine);
+
 s32 __qos_aqm_rlms_dettach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 			       struct pp_qos_aqm_lld_sf_config *sf_cfg)
 {
@@ -3200,11 +3291,11 @@ s32 __qos_aqm_rlms_dettach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 
 	for (queue_idx = 0; queue_idx < sf_cfg->num_queues; queue_idx++) {
 		node = get_conform_node(qdev,
-					sf_cfg->queue_id[queue_idx],
+					sf_cfg->queue[queue_idx].id,
 					node_queue);
 		if (unlikely(!node)) {
 			QOS_LOG_ERR("SF %u. queue %u invalid\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}
@@ -3215,22 +3306,22 @@ s32 __qos_aqm_rlms_dettach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 
 		/* Set max allowed to support AQM buffer */
 		rc = _pp_qos_queue_conf_get(qdev,
-					    sf_cfg->queue_id[queue_idx],
+					    sf_cfg->queue[queue_idx].id,
 					    &conf);
 		if (unlikely(rc)) {
 			QOS_LOG_ERR("SF %u. queue %u conf get failed\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}
 
 		conf.wred_max_allowed = WRED_MAX_ALLOWED_DEFAULT;
 		rc = _pp_qos_queue_set(qdev,
-				       sf_cfg->queue_id[queue_idx],
+				       sf_cfg->queue[queue_idx].id,
 				       &conf, QOS_INVALID_RLM);
 		if (unlikely(rc)) {
 			QOS_LOG_ERR("SF %u. queue %u conf get failed\n",
-				    sf_id, sf_cfg->queue_id[queue_idx]);
+				    sf_id, sf_cfg->queue[queue_idx].id);
 			rc = -EINVAL;
 			goto out;
 		}

@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
+#include <linux/kmemleak.h>
 #include <linux/of_dma.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
@@ -879,6 +880,11 @@ ldma_chan_desc_cfg(struct dma_chan *chan, dma_addr_t desc_base, int desc_num)
 	ds = kzalloc(sizeof(*ds), GFP_NOWAIT);
 	if (!ds)
 		return NULL;
+
+	/* As the pointer "ds" is not directly stored, tell kmemleak to ignore
+	 * it to avoid bad reports.
+	 */
+	kmemleak_not_leak(ds);
 
 	tx = &ds->vdesc.tx;
 	dma_async_tx_descriptor_init(tx, chan);

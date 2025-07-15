@@ -11,7 +11,7 @@
 #include <net/tc_act/tc_vlan.h>
 #include <net/datapath_api.h>
 #include <net/flow_dissector.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_trace.h"
 
@@ -325,69 +325,6 @@ void qos_tc_skbedit_storage_del(struct net_device *dev,
 	kfree(node);
 }
 
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-int qos_tc_skbedit_action_check(struct flow_cls_offload *f,
-				int *tc, u8 *vlan_act,
-				struct replic_key *cookie)
-{
-	const struct tc_action *a;
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
-	int i;
-#endif
-	int act_nr = 0;
-	int act_ok_nr = 0;
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (tc_no_actions(f->exts))
-#else
-	if (!tcf_exts_has_actions(f->exts))
-#endif
-		return -EINVAL;
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		if (is_tcf_skbedit_priority(a)) {
-			act_ok_nr++;
-			if (tc)
-				*tc = tcf_skbedit_priority(a);
-
-			if (a->act_cookie) {
-				u8 *p = a->act_cookie->data;
-				u32 len = a->act_cookie->len;
-
-				if (len <= sizeof(u64)) {
-					pr_warn("%s: cookie too short!\n",
-						__func__);
-					continue;
-				}
-
-				cookie->hi = get_unaligned_be64(p);
-				cookie->lo = get_unaligned_be64(p + 8);
-			}
-		}
-
-		if (is_tcf_vlan(a)) {
-			if (tcf_vlan_action(a) == TCA_VLAN_ACT_POP ||
-			    tcf_vlan_action(a) == TCA_VLAN_ACT_PUSH) {
-				act_ok_nr++;
-				*vlan_act = tcf_vlan_action(a);
-			}
-		}
-		act_nr++;
-	}
-
-	if (act_nr > 2 || act_ok_nr > 2)
-		return -EINVAL;
-
-	return 0;
-}
-#else
 int qos_tc_skbedit_action_check(struct flow_cls_offload *f,
 				int *tc, u8 *vlan_act,
 				struct replic_key *cookie)
@@ -436,7 +373,6 @@ int qos_tc_skbedit_action_check(struct flow_cls_offload *f,
 
 	return 0;
 }
-#endif
 
 static void qos_tc_skbedit_parse_stag_vlan(struct flow_cls_offload *f,
 					   struct flower_skbedit_rule **rule)
@@ -509,9 +445,7 @@ static int qos_tc_parse_skbedit(struct flow_cls_offload *f,
 	if (d->used_keys &
 			~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
 			  BIT(FLOW_DISSECTOR_KEY_BASIC) |
-#if (KERNEL_VERSION(5, 3, 0) <= LINUX_VERSION_CODE)
 			  BIT(FLOW_DISSECTOR_KEY_META) |
-#endif
 			  BIT(FLOW_DISSECTOR_KEY_VLAN) |
 			  BIT(FLOW_DISSECTOR_KEY_CVLAN))) {
 		pr_debug("%s: Unsupported key used: 0x%x\n", __func__,
@@ -525,11 +459,7 @@ static int qos_tc_parse_skbedit(struct flow_cls_offload *f,
 
 	netdev_dbg(skbedit->dev, "skbedit rule created: %p\n", *rule);
 
-#if (KERNEL_VERSION(5, 3, 0) > LINUX_VERSION_CODE)
-	(*rule)->skbedit_act.pref = f->common.prio >> 16;
-#else
 	(*rule)->skbedit_act.pref = f->common.prio;
-#endif
 	qos_tc_pattern_init(&((*rule)->vlan.outer));
 	qos_tc_pattern_init(&((*rule)->vlan.inner));
 	(*rule)->skbedit_act.tc = tc;

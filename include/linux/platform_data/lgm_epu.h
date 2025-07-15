@@ -82,6 +82,7 @@ int epu_adp_lvl_notify_register(struct notifier_block *nb);
 int epu_adp_lvl_notify_unregister(struct notifier_block *nb);
 int epu_rcu_notify_register(struct notifier_block *nb);
 int epu_rcu_notify_unregister(struct notifier_block *nb);
+raw_spinlock_t *epu_i2c_raw_spinlock(void);
 #else
 static inline int epu_notifier_raw_chain(unsigned long val, void *v)
 {
@@ -111,6 +112,13 @@ static inline int epu_rcu_notify_register(struct notifier_block *nb)
 static inline int epu_rcu_notify_unregister(struct notifier_block *nb)
 {
         return 0;
+}
+
+static raw_spinlock_t *epu_i2c_raw_spinlock(void)
+{
+	static DEFINE_RAW_SPINLOCK(pseudo_i2c_lock);
+
+	return &pseudo_i2c_lock;
 }
 #endif /* CONFIG_LGM_EPU */
 

@@ -39,8 +39,8 @@ enum sgam_meter_types {
 struct sgam_stats_info {
 	__u64 packets; /*! number of packets */
 	__u64 bytes; /*! number of bytes */
-	__u64 ing_droped_bytes; /* number of ingress dropped bytes */
-	__u64 egr_droped_bytes; /* number of egress dropped bytes */
+	__u64 ing_dropped_bytes; /* number of ingress dropped bytes */
+	__u64 egr_dropped_bytes; /* number of egress dropped bytes */
 };
 
 enum sgam_ioctl_cmd_nr {

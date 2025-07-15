@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -609,6 +609,9 @@ enum cmd_type {
 	CMD_TYPE_INTERNAL,
 	CMD_TYPE_GET_VERSION,
 	CMD_TYPE_GET_HIST_STATS,
+	CMD_TYPE_AQM_Q_TO_CTX,
+	CMD_TYPE_SET_PCI_ADDR,
+	CMD_TYPE_SET_AQM_ENGINE,
 	CMD_TYPE_LAST
 };
 
@@ -651,7 +654,10 @@ static const char *const cmd_str[] = {
 	[CMD_TYPE_GET_MOD_LOG_BMAP] = "CMD_TYPE_GET_MOD_LOG_BMAP",
 	[CMD_TYPE_INTERNAL] = "CMD_TYPE_INTERNAL",
 	[CMD_TYPE_GET_VERSION] = "CMD_TYPE_GET_VERSION",
-	[CMD_TYPE_GET_HIST_STATS] = "CMD_TYPE_GET_HIST_STATS"
+	[CMD_TYPE_GET_HIST_STATS] = "CMD_TYPE_GET_HIST_STATS",
+	[CMD_TYPE_AQM_Q_TO_CTX] = "CMD_TYPE_AQM_Q_TO_CTX",
+	[CMD_TYPE_SET_PCI_ADDR] = "CMD_TYPE_SET_PCI_ADDR",
+	[CMD_TYPE_SET_AQM_ENGINE] = "CMD_TYPE_SET_AQM_ENGINE",
 };
 
 /******************************************************************************/
@@ -858,6 +864,20 @@ struct cmd_get_wsp_helper_stats {
 	struct fw_cmd_wsp_helper_stats fw;
 } __attribute__((packed));
 
+struct cmd_aqm_q_to_ctx {
+	struct cmd base;
+	struct fw_cmd_aqm_q_to_ctx fw;
+} __attribute__((packed));
+
+struct cmd_set_pci_addr {
+	struct cmd base;
+	struct fw_cmd_set_pci_addr fw;
+} __attribute__((packed));
+
+struct cmd_set_aqm_engine {
+	struct cmd base;
+	struct fw_cmd_set_aqm_engine fw;
+} __attribute__((packed));
 
 struct cmd_get_version {
 	struct cmd base;
@@ -902,6 +922,7 @@ union driver_cmd {
 	struct cmd_get_wsp_helper_stats get_wsp_helper_stats;
 	struct cmd_internal            internal;
 	struct cmd_get_hist_stats      hist_stats;
+	struct cmd_aqm_q_to_ctx        aqm_q_to_ctx;
 } __attribute__((packed));
 
 /******************************************************************************/
@@ -1516,6 +1537,8 @@ void create_init_qos_cmd(struct pp_qos_dev *qdev)
 	cmd.fw.bwl_ddr_base = (u32)qdev->hwmem.bwl_ddr_phys;
 	cmd.fw.sbwl_ddr_base = (u32)qdev->hwmem.sbwl_ddr_phys;
 	cmd.fw.wsp_queues_ddr_base = (u32)qdev->hwmem.wsp_queues_ddr_phys;
+	cmd.fw.aqm_engine = qdev->init_params.aqm_engine;
+
 #ifdef CONFIG_PPV4_HW_MOD_REGS_LOGS
 	cmd.fw.mod_reg_log_en = CONFIG_PPV4_HW_MOD_REGS_LOGS_EN & UC_MOD_ALL;
 #else
@@ -1527,6 +1550,8 @@ void create_init_qos_cmd(struct pp_qos_dev *qdev)
 	cmd.fw.chk_crawler_prescale_addr =
 		fat_addr_trans(qdev, chk_crawler_prescaler_phys_addr_get());
 	cmd.fw.egress_uc_prescale_addr =
+		fat_addr_trans(qdev, uc_egr_cnt64_tmr_ticks_phys_get());
+	cmd.fw.egress_uc_tdox_timer_addr =
 		fat_addr_trans(qdev, uc_egr_tdox_tmr_ticks_phys_get());
 	cmd.fw.codel_target = CODEL_DFLT_TARGET_DELAY_MSEC;
 	cmd.fw.codel_interval = CODEL_DFLT_INTERVAL_TIME_MSEC;
@@ -2633,8 +2658,6 @@ void create_aqm_sf_set_cmd(struct pp_qos_dev *qdev, u8 sf_id, u8 enable,
 	cmd.fw.peak_rate = sf_cfg->cfg.aqm_cfg.peak_rate;
 	cmd.fw.msr = sf_cfg->cfg.aqm_cfg.msr;
 	cmd.fw.buffer_size = sf_cfg->buffer_size;
-	cmd.fw.msrtokens_addr_offset =
-		FW_DCCM_START + PPV4_QOS_AQM_BUF_OFFSET + (sizeof(u32) * sf_id);
 	cmd.fw.num_rlms = sf_cfg->num_queues;
 	cmd.fw.coupled_sf = sf_cfg->coupled_sf;
 	cmd.fw.llsf = sf_cfg->llsf;
@@ -2911,6 +2934,62 @@ void create_mcdma_copy_cmd(struct pp_qos_dev *qdev, u32 src, u32 dst, u32 sz)
 	cmd.fw.size = sz;
 
 	qdev->init_params.fwcom.wait_on_complete = 1;
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+}
+
+void create_aqm_q_to_ctx_cmd(struct pp_qos_dev *qdev, u32 op, u32 queue, u32 ctx)
+{
+	struct cmd_aqm_q_to_ctx cmd;
+
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_AQM_Q_TO_CTX,
+		 sizeof(cmd), 0, NULL, 0, 0);
+	cmd.fw.base.type = UC_QOS_CMD_AQM_Q_TO_CTX;
+	cmd.fw.op = op;
+	cmd.fw.qid = queue;
+	cmd.fw.ctx = ctx;
+
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+}
+
+void create_set_pci_addr_cmd(struct pp_qos_dev *qdev, struct pp_qos_pci_addr *pci_addr)
+{
+	struct cmd_set_pci_addr cmd;
+
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_SET_PCI_ADDR,
+		 sizeof(cmd), 0, NULL, 0, 0);
+	cmd.fw.base.type = UC_QOS_CMD_SET_PCI_ADDR;
+	cmd.fw.pci_addr.msrtoken_addr = pci_addr->msrtoken_addr;
+
+	QOS_LOG_DEBUG("cmd %u: UC_QOS_CMD_SET_PCI_ADDR\n",
+		      qdev->drvcmds.cmd_id);
+
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+}
+
+void create_set_aqm_engine_cmd(struct pp_qos_dev *qdev, u8 aqm_engine)
+{
+	struct cmd_set_aqm_engine cmd;
+
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_SET_AQM_ENGINE,
+		 sizeof(cmd), 0, NULL, 0, 0);
+	cmd.fw.base.type = UC_QOS_CMD_SET_AQM_ENGINE;
+	cmd.fw.aqm_engine = (u32)aqm_engine;
+
+	QOS_LOG_DEBUG("cmd %u: UC_QOS_CMD_SET_AQM_ENGINE\n",
+		      qdev->drvcmds.cmd_id);
+
 	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
 }
 

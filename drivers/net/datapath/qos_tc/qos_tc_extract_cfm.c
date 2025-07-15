@@ -11,7 +11,6 @@
 #include <net/tc_act/tc_mirred.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/tc_act/tc_sample.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_extract_cfm.h"
 #include "../dp_oam/dp_oam.h"

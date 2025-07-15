@@ -49,7 +49,7 @@ const char * const np_logic_str[NP_LOGICS_NUM] = {
 	"IPV4",
 	"IPV6",
 	"IP_SEL",
-	"IPV4_2",
+	"IPV4_2_L2TP",
 	"IPV6_2",
 	"UDP",
 	"END",

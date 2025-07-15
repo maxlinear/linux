@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -67,6 +67,8 @@
  * @TDOX_SUPP specifying if session support ack suppression
  * @REMARK specifying if session supports dscp remarking
  * @LLD    specifying if session is a LLD session
+ * @LRO    specifying if this is LRO session
+ * @AQM_SW specifying if SW AQM should be enabled for this session
  */
 enum smgr_sess_flags {
 	SESS_FLAG_ROUTED,
@@ -78,6 +80,7 @@ enum smgr_sess_flags {
 	SESS_FLAG_REMARK,
 	SESS_FLAG_LLD,
 	SESS_FLAG_LRO,
+	SESS_FLAG_AQM_SW,
 	SMGR_FLAGS_NUM,
 };
 
@@ -168,7 +171,8 @@ enum smgr_sess_flags {
  */
 #define SESS_RX_IS_OUTER_MAC(s)       PKTPRS_IS_MAC(SESS_RX_PKT(s), HDR_OUTER)
 #define SESS_TX_IS_OUTER_MAC(s)       PKTPRS_IS_MAC(SESS_TX_PKT(s), HDR_OUTER)
-
+#define SESS_RX_IS_INNER_MAC(s)       PKTPRS_IS_MAC(SESS_RX_PKT(s), HDR_INNER)
+#define SESS_TX_IS_INNER_MAC(s)       PKTPRS_IS_MAC(SESS_TX_PKT(s), HDR_INNER)
 
 /**
  * @brief Shortcuts for checking if session is pppoe
@@ -178,6 +182,13 @@ enum smgr_sess_flags {
 #define SESS_TX_IS_OUTER_PPPOE(s)     PKTPRS_IS_PPPOE(SESS_TX_PKT(s), HDR_OUTER)
 #define SESS_RX_IS_INNER_PPPOE(s)     PKTPRS_IS_PPPOE(SESS_RX_PKT(s), HDR_INNER)
 #define SESS_TX_IS_INNER_PPPOE(s)     PKTPRS_IS_PPPOE(SESS_TX_PKT(s), HDR_INNER)
+
+/**
+ * @brief Shortcuts for checking if session is mpls
+ * @param s session info pointer
+ */
+#define SESS_RX_IS_OUTER_MPLS(s)      PKTPRS_MPLS_EXIST(SESS_RX_PKT(s), HDR_OUTER)
+#define SESS_TX_IS_OUTER_MPLS(s)      PKTPRS_MPLS_EXIST(SESS_TX_PKT(s), HDR_OUTER)
 
 /**
  * @brief Shortcuts for checking if session is ipv4
@@ -536,6 +547,7 @@ struct smgr_database {
 	enum smgr_frag_mode frag_mode;
 	bool open_frag_sess;
 	bool open_lld_sess;
+	bool syncq_en;
 	void *tdox_db;
 	void *sq_db;
 	void *mcast_db;
@@ -668,32 +680,33 @@ struct si_ud_frag_remark_info {
 } __packed;
 
 /**
- * @define LLD_INFO_FLAG defines, used with struct si_ud_lld_info.flags
+ * @define LLD_INFO_FLAG defines, used with struct struct si_ud_aqm_lld_info {
+.flags
  */
-#define LLD_INFO_FLAG_OUT_IPV4       (BIT(0))
+#define AQM_LLD_INFO_FLAG_OUT_IPV4       (BIT(0))
+#define AQM_LLD_INFO_FLAG_AQM_SW         (BIT(1))
+#define AQM_LLD_INFO_FLAG_LLD_PKT        (BIT(2))
 
 /**
- * struct si_ud_lld_info - LLD info
+ * struct si_aqm_lld_bc_info - SW AQM/LLD ctrl info
  *
- * This structure defines the LLD information saved
+ * This structure defines the LLD/buffer control information saved
  * in the si ud right after the ps (Starts at si.ud + PP_PS_REGION_SZ).
  * Used in the LLD uc
  */
-struct si_ud_lld_info {
+struct si_ud_aqm_lld_info {
+	/*! Service Flow ID */
+	u32 sf_id;
 	/*! Destination queue */
 	u16 dst_q;
-
-	/*! classic queue */
+	/*! classic queue (for sunction)*/
 	u16 dst_cq;
-
-	/*! LLD Context - total supported contexts is 8 (0 - 7) */
-	u8  ctx;
-
-	/*! Outer L3 offset */
-	u8  l3_off;
-
 	/*! flags */
 	u8  flags;
+	/*! Outer L3 offset */
+	u8  l3_off;
+	/*! LLD Context - total supported contexts is 8 (0 - 7) */
+	u8  lld_ctx_id;
 } __packed;
 
 /**
@@ -869,7 +882,15 @@ s32 smgr_sgc_sessions_bmap_get(u8 grp, u16 cntr, ulong *bmap, u32 n_bits);
 s32 smgr_get_queue_phy_id(u16 logical, u16 *physical);
 
 /**
- * @brief Update a PP session
+ * @brief Update a PP session without lock - internal
+ * @param sess_id session id to update
+ * @param si new si
+ * @return s32 0 on success update, error code otherwise
+ */
+s32 __smgr_session_update(u32 sess_id, struct pp_hw_si *hw_si);
+
+/**
+ * @brief Update a PP session (with lock)
  * @param sess_id session id to update
  * @param si new si
  * @return s32 0 on success update, error code otherwise
@@ -883,9 +904,10 @@ s32 smgr_session_update(u32 sess_id, struct pp_hw_si *hw_si);
  * @note exported internally only for debufs
  * @param session session id
  * @param dst_queue_id dst queue id
+ * @param sig hash signature
  * @return s32 0 on success, error code otherwise
  */
-s32 sq_alloc(u32 session, u32 dst_queue_id);
+s32 sq_alloc(u32 session, u32 dst_queue_id, u32 sig);
 
 /**
  * @brief allocate new syncq
@@ -934,18 +956,20 @@ s32 smgr_sq_del(struct sess_db_entry *ent);
 void smgr_sq_dbg_dump(void);
 
 /**
- * @brief get the "synch timeout" in micro sec units
+ * @brief get the "lspp rcv timeout" in micro sec units
  * @note debug only
+ * @note lspp: Last Slow Path Packet
  * @param tout timeout
  */
-void smgr_sq_dbg_sync_tout_get(u32 *tout);
+void smgr_sq_dbg_lspp_rcv_tout_get(u32 *tout);
 
 /**
- * @brief set the "synch timeout" in micro sec units
+ * @brief set the "lspp rcv timeout" in micro sec units
  * @note debug only
+ * @note lspp: Last Slow Path Packet
  * @param tout timeout
  */
-void smgr_sq_dbg_sync_tout_set(u32  tout);
+void smgr_sq_dbg_lspp_rcv_tout_set(u32  tout);
 
 /**
  * @brief get the "done timeout" in micro sec units
@@ -962,20 +986,20 @@ void smgr_sq_dbg_done_tout_get(u32 *tout);
 void smgr_sq_dbg_done_tout_set(u32  tout);
 
 /**
- * @brief get the "lspp timeout" in micro sec units
+ * @brief get the "lspp sent timeout" in micro sec units
  * @note debug only
  * @note lspp: Last Slow Path Packet
  * @param tout timeout
  */
-void smgr_sq_dbg_lspp_tout_get(u32 *tout);
+void smgr_sq_dbg_lspp_sent_tout_get(u32 *tout);
 
 /**
- * @brief set the "lspp timeout" in micro sec units
+ * @brief set the "lspp sent timeout" in micro sec units
  * @note debug only
  * @note lspp: Last Slow Path Packet
  * @param tout timeout
  */
-void smgr_sq_dbg_lspp_tout_set(u32  tout);
+void smgr_sq_dbg_lspp_sent_tout_set(u32  tout);
 
 /**
  * @brief get the max qlen
@@ -1077,6 +1101,13 @@ s32 smgr_tdox_init(struct device *dev, struct smgr_database *smgr_db);
  */
 void smgr_tdox_nf_set(u16 phyq);
 
+/**
+ * @brief Set the tdox timeout
+ * @param tout tdox timeout
+ * @return s32 0 on success, error code otherwise
+ */
+s32 smgr_tdox_tout_set(u32 tout);
+
 void smgr_si_tdox_set(struct sess_info * s);
 
 /**
@@ -1096,7 +1127,7 @@ void smgr_tdox_session_remove(struct sess_db_entry *sess_db);
  * @brief set tdox conf parameters
  * @param tdox conf
  */
-s32 smgr_tdox_conf_set(struct smgr_tdox_conf params);
+s32 smgr_tdox_conf_set(struct smgr_tdox_conf *conf);
 
 /**
  * @brief get tdox conf parameters
@@ -1198,6 +1229,19 @@ s32 smgr_state_set(enum smgr_state state);
  * @return enum smgr_state
  */
 enum smgr_state smgr_state_get(void);
+
+/**
+ * @brief Set PP session manager syncq (enable/disable)
+ * @param enable enable/disable
+ * @return s32 0 on successful, error code otherwise
+ */
+s32 smgr_syncq_set(bool enable);
+
+/**
+ * @brief Get session manager syncq state
+ * @return true/false
+ */
+bool smgr_syncq_get(void);
 
 /**
  * @brief Open next sessions as frag sessions

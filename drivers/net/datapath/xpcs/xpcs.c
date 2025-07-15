@@ -29,6 +29,7 @@
 #include <linux/clk.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
+#include <linux/firmware.h>
 #include "xpcs.h"
 #include "xpcs_regs.h"
 #if IS_ENABLED(CONFIG_MXL_P34X_FWDL)
@@ -54,6 +55,7 @@
 #define XPCS_SLAVE		"slave"
 #define XPCS_MPLLB		"mpllb"
 #define XPCS_WAN_WA		"wan_wa"
+#define XPCS_E16_FW_NAME	"e16_fw_name"
 
 #define XPCS_RX_ATTN_LVL	"rx_attn_lvl"
 #define XPCS_CTLE_BOOST		"rx_ctle_boost"
@@ -978,6 +980,66 @@ static void xpcs_set_mode(struct xpcs_prv_data *pdata, u32 mode)
 
 	dev_dbg(pdata->dev, "%s: %s c10_hw: %d\n",
 		pdata->name, __func__, xpcs_hw_is_c10(pdata));
+}
+
+static int xpcs_cr_busy(struct xpcs_prv_data *pdata)
+{
+	int i;
+
+	for (i = 0; i < MAX_BUSY_RETRY; i++) {
+		if (!(XPCS_RGRD(pdata, PMA_SNPS_CR_CTRL) &
+		      BIT(PMA_SNPS_CR_CTRL_START_BUSY_POS)))
+			return 0;
+		usleep_range(1, 2);
+	}
+
+	dev_err(pdata->dev, "CR Port busy\n");
+
+	return -EBUSY;
+}
+
+static int xpcs_cr_access(struct xpcs_prv_data *pdata, u32 addr,
+			  u32 data, u32 write)
+{
+	u32 val = 0;
+
+	if (!xpcs_cr_busy(pdata)) {
+		XPCS_RGWR(pdata, PMA_SNPS_CR_ADDR, addr);
+		if (write)
+			XPCS_RGWR(pdata, PMA_SNPS_CR_DATA, data);
+
+		XPCS_SET_VAL(val, PMA_SNPS_CR_CTRL, WR_RDN, write);
+		XPCS_SET_VAL(val, PMA_SNPS_CR_CTRL, START_BUSY, 1);
+		XPCS_RGWR(pdata, PMA_SNPS_CR_CTRL, val);
+
+		if (!xpcs_cr_busy(pdata) && !write)
+			val = XPCS_RGRD(pdata, PMA_SNPS_CR_DATA);
+	}
+
+	return val;
+}
+
+static void sram_ld_fw(struct xpcs_prv_data *pdata)
+{
+	int i, ret;
+	u16 *fw_data;
+	u32 cr_addr;
+	const struct firmware *fw;
+
+	ret = request_firmware(&fw, pdata->e16_fw_name, pdata->dev);
+	if (ret) {
+		dev_err(pdata->dev, "failed to load e16 fw: %s\n", pdata->e16_fw_name);
+		return;
+	}
+
+	fw_data = (u16 *)fw->data;
+	for (i = 0; i < fw->size/2; i++) {
+		cr_addr = E16_RAWMEM_DIG_RAM_CMN0_B0_R0 + i;
+		xpcs_cr_access(pdata, cr_addr, fw_data[i], 1);
+	}
+
+	release_firmware(fw);
+	dev_dbg(pdata->dev, "E16 FW loading done\n");
 }
 
 static int sram_init_chk(struct xpcs_prv_data *pdata)
@@ -2374,6 +2436,8 @@ static int xpcs_init(struct xpcs_prv_data *pdata)
 		ret = sram_init_chk(pdata);
 		if (ret)
 			goto EXIT;
+		if (pdata->e16_fw_name)
+			sram_ld_fw(pdata);
 		sram_ext_ld_done(pdata, 1);
 	}
 
@@ -2751,6 +2815,8 @@ static int xpcs_parse_dts(struct platform_device *pdev,
 
 	if (!device_property_read_u32(dev, XPCS_WAN_WA, &prop))
 		pdata->wan_wa = prop;
+
+	device_property_read_string(dev, XPCS_E16_FW_NAME, &pdata->e16_fw_name);
 
 	memcpy(&pdata->lane_cfg[0], lane_cfg_tbl, sizeof(pdata->lane_cfg));
 	xpcs_update_cfg(dev, &pdata->lane_cfg[0]);

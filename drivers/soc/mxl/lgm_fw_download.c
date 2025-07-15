@@ -123,12 +123,10 @@ static void *lgm_fw_dl_request_buf(size_t size, struct mxl_fw_dl_data *data)
 	else
 		allocdata.perm = FW_READ_ONLY;
 
-	addr = gen_pool_alloc_algo(fwdl->pool, size,
-				   mxl_soc_pool_algo, &allocdata);
+	addr = mxl_soc_pool_alloc(fwdl->pool, size, &allocdata);
 	if (!addr)
 		dev_err(fwdl->dev, "Failed to allocate size: 0x%lx from genpool\n",
 			size);
-
 	return (void *)addr;
 }
 

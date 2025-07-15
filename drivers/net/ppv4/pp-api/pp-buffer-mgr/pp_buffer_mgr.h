@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -128,6 +128,14 @@ s32 bmgr_config_set(const struct pp_bmgr_init_param * const cfg);
  * @return 0 on success, other error code on failure
  */
 s32 pp_bmgr_config_get(struct pp_bmgr_init_param * const cfg);
+
+/**
+ * @brief Get the SSB policy for LRO uc
+ * @param policy_id
+ * @return 0 on success, other error code on failure
+ * @note This function is used by the LRO UC to get the SSB policy
+ */
+s32 pp_bmgr_ssb_policy_get(u32 *policy_id);
 
 /**
  * @brief Get group database info

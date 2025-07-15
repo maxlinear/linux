@@ -157,14 +157,16 @@ static int intel_deassert_device(struct reset_controller_dev *rcdev,
 	int epuid;
 	int ret;
 
-	if (!intel_reset_status(rcdev, id))
+	if (!intel_reset_status(rcdev, id)) {
+		dev_dbg(data->dev, "deassert ignored for id: 0x%lx\n", id);
 		return 0;
+	}
 
 	epuid = lgm_rcu_to_epu_id(id);
 	if (epuid >= 0) {
 		dev_dbg(data->dev, "rcu deassert set epu %u control to D0\n",
 			epuid);
-		ret = epu_notifier_blocking_chain(RCU_EVENT_SET_D0(epuid), 0);
+		ret = epu_notifier_raw_chain(RCU_EVENT_SET_D0(epuid), 0);
 		if (notifier_to_errno(ret)) {
 			dev_err(data->dev, "EPU control set %u to D0 failed, rcu id: 0x%lx\n",
 				epuid, id);
@@ -184,7 +186,7 @@ static int intel_deassert_device(struct reset_controller_dev *rcdev,
 	if (epuid >= 0) {
 		dev_dbg(data->dev, "rcu deassert check epu %u status to D0\n",
 			epuid);
-		ret = epu_notifier_blocking_chain(RCU_EVENT_GET_D0(epuid), 0);
+		ret = epu_notifier_raw_chain(RCU_EVENT_GET_D0(epuid), 0);
 		if (notifier_to_errno(ret)) {
 			dev_err(data->dev, "EPU status set %u to D0 failed, rcu id: 0x%lx\n",
 				epuid, id);
@@ -202,8 +204,10 @@ static int intel_assert_device(struct reset_controller_dev *rcdev,
 	int epuid;
 	struct intel_reset_data *data = to_reset_data(rcdev);
 
-	if (intel_reset_status(rcdev, id))
+	if (intel_reset_status(rcdev, id)) {
+		dev_dbg(data->dev, "assert ignored for id: 0x%lx\n", id);
 		return 0;
+	}
 
 	epuid = lgm_rcu_to_epu_id(id);
 	if (epuid >= 0) {
@@ -246,6 +250,9 @@ static int intel_reset_xlate(struct reset_controller_dev *rcdev,
 
 		id |= FIELD_PREP(STAT_BIT_OFFSET_MASK, spec->args[2]);
 	}
+
+	/* dummy status read to clear the default status */
+	intel_reset_status(rcdev, id);
 
 	return id;
 }

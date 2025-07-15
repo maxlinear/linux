@@ -10,7 +10,7 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
 #include <linux/version.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_trace.h"
 
@@ -250,12 +250,7 @@ int qos_tc_red_offload(struct net_device *dev,
 {
 	int err = 0;
 
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	struct tc_to_netdev *tc_to_netdev = type_data;
-	struct tc_red_qopt_offload *opt = tc_to_netdev->sch_red;
-#else
 	struct tc_red_qopt_offload *opt = type_data;
-#endif
 	ASSERT_RTNL();
 	netdev_dbg(dev, "RED: offload starting\n");
 

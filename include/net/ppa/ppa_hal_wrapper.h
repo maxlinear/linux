@@ -10,7 +10,7 @@
  ** DATE	: 27 Feb 2014
  ** AUTHOR	: Kamal Eradath
  ** DESCRIPTION	: PPA Wrapper for HAL Driver API
- ** Copyright (c) 2020 - 2023 MaxLinear, Inc.
+ ** Copyright (c) 2020 - 2025 MaxLinear, Inc.
  ** COPYRIGHT	: Copyright (c) 2017 Intel Corporation
  ** Copyright (c) 2014 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
  ** HISTORY
@@ -38,8 +38,6 @@ extern uint32_t ppa_hsel_set_acc_mode(PPA_ACC_ENABLE *cfg, uint32_t flag, uint32
 extern uint32_t ppa_hsel_get_acc_mode(PPA_ACC_ENABLE *cfg, uint32_t flag, uint32_t hal_id);
 extern uint32_t ppa_hsel_hal_init(PPA_HAL_INIT_CFG *cfg, uint32_t flag, uint32_t hal_id);
 extern uint32_t ppa_hsel_hal_exit(uint32_t flag, uint32_t hal_id);
-/* **1** Functions that need to be invoked on all the HALs registered*/
-extern uint32_t ppa_drv_get_hal_id(PPA_VERSION *v, uint32_t flag);
 /* Function to be called for adding additional switch port configuration for bridge acceleration*/
 extern uint32_t ppa_drv_add_br_port(PPA_BR_PORT_INFO *entry, uint32_t flag);
 extern uint32_t ppa_drv_del_br_port(PPA_BR_PORT_INFO *entry, uint32_t flag);

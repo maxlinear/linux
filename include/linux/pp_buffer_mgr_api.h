@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -68,7 +68,13 @@
  */
 #define POOL_ISOLATED                        BIT(1)
 
-#define BMGR_NUM_FLAGS 2
+/**
+ * @define pool_flags_bitmap
+ * @brief POOL_SSB When this pool is SSB pool
+*/
+#define POOL_SSB                             BIT(2)
+
+#define BMGR_NUM_FLAGS 3
 
 /**
  * @struct pp_bmgr_pool_params

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -150,6 +150,12 @@ enum pp_version_type {
 	PP_VER_TYPE_DRV,
 	PP_VER_TYPE_FW,
 	PP_VER_TYPE_HW,
+};
+
+/* Active queue management engine mode */
+enum pp_aqm_engine {
+	PP_AQM_SW = 0,
+	PP_AQM_HW = 1
 };
 
 /**
@@ -323,8 +329,10 @@ struct pp_port_cfg {
 struct pp_stats {
 	u64 packets; /*! number of packets */
 	u64 bytes; /*! number of bytes */
-	u64 ing_droped_bytes; /* number of ingress dropped bytes */
-	u64 egr_droped_bytes; /* number of egress dropped bytes */
+	u64 ing_dropped_bytes; /* number of ingress dropped bytes */
+	u64 egr_dropped_bytes; /* number of egress dropped bytes */
+	u64 ing_dropped_packets; /* number of ingress dropped packets */
+	u64 egr_dropped_packets; /* number of egress dropped packets */
 };
 
 /**
@@ -639,7 +647,13 @@ struct pp_mcast_grp_info {
  * @note when LRO info is used the session cannot be classified
  *       for TDOX
  */
-#define PP_SESS_FLAG_SLRO_INFO_BIT                (18)
+#define PP_SESS_FLAG_SLRO_INFO_BIT               (18)
+
+/**
+ * @define Specify if this session requires SW AQM
+ * @note to use with (struct pp_sess_create_args).flags
+ */
+#define PP_SESS_FLAG_AQM_BIT                     (19)
 
 /**
  * @struct pp_session_args
@@ -970,6 +984,46 @@ struct pp_whitelist_field {
 };
 
 /**
+ * @struct pp_lld_stats
+ * @brief lld counters, identical to struct aqm_lld_stats in uc host common
+ */
+struct pp_lld_stats {
+	/*! RX total packet counter */
+	u64 rx_pkt;
+	/*! RX ECT0 packet counter */
+	u64 rx_ect0_pkt;
+	/*! RX ECT1 packet counter */
+	u64 rx_ect1_pkt;
+	/*! RX CE packet counter */
+	u64 rx_ce_pkt;
+	/*! TX packet counter */
+	u64 tx_pkt;
+	/*! error packet counter */
+	u64 error_pkt;
+	/*! mark packet counter */
+	u64 mark_pkt;
+	/*! saction packet counter */
+	u64 sanction_pkt;
+	/*! drop packet counter */
+	u64 drop_pkt;
+};
+
+/**
+ * @struct PP_AQM_SW_stats
+ * @brief sw aqm statistics
+ */
+struct PP_AQM_SW_stats {
+	/*! rx packet counter */
+	u64 rx_pkt;
+	/*! tx packet counter */
+	u64 tx_pkt;
+	/*! bc drop packet counter */
+	u64 bc_drop_pkt;
+	/*! aqm drop packet counter */
+	u64 aqm_drop_pkt;
+};
+
+/**
  * Handling routines are only of interest to the kernel
  */
 
@@ -1073,12 +1127,64 @@ s32 pp_misc_sf_conf_get(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg);
 s32 pp_misc_sf_hist_get(u8 sf_id, struct pp_sf_hist_stat *hist, bool reset);
 
 /**
+ * @brief Get LLD counters per SF
+ * @param stats lld stats structure
+ * @return 0 on success
+ */
+s32 pp_misc_sf_lld_counters_get(u8 sf_id, struct pp_lld_stats *stats);
+
+/**
+ * @brief Get sw aqm counters per SF
+ * @param stats bc stats structure
+ * @return 0 on success
+ */
+s32 pp_misc_aqm_sw_sf_counters_get(u8 sf_id, struct PP_AQM_SW_stats *stats);
+
+/**
  * @brief Set LLD Allowed AQ
  * @param sf_id LLD service flow id
  * @param allowed_aq Allowed AQ (calculated in MAC US)
  * @return 0 on success
  */
 s32 pp_lld_allowed_aq_set(u8 sf_id, u32 allowed_aq);
+
+/**
+ * @brief check if queue is attached to LLD SF
+ * @param dest_q logical destination queue
+ * @param lld_sf true if queue is attached to LLD SF, false otherwise
+ * @return s32 return 0 for success
+ */
+s32 pp_misc_check_queue_lld_sf(u16 dst_q, bool *lld_sf);
+
+/**
+ * @brief get sf id according to queue
+ * @param queue logical destination queue
+ * @param sf_indx service flow index
+ * @return s32 return 0 for success
+ */
+s32 pp_misc_get_sf_indx_by_q(u16 queue, u16 *sf_indx);
+
+/**
+ * @brief get lld fw context according to sf
+ * @param sf_id ervice flow index
+ * @param ctx lld fw context
+ * @return s32 return 0 for success
+ */
+s32 pp_misc_fw_lld_ctx_get(u8 sf_id, u8 *ctx);
+
+/**
+ * @brief set pci ready state and BAR address of the PCI device
+ * @param state true for ready, false for not ready
+ * @param bar_addr BAR address of the pci device
+ * @return s32 0 on success, error code otherwise
+*/
+s32 pp_misc_pci_ready_set(bool state, u32 bar_addr);
+/**
+ * @brief get aqm engine
+ * @param aqm_engine set sw or hw aqm
+ * @return s32 0 on success, error code otherwise
+*/
+s32 pp_misc_get_aqm_engine(u8 *aqm_engine);
 
 /* Port manager driver API */
 /**
@@ -1452,6 +1558,14 @@ s32 pp_dual_tbm_get(u16 idx, struct pp_dual_tbm *cfg);
  * @return s32 return 0 for success
  */
 s32 pp_dual_tbm_set(u16 idx, struct pp_dual_tbm *cfg);
+
+/**
+ * @brief update turbodox timer timeout in usec
+ * @note Maximum value is 5000 usec (5 msec)
+ * @param tout timeout value
+ * @return s32 return 0 for success
+ */
+s32 pp_tdox_tout_set(u32 tout);
 
 /**
  * @brief add/remove a multicast destination to/from a group

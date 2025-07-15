@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -110,8 +110,9 @@ const char *cmd_type_str[UC_CMD_CNT + 1] = {
 	[UC_CMD_TDOX_CONFIG_SET] = "Tdox_Config_Set",
 	[UC_CMD_TDOX_CONFIG_GET] = "Tdox_Config_Get",
 	[UC_CMD_LLD_CTX_CFG_SET] = "LLD_Context_Config",
+	[UC_CMD_AQM_CTX_CFG_SET] = "AQM_Context_Config",
 	[UC_CMD_LLD_ALLOWED_AQ_SET] = "LLD_Allowed_AQ_Set",
-	[UC_CMD_LLD_HIST_GET] = "LLD_Hist_Get",
+	[UC_CMD_AQM_LLD_HIST_GET] = "AQM_LLD_Hist_Get",
 	[UC_CMD_CNT] = "Invalid"
 };
 

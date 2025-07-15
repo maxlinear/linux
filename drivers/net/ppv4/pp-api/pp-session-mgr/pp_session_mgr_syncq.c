@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -25,8 +25,8 @@
 #include <linux/errno.h>      /* For the EINVAL/EEXIST/... */
 #include <linux/bug.h>        /* For WARN()                */
 #include <linux/list.h>       /* For free/act lists        */
-#include <linux/timer.h>      /* For sync/done timers      */
-#include <linux/jiffies.h>    /* For jiffies               */
+#include <linux/hrtimer.h>    /* For sync/done hr timers   */
+#include <linux/ktime.h>      /* For ktime                 */
 #include <linux/pp_qos_api.h> /* For QoS manager APIs      */
 
 #include "checker.h"          /* For syncq HW table        */
@@ -36,23 +36,30 @@
 #include "pp_session_mgr_internal.h"
 
 /**
- * @define SQ_SYNC_TO
- * @brief timeout in micro seconds
+ * @brief hrtimer_try_to_cancel function return values
  */
-#define SQ_SYNC_TO   100000
+#define  HRTIMER_WAS_NOT_ACTIVE 0
+#define  HRTIMER_WAS_ACTIVE     1
+#define  HRTIMER_CB_IS_RUNNING -1
 
 /**
- * @define SQ_LSPP_TO
- * @brief timeout in micro seconds
+ * @define SQ_LSPP_RCV_TO
+ * @brief timeout in us, to recive the lspp in TX hook
+ */
+#define SQ_LSPP_RCV_TO  100000
+
+/**
+ * @define SQ_LSPP_SENT_TO
+ * @brief timeout in us, to wait for the lspp to be enqueued + dequeued.
  * @note LSPP: Last Slow Path Packet
  */
-#define SQ_LSPP_TO   10000
+#define SQ_LSPP_SENT_TO 1000
 
 /**
  * @define SQ_DONE_TO
- * @brief timeout in micro seconds
+ * @brief timeout in us, after that the syncq will be released
  */
-#define SQ_DONE_TO   300000
+#define SQ_DONE_TO      300000
 
 /**
  * @define SQ_DFLT_QLEN
@@ -123,13 +130,13 @@ enum sq_state {
 	/*! syncq was allocated but the timer not activated */
 	SQ_STATE_ALLOCATED,
 
-	/*! syncq is pending on lsp packet or "sync timer" */
+	/*! syncq is pending on lspp or "lspp_rcv_timer" */
 	SQ_STATE_STARTED,
 
-	/*! lspp sent from CPU, syncq is pending on "sync timer" */
+	/*! lspp sent from CPU, syncq is pending on "lspp_sent_timer" */
 	SQ_STATE_LSPP_SENT,
 
-	/*! syncq process was done and pending on "done timer" */
+	/*! syncq process was done and pending on "done_timer" */
 	SQ_STATE_SYNC_DONE,
 
 	SQ_STATE_NUM,
@@ -149,6 +156,9 @@ struct sq_entry {
 	/*! attached session id */
 	u32               session;
 
+	/*! attached hash signature */
+	u32               hash_sig;
+
 	/*! the synchronization queue id */
 	u32               queue_id;
 
@@ -158,11 +168,14 @@ struct sq_entry {
 	/*! the original destination queue id */
 	u32               dst_queue_id;
 
-	/*! timer for "sync" event*/
-	struct timer_list sync_timer;
+	/*! timer to wait for lspp to cuptrue in TX hook */
+	struct hrtimer    lspp_rcv_timer;
 
-	/*! timer for "done" event*/
-	struct timer_list done_timer;
+	/*! lspp is sent, timer for "sync" event */
+	struct hrtimer    lspp_sent_timer;
+
+	/*! timer for "done" event */
+	struct hrtimer    done_timer;
 
 	/*! entry list node */
 	struct list_head  node;
@@ -194,11 +207,11 @@ struct sq_database {
 	/*! QoS device for using the QoS APIs */
 	struct pp_qos_dev    *qdev;
 
-	/*! sync event timeout */
-	u32                  sq_sync_to;
+	/*! lspp recive event timeout */
+	u32                  sq_lspp_rcv_to;
 
-	/*! last slow path packet event timeout */
-	u32                  sq_lspp_to;
+	/*! lspp sent event timeout */
+	u32                  sq_lspp_sent_to;
 
 	/*! done event timeout */
 	u32                  sq_done_to;
@@ -211,6 +224,7 @@ struct sq_database {
 };
 
 static struct sq_entry *__sq_get_by_session(u32 session);
+static struct sq_entry *__sq_get_by_hash_sig(u32 sig);
 static struct sq_entry *__sq_get_by_dstq(u32 dst_queue_id);
 static inline void      __sq_free(struct sq_entry *sq);
 static void             __sq_del(struct sq_entry *sq);
@@ -221,6 +235,8 @@ static void             __sq_timers_setup(struct sq_entry *sq);
 static void             __sq_queue_connect(struct sq_entry *sq);
 static s32              __sq_queue_disconnect(struct sq_entry *sq);
 static s32              __sq_queue_alloc(struct sq_entry *sq);
+static s32              __sq_queue_add_aqm_context(struct sq_entry *sq);
+static s32              __sq_queue_rem_aqm_context(struct sq_entry *sq);
 
 /*****************************************************************************/
 /*                      internal sq operations                               */
@@ -231,6 +247,7 @@ static s32              __sq_queue_alloc(struct sq_entry *sq);
 static inline struct sq_database *get_sq_db(void)
 {
 	struct smgr_database *smgr_db = smgr_get_db();
+
 	if (ptr_is_null(smgr_db))
 		return NULL;
 
@@ -321,52 +338,54 @@ static inline void __sq_print(struct sq_entry *sq)
  */
 static inline void __sq_timer_cb_debug(void)
 {
-	pr_debug("TIME[%u] timer callback\n", jiffies_to_usecs(jiffies));
+	pr_debug("TIME[%llu] timer callback\n", ktime_to_ns(ktime_get()));
 }
 
 static inline void __sq_timer_restart_debug(u32 tout)
 {
-	pr_debug("TIME[%u] start timer for %u uSEC\n",
-		 jiffies_to_usecs(jiffies), tout);
+	pr_debug("TIME[%llu] start timer for %u uSEC\n",
+		 ktime_to_ns(ktime_get()), tout);
 }
 
 /**
- * @brief restart the timer for synch timeout
+ * @brief restart the timer for recive the lspp timeout
  * @param sq syncq entry
  */
-static inline void __sq_sync_tout_restart(struct sq_entry *sq)
+static inline void __sq_lspp_rcv_to_restart(struct sq_entry *sq)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db))
 		return;
 
-	__sq_timer_restart_debug(db->sq_sync_to);
-	mod_timer(&(sq)->sync_timer,
-		  jiffies + usecs_to_jiffies(db->sq_sync_to));
+	__sq_timer_restart_debug(db->sq_lspp_rcv_to);
+	hrtimer_start(&sq->lspp_rcv_timer,
+		      ktime_set(0, db->sq_lspp_rcv_to * NSEC_PER_USEC),
+		      HRTIMER_MODE_REL_SOFT);
 }
 
 /**
- * @brief restart the timer for lspp timeout
+ * @brief restart the timer for lspp sent timeout
  * @param sq syncq entry
  */
-static inline void __sq_lspp_tout_restart(struct sq_entry *sq)
+static inline void __sq_lspp_sent_to_restart(struct sq_entry *sq)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db))
 		return;
 
-	__sq_timer_restart_debug(db->sq_lspp_to);
-	mod_timer(&(sq)->sync_timer,
-		  jiffies + usecs_to_jiffies(db->sq_lspp_to));
+	__sq_timer_restart_debug(db->sq_lspp_sent_to);
+	hrtimer_start(&sq->lspp_sent_timer,
+		      ktime_set(0, db->sq_lspp_sent_to * NSEC_PER_USEC),
+		      HRTIMER_MODE_REL_SOFT);
 }
 
 /**
  * @brief restart the timer for done timeout
  * @param sq syncq entry
  */
-static inline void __sq_done_tout_restart(struct sq_entry *sq)
+static inline void __sq_done_to_restart(struct sq_entry *sq)
 {
 	struct sq_database *db = get_sq_db();
 
@@ -374,8 +393,9 @@ static inline void __sq_done_tout_restart(struct sq_entry *sq)
 		return;
 
 	__sq_timer_restart_debug(db->sq_done_to);
-	mod_timer(&(sq)->done_timer,
-		  jiffies + usecs_to_jiffies(db->sq_done_to));
+	hrtimer_start(&sq->done_timer,
+		      ktime_set(0, db->sq_done_to * NSEC_PER_USEC),
+		      HRTIMER_MODE_REL_SOFT);
 }
 
 /**
@@ -394,6 +414,28 @@ static struct sq_entry *__sq_get_by_session(u32 session)
 	pr_debug("session %u\n", session);
 	SQ_FOREACH_ACTIVE_ENTRY(db, sq) {
 		if (sq->session == session)
+			return sq;
+	}
+
+	return NULL;
+}
+
+/**
+ * @brief Get the syncq by the hash signature
+ * @param sig hash signature
+ * @return struct sq_entry* syncq entry
+ */
+static struct sq_entry *__sq_get_by_hash_sig(u32 sig)
+{
+	struct sq_entry *sq;
+	struct sq_database *db = get_sq_db();
+
+	if (ptr_is_null(db))
+		return NULL;
+
+	pr_debug("hash signature %u\n", sig);
+	SQ_FOREACH_ACTIVE_ENTRY(db, sq) {
+		if (sq->hash_sig == sig)
 			return sq;
 	}
 
@@ -544,6 +586,7 @@ static void __sq_stats_update(struct sq_entry *sq)
 static void __sq_next_state(struct sq_entry *sq)
 {
 	struct sq_database *db = get_sq_db();
+	int hrtimer_ret;
 
 	if (ptr_is_null(db))
 		return;
@@ -569,17 +612,24 @@ static void __sq_next_state(struct sq_entry *sq)
 		 * the chance to be captured in the CPU tx
 		 */
 		sq->state = SQ_STATE_STARTED;
-		__sq_sync_tout_restart(sq);
+		__sq_lspp_rcv_to_restart(sq);
 		break;
 
 	case SQ_STATE_STARTED:
 		/* lspp (Last Slow Path Packet) recieved:
-		 * restart the timer for "sq_lspp_to" time,
+		 * restart the timer for "sq_lspp_sent_to" time,
 		 * let the last packet the chance to be enqueued
 		 * update the new state
 		 */
-		del_timer(&sq->sync_timer);
-		__sq_lspp_tout_restart(sq);
+		hrtimer_ret = hrtimer_try_to_cancel(&sq->lspp_rcv_timer);
+		if (hrtimer_ret != HRTIMER_WAS_ACTIVE)
+			pr_debug("sq %hhu lspp_rcv_timer was not active! ret=%d\n",
+				  sq->id, hrtimer_ret);
+		hrtimer_ret = hrtimer_try_to_cancel(&sq->lspp_sent_timer);
+		if (hrtimer_ret != HRTIMER_WAS_NOT_ACTIVE)
+			pr_err("sq %hhu lspp_sent_timer was not supposed to be active! ret=%d\n",
+			       sq->id, hrtimer_ret);
+		__sq_lspp_sent_to_restart(sq);
 		sq->state = SQ_STATE_LSPP_SENT;
 		break;
 
@@ -591,17 +641,25 @@ static void __sq_next_state(struct sq_entry *sq)
 		 * start the "done" timeout
 		 * update the new state
 		 */
-		del_timer(&sq->sync_timer);
+		hrtimer_ret = hrtimer_try_to_cancel(&sq->lspp_rcv_timer);
+		if (hrtimer_ret != HRTIMER_WAS_NOT_ACTIVE)
+			pr_debug("sq %hhu lspp_rcv_timer was not active! ret=%d\n",
+				 sq->id, hrtimer_ret);
+		hrtimer_ret = hrtimer_try_to_cancel(&sq->lspp_sent_timer);
+		if (hrtimer_ret != HRTIMER_CB_IS_RUNNING)
+			pr_debug("sq %hhu lspp_sent_timer cb isn't running! ret=%d\n",
+				 sq->id, hrtimer_ret);
+
 		__sq_queue_connect(sq);
 		chk_sq_entry_disable(sq->id);
 		sq->state = SQ_STATE_SYNC_DONE;
-		__sq_done_tout_restart(sq);
+		__sq_done_to_restart(sq);
 		break;
 
 	case SQ_STATE_SYNC_DONE:
 		/* start the revert process:
 		 * get sync queue statisics
-		 * try to revert the the syncq
+		 * try to revert the syncq
 		 * if the operation failed / queue is not empty yet,
 		 * then, restart the timer and try next time
 		 * release the sq entry
@@ -609,9 +667,10 @@ static void __sq_next_state(struct sq_entry *sq)
 		__sq_stats_update(sq);
 		if (unlikely(__sq_queue_disconnect(sq))) {
 			db->stats.err_q_disconnect_failed++;
-			__sq_done_tout_restart(sq);
+			__sq_done_to_restart(sq);
 			break;
 		}
+		__sq_queue_rem_aqm_context(sq);
 		__sq_free(sq);
 		db->stats.freed++;
 		db->stats.active--;
@@ -701,6 +760,46 @@ static s32 __sq_queue_alloc(struct sq_entry *sq)
 	return 0;
 }
 
+/**
+ * @brief Add the syncq to AQM context if needed
+ * @param sq syncq entry
+ */
+static s32 __sq_queue_add_aqm_context(struct sq_entry *sq)
+{
+	struct sq_database *db = get_sq_db();
+	u16 sf_indx;
+	s32 ret = 0;
+
+	if (ptr_is_null(db))
+		return -EINVAL;
+
+	pp_misc_get_sf_indx_by_q(sq->dst_queue_id, &sf_indx);
+	if (sf_indx != PP_QOS_MAX_SERVICE_FLOWS) 
+		ret = qos_aqm_q_to_ctx(db->qdev, WRED_CTX_ADD_QUEUE, sq->id, sf_indx);
+	
+	return ret;
+}
+
+/**
+ * @brief Remove the syncq from AQM context if needed
+ * @param sq syncq entry
+ */
+static s32 __sq_queue_rem_aqm_context(struct sq_entry *sq)
+{
+	struct sq_database *db = get_sq_db();
+	u16 sf_indx;
+	s32 ret = 0;
+
+	if (ptr_is_null(db))
+		return -EINVAL;
+
+	pp_misc_get_sf_indx_by_q(sq->dst_queue_id, &sf_indx);
+	if (sf_indx != PP_QOS_MAX_SERVICE_FLOWS) 
+		ret = qos_aqm_q_to_ctx(db->qdev, WRED_CTX_REM_QUEUE, sq->id, sf_indx);
+	
+	return ret;
+}
+
 /*****************************************************************************/
 /*                       timer callback routines                             */
 /*****************************************************************************/
@@ -709,13 +808,13 @@ static s32 __sq_queue_alloc(struct sq_entry *sq)
  * @brief Done timer handler
  * @param timer the timer object
  */
-static void __sq_done_cb(struct timer_list *timer)
+static enum hrtimer_restart __sq_done_cb_timer(struct hrtimer *timer)
 {
-	struct sq_entry *sq = from_timer(sq, timer, done_timer);
+	struct sq_entry *sq = container_of(timer, struct sq_entry, done_timer);
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db))
-		return;
+		return HRTIMER_NORESTART;
 
 	__sq_timer_cb_debug();
 	__sq_debug(sq);
@@ -730,40 +829,74 @@ static void __sq_done_cb(struct timer_list *timer)
 
 unlock:
 	__sq_unlock();
+
+	return HRTIMER_NORESTART;
 }
 
-/* called from timer only!! */
 /**
- * @brief sync timer handler
- * @param t the timer object
+ * @brief lspp to timer handler
+ * @param timer the timer object
  */
-static void __sq_sync_cb(struct timer_list *timer)
+static enum hrtimer_restart __sq_lspp_sent_cb_timer(struct hrtimer *timer)
 {
-	struct sq_entry *sq = from_timer(sq, timer, sync_timer);
 	struct sq_database *db = get_sq_db();
+	struct sq_entry *sq =
+		container_of(timer, struct sq_entry, lspp_sent_timer);
 
 	if (ptr_is_null(db))
-		return;
+		return HRTIMER_NORESTART;
 
 	__sq_timer_cb_debug();
 	__sq_debug(sq);
 	__sq_lock();
-	switch (sq->state) {
-	case SQ_STATE_STARTED:
-		/* skip the "started" state */
-		sq->state = SQ_STATE_LSPP_SENT;
-		db->stats.lspp_timeout_events++;
-		/* fallthrough */
-	case SQ_STATE_LSPP_SENT:
+	if (sq->state == SQ_STATE_LSPP_SENT) {
 		__sq_next_state(sq);
-		break;
-	default:
-		pr_err("sq %hhu invalid state %s for sync event\n",
-		       sq->id, __sq_state_str(sq->state));
+	} else {
+		pr_err("sq %hhu invalid state %s for sync event\n", sq->id,
+		       __sq_state_str(sq->state));
 		db->stats.err_invalid_state++;
-		break;
 	}
 	__sq_unlock();
+
+	return HRTIMER_NORESTART;
+}
+
+/**
+ * @brief lspp expired handler
+ * @param timer the timer object
+ */
+static enum hrtimer_restart __sq_lspp_rcv_cb_timer(struct hrtimer *timer)
+{
+	struct sq_database *db = get_sq_db();
+	struct sq_entry *sq =
+		container_of(timer, struct sq_entry, lspp_rcv_timer);
+
+	if (ptr_is_null(db))
+		return HRTIMER_NORESTART;
+
+	__sq_timer_cb_debug();
+	__sq_debug(sq);
+	__sq_lock();
+	/* in case the lspp already arrived, do nothing */
+	if (sq->state == SQ_STATE_LSPP_SENT) {
+		pr_debug("sq %hhu lspp arrived in %s state!\n", sq->id,
+			 __sq_state_str(sq->state));
+		goto unlock;
+	}
+
+	if (sq->state == SQ_STATE_STARTED) {
+		sq->state = SQ_STATE_LSPP_SENT;
+		db->stats.lspp_timeout_events++;
+		__sq_next_state(sq);
+	} else {
+		pr_err("sq %hhu invalid state %s for tout lspp event\n", sq->id,
+		       __sq_state_str(sq->state));
+		db->stats.err_invalid_state++;
+	}
+unlock:
+	__sq_unlock();
+
+	return HRTIMER_NORESTART;
 }
 
 /**
@@ -772,14 +905,22 @@ static void __sq_sync_cb(struct timer_list *timer)
  */
 static void __sq_timers_setup(struct sq_entry *sq)
 {
-	timer_setup(&sq->sync_timer, __sq_sync_cb, 0);
-	timer_setup(&sq->done_timer, __sq_done_cb, 0);
+	hrtimer_init(&sq->lspp_rcv_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL_SOFT);
+	sq->lspp_rcv_timer.function = __sq_lspp_rcv_cb_timer;
+
+	hrtimer_init(&sq->lspp_sent_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL_SOFT);
+	sq->lspp_sent_timer.function = __sq_lspp_sent_cb_timer;
+
+	hrtimer_init(&sq->done_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	sq->done_timer.function = __sq_done_cb_timer;
 }
 
 /*****************************************************************************/
 /*                           external APIs                                   */
 /*****************************************************************************/
-s32 sq_alloc(u32 session, u32 dst_queue_id)
+s32 sq_alloc(u32 session, u32 dst_queue_id, u32 sig)
 {
 	struct sq_entry *sq;
 	struct sq_database *db = get_sq_db();
@@ -813,6 +954,8 @@ s32 sq_alloc(u32 session, u32 dst_queue_id)
 	/* set the session info */
 	sq->session      = session;
 	sq->dst_queue_id = dst_queue_id;
+	sq->hash_sig = sig;
+	__sq_queue_add_aqm_context(sq);
 	/* go to next state --> SQ_STATE_ALLOCATED */
 	__sq_next_state(sq);
 
@@ -826,7 +969,8 @@ s32 smgr_sq_alloc(struct sess_info *sess)
 	if (!test_bit(SESS_FLAG_SYNCQ, &sess->db_ent->info.flags))
 		return 0;
 
-	return sq_alloc(sess->db_ent->info.sess_id, sess->args->dst_q);
+	return sq_alloc(sess->db_ent->info.sess_id, sess->args->dst_q,
+			sess->args->hash.sig);
 }
 
 s32 sq_start(u32 session)
@@ -901,7 +1045,7 @@ s32 smgr_sq_del(struct sess_db_entry *ent)
 	return sq_del(ent->info.sess_id);
 }
 
-void smgr_sq_lspp_rcv(u32 session)
+void smgr_sq_lspp_rcv(u32 hash_sig)
 {
 	struct sq_entry *sq;
 	struct sq_database *db = get_sq_db();
@@ -909,11 +1053,11 @@ void smgr_sq_lspp_rcv(u32 session)
 	if (ptr_is_null(db))
 		return;
 
-	pr_debug("session %u\n", session);
+	pr_debug("hash_sig %u\n", hash_sig);
 
 	__sq_lock();
-	/* check if sq entry exist for this session */
-	sq = __sq_get_by_session(session);
+	/* check if sq entry exist for this hash */
+	sq = __sq_get_by_hash_sig(hash_sig);
 	if (unlikely(!sq))
 		goto unlock;
 
@@ -974,24 +1118,24 @@ void smgr_sq_dbg_dump(void)
 		__sq_print(&db->sq[i]);
 }
 
-void smgr_sq_dbg_sync_tout_get(u32 *tout)
+void smgr_sq_dbg_lspp_rcv_tout_get(u32 *tout)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db) || ptr_is_null(tout))
 		return;
 
-	*tout = db->sq_sync_to;
+	*tout = db->sq_lspp_rcv_to;
 }
 
-void smgr_sq_dbg_sync_tout_set(u32 tout)
+void smgr_sq_dbg_lspp_rcv_tout_set(u32 tout)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db))
 		return;
 
-	db->sq_sync_to = tout;
+	db->sq_lspp_rcv_to = tout;
 }
 
 void smgr_sq_dbg_done_tout_get(u32 *tout)
@@ -1014,24 +1158,24 @@ void smgr_sq_dbg_done_tout_set(u32 tout)
 	db->sq_done_to = tout;
 }
 
-void smgr_sq_dbg_lspp_tout_get(u32 *tout)
+void smgr_sq_dbg_lspp_sent_tout_get(u32 *tout)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db) || ptr_is_null(tout))
 		return;
 
-	*tout = db->sq_lspp_to;
+	*tout = db->sq_lspp_sent_to;
 }
 
-void smgr_sq_dbg_lspp_tout_set(u32 tout)
+void smgr_sq_dbg_lspp_sent_tout_set(u32 tout)
 {
 	struct sq_database *db = get_sq_db();
 
 	if (ptr_is_null(db))
 		return;
 
-	db->sq_lspp_to = tout;
+	db->sq_lspp_sent_to = tout;
 }
 
 void smgr_sq_dbg_qlen_get(u32 *qlen)
@@ -1083,8 +1227,7 @@ s32 smgr_sq_init(struct device *dev)
 
 
 	if (n_sq) {
-		db->sq =
-			devm_kcalloc(dev, n_sq, sizeof(*db->sq), GFP_KERNEL);
+		db->sq = devm_kcalloc(dev, n_sq, sizeof(*db->sq), GFP_KERNEL);
 		if (unlikely(!db->sq)) {
 			pr_err("Failed to allocate %u sync queues memory\n", n_sq);
 			return -ENOMEM;
@@ -1104,10 +1247,10 @@ s32 smgr_sq_init(struct device *dev)
 		return -EPERM;
 
 	/* init the timeout values */
-	db->sq_sync_to = SQ_SYNC_TO;
-	db->sq_lspp_to = SQ_LSPP_TO;
-	db->sq_done_to = SQ_DONE_TO;
-	db->sq_qlen    = SQ_DFLT_QLEN;
+	db->sq_lspp_rcv_to  = SQ_LSPP_RCV_TO;
+	db->sq_lspp_sent_to = SQ_LSPP_SENT_TO;
+	db->sq_done_to      = SQ_DONE_TO;
+	db->sq_qlen         = SQ_DFLT_QLEN;
 
 	/* prepare each syncq entry */
 	for (i = 0; i < n_sq; i++) {
@@ -1141,9 +1284,10 @@ void smgr_sq_exit(void)
 
 	__sq_lock();
 	for (i = 0; i < sq_db->n_sq; i++) {
-		/* kill all timers */
-		del_timer(&sq_db->sq[i].sync_timer);
-		del_timer(&sq_db->sq[i].done_timer);
+		/* cancel all timers */
+		hrtimer_try_to_cancel(&sq_db->sq[i].lspp_rcv_timer);
+		hrtimer_try_to_cancel(&sq_db->sq[i].lspp_sent_timer);
+		hrtimer_try_to_cancel(&sq_db->sq[i].done_timer);
 	}
 	__sq_unlock();
 

@@ -31,6 +31,7 @@ static int vpn_genconf_show(struct seq_file *s, void *v)
 {
 	struct vpn_data *priv = dev_get_drvdata(s->private);
 	struct genconf *genconf = priv->genconf;
+	struct ipsec_info *info;
 	int i, j;
 
 	seq_puts(s, "VPN genconf:\n");
@@ -71,165 +72,78 @@ static int vpn_genconf_show(struct seq_file *s, void *v)
 	seq_printf(s, "\tdc_buf_rtn_cnt: 0x%x\n", genconf->dc_buf_rtn_cnt);
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tipsec_in[%d]:\n", i);
-		seq_printf(s, "\t\tdw0: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw0.all);
-		seq_printf(s, "\t\tdw1: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw1.res);
-		seq_printf(s, "\t\tdw2: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw2.bplo);
-		seq_printf(s, "\t\tdw3: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw3.bphi);
-		seq_printf(s, "\t\tdw4: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw4.acdlo);
-		seq_printf(s, "\t\tdw5: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw5.acdhi);
-		seq_printf(s, "\t\tdw6: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw6.all);
-		seq_printf(s, "\t\tdw7: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw7.all);
-		seq_printf(s, "\t\tdw8: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw8.ctxlo);
-		seq_printf(s, "\t\tdw9: %x\n",
-			   genconf->ipsec_in[i].cd_info.dw9.ctxhi);
-		seq_printf(s, "\t\tdwa: %x\n",
-			   genconf->ipsec_in[i].cd_info.dwa.all);
-		seq_printf(s, "\t\tdwb: %x\n",
-			   genconf->ipsec_in[i].cd_info.dwb.all);
-		seq_printf(s, "\t\tcd_size: %x\n",
-			   genconf->ipsec_in[i].cd_size);
-		seq_printf(s, "\t\tmode: %x\n", genconf->ipsec_in[i].mode);
-		seq_printf(s, "\t\tpad_en: %x\n", genconf->ipsec_in[i].pad_en);
-		seq_printf(s, "\t\tpad_instr_offset: %x\n",
-			   genconf->ipsec_in[i].pad_instr_offset);
-		seq_printf(s, "\t\tcrypto_instr_offset: %x\n",
-			   genconf->ipsec_in[i].crypto_instr_offset);
-		seq_printf(s, "\t\tblk_size: %x\n",
-			   genconf->ipsec_in[i].blk_size);
-		seq_printf(s, "\t\thash_pad_instr_offset: %x\n",
-			   genconf->ipsec_in[i].hash_pad_instr_offset);
-		seq_printf(s, "\t\tmsg_len_instr_offset: %x\n",
-			   genconf->ipsec_in[i].msg_len_instr_offset);
-		seq_printf(s, "\t\ticv_len: %x\n",
-			   genconf->ipsec_in[i].icv_len);
-		seq_printf(s, "\t\tiv_len: %x\n",
-			   genconf->ipsec_in[i].iv_len);
-		seq_printf(s, "\t\tip_hlen: %x\n",
-			   genconf->ipsec_in[i].ip_hlen);
+		info = &genconf->ipsec_info[i];
+		seq_printf(s, "\tipsec_info[%d]:\n", i);
+		seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
+			   info->cd_info.dw0.all,
+			   info->cd_info.dw1.res,
+			   info->cd_info.dw2.bplo,
+			   info->cd_info.dw3.bphi);
+		seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
+			   info->cd_info.dw4.acdlo,
+			   info->cd_info.dw5.acdhi,
+			   info->cd_info.dw6.all,
+			   info->cd_info.dw7.all);
+		seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
+			   info->cd_info.dw8.ctxlo,
+			   info->cd_info.dw9.ctxhi,
+			   info->cd_info.dwa.all,
+			   info->cd_info.dwb.all);
+		seq_printf(s, "\t\tcd_size: 0x%x\n", info->cd_size);
+		seq_printf(s, "\t\tmode: 0x%x\n", info->mode);
+		seq_printf(s, "\t\tpad_en: 0x%x\n", info->pad_en);
+		seq_printf(s, "\t\tpad_instr_offset: 0x%x\n",
+			   info->pad_instr_offset);
+		seq_printf(s, "\t\tcrypto_instr_offset: 0x%x\n",
+			   info->crypto_instr_offset);
+		seq_printf(s, "\t\tblk_size: 0x%x\n", info->blk_size);
+		seq_printf(s, "\t\thash_pad_instr_offset: 0x%x\n",
+			   info->hash_pad_instr_offset);
+		seq_printf(s, "\t\tmsg_len_instr_offset: 0x%x\n",
+			   info->msg_len_instr_offset);
+		seq_printf(s, "\t\ticv_len: 0x%x\n", info->icv_len);
+		seq_printf(s, "\t\tiv_len: 0x%x\n", info->iv_len);
+		seq_printf(s, "\t\tip_hlen: 0x%x\n", info->ip_hlen);
 	}
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tipsec_out[%d]:\n", i);
-		seq_printf(s, "\t\tdw0: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw0.all);
-		seq_printf(s, "\t\tdw1: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw1.res);
-		seq_printf(s, "\t\tdw2: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw2.bplo);
-		seq_printf(s, "\t\tdw3: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw3.bphi);
-		seq_printf(s, "\t\tdw4: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw4.acdlo);
-		seq_printf(s, "\t\tdw5: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw5.acdhi);
-		seq_printf(s, "\t\tdw6: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw6.all);
-		seq_printf(s, "\t\tdw7: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw7.all);
-		seq_printf(s, "\t\tdw8: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw8.ctxlo);
-		seq_printf(s, "\t\tdw9: %x\n",
-			   genconf->ipsec_out[i].cd_info.dw9.ctxhi);
-		seq_printf(s, "\t\tdwa: %x\n",
-			   genconf->ipsec_out[i].cd_info.dwa.all);
-		seq_printf(s, "\t\tdwb: %x\n",
-			   genconf->ipsec_out[i].cd_info.dwb.all);
-		seq_printf(s, "\t\tcd_size: %x\n",
-			   genconf->ipsec_out[i].cd_size);
-		seq_printf(s, "\t\tmode: %x\n", genconf->ipsec_out[i].mode);
-		seq_printf(s, "\t\tpad_en: %x\n",
-			   genconf->ipsec_out[i].pad_en);
-		seq_printf(s, "\t\tpad_instr_offset: %x\n",
-			   genconf->ipsec_out[i].pad_instr_offset);
-		seq_printf(s, "\t\tcrypto_instr_offset: %x\n",
-			   genconf->ipsec_out[i].crypto_instr_offset);
-		seq_printf(s, "\t\tblk_size: %x\n",
-			   genconf->ipsec_out[i].blk_size);
-		seq_printf(s, "\t\thash_pad_instr_offset: %x\n",
-			   genconf->ipsec_out[i].hash_pad_instr_offset);
-		seq_printf(s, "\t\tmsg_len_instr_offset: %x\n",
-			   genconf->ipsec_out[i].msg_len_instr_offset);
-		seq_printf(s, "\t\ticv_len: %x\n",
-			   genconf->ipsec_out[i].icv_len);
-		seq_printf(s, "\t\tiv_len: %x\n",
-			   genconf->ipsec_out[i].iv_len);
-		seq_printf(s, "\t\tip_hlen: %x\n",
-			   genconf->ipsec_out[i].ip_hlen);
+		seq_printf(s, "\tctx[%d]:\n", i);
+		for (j = 0; j < CTX_SIZE / 4; j++)
+			seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
+				   genconf->ctx[i].buf[j],
+				   genconf->ctx[i].buf[j + 1],
+				   genconf->ctx[i].buf[j + 2],
+				   genconf->ctx[i].buf[j + 3]);
+	}
+
+	seq_printf(s, "\tipsec_flag: 0x%08x\n", genconf->ipsec_flag);
+
+	for (i = 0; i < IPSEC_TUN_MAX; i++) {
+		seq_printf(s, "\tacd_tmpl[%d]:\n", i);
+		for (j = 0; j < ACD_SIZE / 4; j++)
+			seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
+				   genconf->acd_tmpl[i].buf[j],
+				   genconf->acd_tmpl[i].buf[j + 1],
+				   genconf->acd_tmpl[i].buf[j + 2],
+				   genconf->acd_tmpl[i].buf[j + 3]);
 	}
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tctx_in[%d]:\n", i);
-		for (j = 0; j < CTX_SIZE; j++)
-			seq_printf(s, "\t\tdw%d: %x\n", j,
-				   genconf->ctx_in[i].buf[j]);
-	}
-	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tctx_out[%d]:\n", i);
-		for (j = 0; j < CTX_SIZE; j++)
-			seq_printf(s, "\t\tdw%d: %x\n", j,
-				   genconf->ctx_out[i].buf[j]);
-	}
-
-	seq_printf(s, "\tipsec_out_flag: %x\n", genconf->ipsec_out_flag);
-	seq_printf(s, "\tipsec_in_flag: %x\n", genconf->ipsec_in_flag);
-
-	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tacd_in[%d]:\n", i);
-		for (j = 0; j < ACD_SIZE; j++)
-			seq_printf(s, "\t\tdw%d: %x\n", j,
-				   genconf->acd_in[i].buf[j]);
-	}
-	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tacd_out[%d]:\n", i);
-		for (j = 0; j < ACD_SIZE; j++)
-			seq_printf(s, "\t\tdw%d: %x\n", j,
-				   genconf->acd_out[i].buf[j]);
-	}
-
-	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tin_dwt[%d]:\n", i);
-		seq_printf(s, "\t\tdw0_mask: %x\n",
-			   genconf->in_dwt[i].dw0_mask);
-		seq_printf(s, "\t\tdw0_val: %x\n", genconf->in_dwt[i].dw0_val);
-		seq_printf(s, "\t\tdw1_mask: %x\n",
-			   genconf->in_dwt[i].dw1_mask);
-		seq_printf(s, "\t\tdw1_val: %x\n", genconf->in_dwt[i].dw1_val);
-		seq_printf(s, "\t\tenq_qos: %x\n", genconf->in_dwt[i].enq_qos);
-	}
-
-	for (i = 0; i < IPSEC_TUN_MAX; i++) {
-		seq_printf(s, "\tout_dwt[%d]:\n", i);
-		seq_printf(s, "\t\tdw0_mask: %x\n",
-			   genconf->out_dwt[i].dw0_mask);
-		seq_printf(s, "\t\tdw0_val: %x\n", genconf->out_dwt[i].dw0_val);
-		seq_printf(s, "\t\tdw1_mask: %x\n",
-			   genconf->out_dwt[i].dw1_mask);
-		seq_printf(s, "\t\tdw1_val: %x\n", genconf->out_dwt[i].dw1_val);
-		seq_printf(s, "\t\tenq_qos: %x\n", genconf->out_dwt[i].enq_qos);
+		seq_printf(s, "\tdwt[%d]: ", i);
+		seq_printf(s, "[0x%08x]/[0x%08x] [0x%08x]/[0x%08x] qos %d\n",
+			   genconf->dwt[i].dw0_mask, genconf->dwt[i].dw0_val,
+			   genconf->dwt[i].dw1_mask, genconf->dwt[i].dw1_val,
+			   genconf->dwt[i].enq_qos);
 	}
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
 		for (j = 0; j < IPSEC_TUN_SESS_MAX; j++) {
-			seq_printf(s, "\tsess_act_out[%d][%d]:\n", i, j);
-			seq_printf(s, "\t\tdw0_mask: %x\n",
-				   genconf->sess_act_out[i][j].dw0_mask);
-			seq_printf(s, "\t\tdw0_val: %x\n",
-				   genconf->sess_act_out[i][j].dw0_val);
-			seq_printf(s, "\t\tdw1_mask: %x\n",
-				   genconf->sess_act_out[i][j].dw1_mask);
-			seq_printf(s, "\t\tdw1_val: %x\n",
-				   genconf->sess_act_out[i][j].dw1_val);
-			seq_printf(s, "\t\tenq_qos: %x\n",
+			seq_printf(s, "\tsess_act_out[%d][%d]: ", i, j);
+			seq_printf(s, "[0x%08x]/[0x%08x] [0x%08x]/[0x%08x] qos %d\n",
+				   genconf->sess_act_out[i][j].dw0_mask,
+				   genconf->sess_act_out[i][j].dw0_val,
+				   genconf->sess_act_out[i][j].dw1_mask,
+				   genconf->sess_act_out[i][j].dw1_val,
 				   genconf->sess_act_out[i][j].enq_qos);
 		}
 	}

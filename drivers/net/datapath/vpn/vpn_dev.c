@@ -244,20 +244,14 @@ static int vpn_init_genconf(struct vpn_data *priv)
 }
 
 /* mark flag to inform firmware there is an update in config */
-static void update_tunnel_flag(struct vpn_data *priv, int tunnel_id,
-			       enum mxl_vpn_direction dir)
+static void update_tunnel_flag(struct vpn_data *priv, int tunnel_id)
 {
 	u32 shift, clear;
-	u16 *flag;
+	u32 *flag;
 	int msg;
 
-	if (dir == VPN_DIRECTION_IN) {
-		flag = &priv->genconf->ipsec_in_flag;
-		msg = INT_TUNL_UPD_IN;
-	} else {
-		flag = &priv->genconf->ipsec_out_flag;
-		msg = INT_TUNL_UPD_OUT;
-	}
+	flag = &priv->genconf->ipsec_flag;
+	msg = INT_TUNL_UPD;
 
 	shift = tunnel_id * 2;
 	clear = GENMASK(shift + 1, shift);
@@ -328,57 +322,17 @@ static int vpn_get_tunnel_info(struct device *dev, u32 spi,
 }
 
 /*!
- *@brief Update inbound action of tunnel
- *@param[in] dev: device
- *@param[in] tunnel_id: tunnel id
- *@param[in] act: action
- *@return Returns 0 on succeed
- */
-static int vpn_update_tunnel_in_act(struct device *dev, int tunnel_id,
-				    struct mxl_vpn_ipsec_act *act)
-{
-	struct vpn_data *priv = dev_get_drvdata(dev);
-	struct ipsec_act *in_dwt;
-
-	if (tunnel_id < 0 || tunnel_id >= IPSEC_TUN_MAX) {
-		dev_err(priv->dev, "Invalid tunnel id %d\n", tunnel_id);
-		return -EINVAL;
-	}
-
-	spin_lock_bh(&priv->lock);
-
-	if (!priv->tunnels[tunnel_id].ctx[VPN_DIRECTION_IN]) {
-		dev_err(priv->dev, "Tunnel %d does not exist\n", tunnel_id);
-		spin_unlock_bh(&priv->lock);
-		return -EINVAL;
-	}
-
-	in_dwt = &priv->genconf->in_dwt[tunnel_id];
-	in_dwt->dw0_mask = act->dw0_mask;
-	in_dwt->dw0_val = act->dw0_val;
-	in_dwt->dw1_mask = act->dw1_mask;
-	in_dwt->dw1_val = act->dw1_val;
-	in_dwt->enq_qos = act->enq_qos ? 1 : 0;
-
-	update_tunnel_flag(priv, tunnel_id, VPN_DIRECTION_IN);
-
-	spin_unlock_bh(&priv->lock);
-
-	return 0;
-}
-
-/*!
  *@brief Update outbound action of tunnel
  *@param[in] dev: device
  *@param[in] tunnel_id: tunnel id
  *@param[in] act: action
  *@return Returns 0 on succeed
  */
-static int vpn_update_tunnel_out_act(struct device *dev, int tunnel_id,
-				     struct mxl_vpn_ipsec_act *act)
+static int vpn_update_tunnel_act(struct device *dev, int tunnel_id,
+				 struct mxl_vpn_ipsec_act *act)
 {
 	struct vpn_data *priv = dev_get_drvdata(dev);
-	struct ipsec_act *out_dwt;
+	struct ipsec_act *dwt;
 
 	if (tunnel_id < 0 || tunnel_id >= IPSEC_TUN_MAX) {
 		dev_err(priv->dev, "Invalid tunnel id %d\n", tunnel_id);
@@ -387,20 +341,20 @@ static int vpn_update_tunnel_out_act(struct device *dev, int tunnel_id,
 
 	spin_lock_bh(&priv->lock);
 
-	if (!priv->tunnels[tunnel_id].ctx[VPN_DIRECTION_OUT]) {
+	if (!priv->tunnels[tunnel_id].ctx) {
 		dev_err(priv->dev, "Tunnel %d does not exist\n", tunnel_id);
 		spin_unlock_bh(&priv->lock);
 		return -EINVAL;
 	}
 
-	out_dwt = &priv->genconf->out_dwt[tunnel_id];
-	out_dwt->dw0_mask = act->dw0_mask;
-	out_dwt->dw0_val = act->dw0_val;
-	out_dwt->dw1_mask = act->dw1_mask;
-	out_dwt->dw1_val = act->dw1_val;
-	out_dwt->enq_qos = act->enq_qos ? 1 : 0;
+	dwt = &priv->genconf->dwt[tunnel_id];
+	dwt->dw0_mask = act->dw0_mask;
+	dwt->dw0_val = act->dw0_val;
+	dwt->dw1_mask = act->dw1_mask;
+	dwt->dw1_val = act->dw1_val;
+	dwt->enq_qos = act->enq_qos ? 1 : 0;
 
-	update_tunnel_flag(priv, tunnel_id, VPN_DIRECTION_OUT);
+	update_tunnel_flag(priv, tunnel_id);
 
 	spin_unlock_bh(&priv->lock);
 
@@ -517,7 +471,7 @@ static int vpn_add_session(struct device *dev, int tunnel_id,
 	sess_act->dw1_val = act->dw1_val;
 	sess_act->enq_qos = act->enq_qos ? 1 : 0;
 	sess->on = true;
-	update_tunnel_flag(priv, tunnel_id, VPN_DIRECTION_OUT);
+	update_tunnel_flag(priv, tunnel_id);
 	spin_unlock_bh(&priv->lock);
 
 	return free_sess;
@@ -569,7 +523,7 @@ static int vpn_update_session(struct device *dev, int tunnel_id, int session_id,
 	session_act->dw1_val = act->dw1_val;
 	session_act->enq_qos = act->enq_qos ? 1 : 0;
 
-	update_tunnel_flag(priv, tunnel_id, VPN_DIRECTION_OUT);
+	update_tunnel_flag(priv, tunnel_id);
 
 	spin_unlock_bh(&priv->lock);
 	return 0;
@@ -661,17 +615,10 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 	else
 		params.mode = VPN_MODE_TRANSPORT;
 
-	if (dir) {
-		info = &priv->genconf->ipsec_in[tunnel_id];
-		params.ctx_buffer = &priv->genconf->ctx_in[tunnel_id];
-		params.token_buffer = &priv->genconf->acd_in[tunnel_id];
-		params.cdr_buffer = &info->cd_info;
-	} else {
-		info = &priv->genconf->ipsec_out[tunnel_id];
-		params.ctx_buffer = &priv->genconf->ctx_out[tunnel_id];
-		params.token_buffer = &priv->genconf->acd_out[tunnel_id];
-		params.cdr_buffer = &info->cd_info;
-	}
+	info = &priv->genconf->ipsec_info[tunnel_id];
+	params.ctx_buffer = &priv->genconf->ctx[tunnel_id];
+	params.token_buffer = &priv->genconf->acd_tmpl[tunnel_id];
+	params.cdr_buffer = &info->cd_info;
 
 	ctx = vpn_eip197_create_sa(priv, &params);
 	if (!ctx) {
@@ -685,23 +632,13 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 		info->mode = ESP_TU;
 
 	/* set context and token pointer */
-	if (dir) {
-		info->cd_info.dw4.acdlo = priv->sram_phys +
-					  offsetof(struct genconf,
-						   acd_in[tunnel_id]);
-		info->cd_info.dw8.ctxlo = priv->sram_phys +
-					  offsetof(struct genconf,
-						   ctx_in[tunnel_id]) +
-					  0x2 /* large transform marker */;
-	} else {
-		info->cd_info.dw4.acdlo = priv->sram_phys +
-					  offsetof(struct genconf,
-						   acd_out[tunnel_id]);
-		info->cd_info.dw8.ctxlo = priv->sram_phys +
-					  offsetof(struct genconf,
-						   ctx_out[tunnel_id]) +
-					  0x2 /* large transform marker */;
-	}
+	info->cd_info.dw4.acdlo = priv->sram_phys +
+				  offsetof(struct genconf,
+					   acd_tmpl[tunnel_id]);
+	info->cd_info.dw8.ctxlo = priv->sram_phys +
+				  offsetof(struct genconf,
+					   ctx[tunnel_id]) +
+				  0x2 /* large transform marker */;
 
 	/* misc info */
 	info->blk_size = params.pad_blk_size;
@@ -731,10 +668,7 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 	vpn_config_lookup(priv);
 
 	/* Setup genconf actions */
-	if (dir)
-		dwt = &priv->genconf->in_dwt[tunnel_id];
-	else
-		dwt = &priv->genconf->out_dwt[tunnel_id];
+	dwt = &priv->genconf->dwt[tunnel_id];
 
 	dc_desc_0.all = 0;
 	dc_desc_0.field.subif_offset = priv->subif >> 9;
@@ -752,7 +686,7 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 	/* with qos */
 	dwt->enq_qos = 1;
 
-	update_tunnel_flag(priv, tunnel_id, dir);
+	update_tunnel_flag(priv, tunnel_id);
 
 	/* save to tunnel table */
 	tunnel->spi = params.spi;
@@ -769,7 +703,7 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 	dev_dbg(priv->dev,
 		"ipsec buf constructed dir %d tunnel_id %d info %px:en %px\n",
 		dir, tunnel_id, info,
-		&priv->genconf->ipsec_out_flag);
+		&priv->genconf->ipsec_flag);
 
 	return 0;
 }
@@ -783,7 +717,7 @@ static void vpn_delete_sa(struct vpn_data *priv, struct xfrm_state *x,
 	struct ctx *ctx2;
 	struct tkn *tkn;
 	u32 shift, clear;
-	u16 *flag;
+	u32 *flag;
 	int i;
 
 	dev_dbg(priv->dev, "%s spi 0x%x dir %d\n", __func__, x->id.spi, dir);
@@ -796,17 +730,10 @@ static void vpn_delete_sa(struct vpn_data *priv, struct xfrm_state *x,
 		ppa_vpn_tunn_del_hook(tunnel_id);
 #endif
 
-	if (dir) {
-		info = &priv->genconf->ipsec_in[tunnel_id];
-		ctx2 = &priv->genconf->ctx_in[tunnel_id];
-		tkn = &priv->genconf->acd_in[tunnel_id];
-		flag = &priv->genconf->ipsec_in_flag;
-	} else {
-		info = &priv->genconf->ipsec_out[tunnel_id];
-		ctx2 = &priv->genconf->ctx_out[tunnel_id];
-		tkn = &priv->genconf->acd_out[tunnel_id];
-		flag = &priv->genconf->ipsec_out_flag;
-	}
+	info = &priv->genconf->ipsec_info[tunnel_id];
+	ctx2 = &priv->genconf->ctx[tunnel_id];
+	tkn = &priv->genconf->acd_tmpl[tunnel_id];
+	flag = &priv->genconf->ipsec_flag;
 
 	/* set disable flag bits */
 	shift = tunnel_id * 2;
@@ -1556,7 +1483,7 @@ static int vpn_dp_tx_fn(struct sk_buff *skb, struct dp_tx_common *cmn,
 	}
 
 	tunnel = (struct tunnel_info *)x->xso.offload_handle;
-	tunnel_info = &priv->genconf->ipsec_out[tunnel->id];
+	tunnel_info = &priv->genconf->ipsec_info[tunnel->id];
 	ip_offset = skb_network_offset(skb);
 	if (skb_protocol(skb, true) == htons(ETH_P_PPP_SES))
 		ip_offset += PPPOE_SES_HLEN;
@@ -1594,7 +1521,7 @@ static int vpn_dp_tx_fn(struct sk_buff *skb, struct dp_tx_common *cmn,
 	desc_0->field.enc = 1;
 	desc_0->field.ipoffset = ip_offset;
 	desc_0->field.subif = priv->subif >> 9;
-	desc_0->field.vp_sess = 7;
+	desc_0->field.vp_sess = IPSEC_TUN_SESS_MAX;
 	desc_0->field.next_hdr = next_hdr;
 	desc_0->field.tunnel_id = tunnel->id;
 
@@ -2145,8 +2072,8 @@ static int vpn_probe(struct platform_device *pdev)
 	/* register API to dp */
 	priv->ops.dev = priv->dev;
 	priv->ops.get_tunnel_info = vpn_get_tunnel_info;
-	priv->ops.update_tunnel_in_act = vpn_update_tunnel_in_act;
-	priv->ops.update_tunnel_out_act = vpn_update_tunnel_out_act;
+	priv->ops.update_tunnel_in_act = vpn_update_tunnel_act;
+	priv->ops.update_tunnel_out_act = vpn_update_tunnel_act;
 	priv->ops.update_tunnel_in_netdev = vpn_update_tunnel_in_netdev;
 	priv->ops.add_session = vpn_add_session;
 	priv->ops.update_session = vpn_update_session;

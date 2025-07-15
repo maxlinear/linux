@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -484,9 +484,7 @@ void __pmgr_dbg_port_stats_show(struct seq_file *f)
 {
 	u32 p = (unsigned long)f->private;
 	s32 ret;
-	u64 ing_drop_bytes;
-	u64 egr_drop_bytes;
-	struct pp_stats stats;
+	struct pp_stats stats = {0};
 
 	if (!pmgr_port_is_active(p)) {
 		seq_printf(f, "Port %-3u is not active\n", p);
@@ -501,18 +499,6 @@ void __pmgr_dbg_port_stats_show(struct seq_file *f)
 		return;
 	}
 
-	ret = rx_dma_ing_bytes_drops_get(p, &ing_drop_bytes);
-	if (unlikely(ret)) {
-		seq_printf(f, " Port %u drop bytes are not available:\n\n", p);
-		return;
-	}
-
-	ret = rx_dma_egr_bytes_drops_get(p, &egr_drop_bytes);
-	if (unlikely(ret)) {
-		seq_printf(f, " Port %u drop bytes are not available:\n\n", p);
-		return;
-	}
-
 	seq_puts(f, "+---------------------------------------------+\n");
 	seq_printf(f, "|          Port %-3u RX Statistics             |\n", p);
 	seq_puts(f, "+---------------------------------------------+\n");
@@ -520,9 +506,13 @@ void __pmgr_dbg_port_stats_show(struct seq_file *f)
 	seq_puts(f, "+--------------------------------+------------+\n");
 	seq_printf(f, "| %-30s | %-10llu |\n", "rx bytes", stats.bytes);
 	seq_puts(f, "+--------------------------------+------------+\n");
-	seq_printf(f, "| %-30s | %-10llu |\n", "rx droped bytes", ing_drop_bytes);
+	seq_printf(f, "| %-30s | %-10llu |\n", "rx dropped bytes", stats.ing_dropped_bytes);
 	seq_puts(f, "+--------------------------------+------------+\n");
-	seq_printf(f, "| %-30s | %-10llu |\n", "tx droped bytes", egr_drop_bytes);
+	seq_printf(f, "| %-30s | %-10llu |\n", "tx dropped bytes", stats.egr_dropped_bytes);
+	seq_puts(f, "+--------------------------------+------------+\n");
+	seq_printf(f, "| %-30s | %-10llu |\n", "rx dropped packets", stats.ing_dropped_packets);
+	seq_puts(f, "+--------------------------------+------------+\n");
+	seq_printf(f, "| %-30s | %-10llu |\n", "tx dropped packets", stats.egr_dropped_packets);
 	seq_puts(f, "+--------------------------------+------------+\n");
 
 	seq_puts(f, " For TX port statistics use QoS dbgfs\n\n");
@@ -1058,8 +1048,8 @@ static void group_ports_help(void *data)
 	pr_info(" \techo map=<priority>/unmap id=<gpid> ... [id=<gpid] > ports\n");
 	pr_info(" Options:");
 	pr_info(" \thelp  - print this help\n");
-	pr_info(" \tmap   - map port to group%lu with given priority, priority must be [0-7] when 7 is lowest priority\n",
-		(ulong)data);
+	pr_info(" \tmap   - map port to group%lu with given priority, priority must be [0-%u] when 0 is highest priority\n",
+		(ulong)data, PP_GPID_GRP_LOWEST_PRIO);
 	pr_info(" \tunmap - unmap port from group%lu\n", (ulong)data);
 	pr_info(" \tmove  - move port to the group%lu\n", (ulong)data);
 	pr_info(" \tgpid  - gpid (mandatory), can be more then once\n");

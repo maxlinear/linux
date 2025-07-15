@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 MaxLinear, Inc.
+ * Copyright (C) 2024-2025 MaxLinear, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -27,6 +27,7 @@
 #include "pp_session_mgr_internal.h"
 
 #define LRO_MAX_AGG_SEGMENTS (44)
+
 /**
  * @brief lro database definitions
  */
@@ -34,6 +35,31 @@ struct smgr_lro_db {
 	spinlock_t lock;
 	struct smgr_lro_conf conf;
 };
+
+/**
+ * @brief Get SSB buffer size 
+ */
+static s32 __smgr_lro_ssb_buf_sz_get(u16 policy, u16 *ssb_sz)
+{
+	struct pp_bmgr_policy_params policy_params;
+	struct pp_bmgr_pool_params pool_params;
+	s32 ret = 0;
+	u16 pool;
+
+	/* Get policy */
+	ret = pp_bmgr_policy_conf_get(policy, &policy_params);
+	if (ret)
+		return ret;
+
+	/* Get pool */
+	pool = policy_params.pools_in_policy[0].pool_id;
+	ret = pp_bmgr_pool_conf_get(pool, &pool_params);
+	if (ret)
+		return ret;
+
+	*ssb_sz = pool_params.size_of_buffer;
+	return 0;
+}
 
 /**
  * @brief return lro_db from smgr_db
@@ -51,6 +77,8 @@ s32 smgr_lro_conf_set(struct smgr_lro_conf *conf)
 {
 	struct smgr_lro_db *db = lro_db_get();
 	struct uc_ing_cmd msg = {0};
+	u16 ssb_buf_sz = 0;
+	u32 ssb_policy = 0;
 	s32 ret = 0;
 
 	if (ptr_is_null(db))
@@ -68,9 +96,17 @@ s32 smgr_lro_conf_set(struct smgr_lro_conf *conf)
 	if (ret)
 		goto error;
 
+	if (pp_bmgr_ssb_policy_get(&ssb_policy))
+		goto error;
+
 	/* Update ingress db */
 	msg.msg_type = ING_MBOX_LRO_PORT_SET;
-	msg.ing_cmd.lro_cfg.port = conf->pid;
+	msg.ing_cmd.lro_cfg.port   = conf->pid;
+	msg.ing_cmd.lro_cfg.policy = ssb_policy;
+	if (__smgr_lro_ssb_buf_sz_get(ssb_policy, &ssb_buf_sz))
+		goto error;
+	msg.ing_cmd.lro_cfg.ssb_pkt_sz =
+			ssb_buf_sz - conf->headroom - conf->tailroom;
 	ret = uc_ing_host_mbox_cmd_send(&msg, false);
 	if (ret)
 		goto error;

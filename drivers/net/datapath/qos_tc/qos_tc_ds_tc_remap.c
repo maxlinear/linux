@@ -12,7 +12,7 @@
 #include <net/switch_api/gsw_dev.h>
 #include <net/datapath_api_vlan.h>
 #include <net/datapath_api.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 
 

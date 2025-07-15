@@ -2680,23 +2680,6 @@ static int p34x_fwdl_probe(struct platform_device *pdev)
 
 	p34x_reset(pdev);
 
-	ret = of_irq_get(dev->of_node, 0);
-	if (ret == -EPROBE_DEFER) {
-		dev_info(dev, "of_irq_get returns -EPROBE_DEFER\n");
-		return ret;
-	} else if (ret <= 0)
-		pdata->irqnum = 0;
-	else {
-		pdata->irqnum = (unsigned int)ret;
-		ret = devm_request_threaded_irq(dev, pdata->irqnum, NULL, mdint, IRQF_ONESHOT, "MDINT",
-				pdata);
-		if (ret) {
-			dev_err(dev, "failed in requesting IRQ: %d\n", ret);
-			return ret;
-		}
-	}
-	dev_info(dev, "IRQ number %d\n", pdata->irqnum);
-
 	mdiobus = of_parse_phandle(dev->of_node, "mdio", 0);
 
 	if (!mdiobus) {
@@ -2782,6 +2765,27 @@ static int p34x_fwdl_probe(struct platform_device *pdev)
 		p34x_fwdl_smdio(pdev);
 		break;
 	}
+
+	ret = of_irq_get(dev->of_node, 0);
+	if (ret == -EPROBE_DEFER) {
+		dev_info(dev, "of_irq_get returns -EPROBE_DEFER\n");
+		return ret;
+	} else if (ret <= 0)
+		pdata->irqnum = 0;
+	else {
+		pdata->irqnum = (unsigned int)ret;
+		ret = devm_request_threaded_irq(dev, pdata->irqnum,
+								NULL,
+								mdint,
+								IRQF_ONESHOT,
+								"MDINT",
+								pdata);
+		if (ret) {
+			dev_err(dev, "failed in requesting IRQ: %d\n", ret);
+			return ret;
+		}
+	}
+	dev_info(dev, "IRQ number %d\n", pdata->irqnum);
 
 	pr_debug("Exiting %s\n", __FUNCTION__);
 	return 0;

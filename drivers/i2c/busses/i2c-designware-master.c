@@ -625,14 +625,6 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	if (ret)
 		goto done_nolock;
 
-	if (dev->flags & MODEL_MXL_LGM) {
-		ret = epu_notifier_blocking_chain(I2C_SEM_EVENT_REQUEST, NULL);
-		if (ret != NOTIFY_OK) {
-			ret = -ETIMEDOUT;
-			goto done_lock;
-		}
-	}
-
 	ret = i2c_dw_wait_bus_not_busy(dev);
 	if (ret < 0)
 		goto done;
@@ -690,10 +682,8 @@ done:
 		i2c_poll_tx_fifo(dev);
 		i2c_dw_disable_int(dev);
 		__i2c_dw_enable(dev);
-		epu_notifier_blocking_chain(I2C_SEM_EVENT_RELEASE, NULL);
 	}
 
-done_lock:
 	i2c_dw_release_lock(dev);
 
 done_nolock:

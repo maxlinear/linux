@@ -32,6 +32,7 @@
 #include <linux/igmp.h>
 #include <linux/l2tp.h>
 #include <linux/ppp_defs.h>
+#include <net/mpls.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/gre.h>
@@ -52,6 +53,10 @@ enum pktprs_proto {
 	PKTPRS_PROTO_VLAN3,
 	PKTPRS_PROTO_VLAN4,
 	PKTPRS_PROTO_PPPOE,
+	PKTPRS_PROTO_MPLS0,
+	PKTPRS_PROTO_MPLS1,
+	PKTPRS_PROTO_MPLS2,
+	PKTPRS_PROTO_MPLS3,
 	PKTPRS_PROTO_IPV4,
 	PKTPRS_PROTO_IPV6,
 	PKTPRS_PROTO_HOP_OPT,
@@ -90,6 +95,10 @@ enum pktprs_proto {
 	(p == PKTPRS_PROTO_VLAN3     ? "VLAN3"         : \
 	(p == PKTPRS_PROTO_VLAN4     ? "VLAN4"         : \
 	(p == PKTPRS_PROTO_PPPOE     ? "PPPOE"         : \
+	(p == PKTPRS_PROTO_MPLS0     ? "MPLS0"         : \
+	(p == PKTPRS_PROTO_MPLS1     ? "MPLS1"         : \
+	(p == PKTPRS_PROTO_MPLS2     ? "MPLS2"         : \
+	(p == PKTPRS_PROTO_MPLS3     ? "MPLS3"         : \
 	(p == PKTPRS_PROTO_IPV4      ? "IPV4"          : \
 	(p == PKTPRS_PROTO_IPV6      ? "IPV6"          : \
 	(p == PKTPRS_PROTO_HOP_OPT   ? "IPV6 HOP_OPT"  : \
@@ -111,7 +120,7 @@ enum pktprs_proto {
 	(p == PKTPRS_PROTO_IGMP      ? "IGMP"          : \
 	(p == PKTPRS_PROTO_SCTP      ? "SCTP"          : \
 	(p == PKTPRS_PROTO_PAYLOAD   ? "PAYLOAD"       : \
-	("INVALID")))))))))))))))))))))))))))))
+	("INVALID")))))))))))))))))))))))))))))))))
 
 /**
  * @enum pktprs_hdr_level
@@ -126,6 +135,7 @@ enum pktprs_hdr_level {
 #define PKTPRS_HDR_LEVEL_NUM (PKTPRS_HDR_LEVEL_LAST + 1)
 
 #define MAX_VLAN_HDRS_SUPPORTED 5
+#define MAX_MPLS_HDRS_SUPPORTED 4
 
 /**
  * @struct pktprs_proto_info
@@ -336,6 +346,18 @@ union l2tphdr {
 #define PKTPRS_IS_PPPOE(h, l)     \
 	test_bit(PKTPRS_PROTO_PPPOE,    &(h)->proto_bmap[l])
 
+#define PKTPRS_IS_MPLS0(h, l)     \
+	test_bit(PKTPRS_PROTO_MPLS0,    &(h)->proto_bmap[l])
+
+#define PKTPRS_IS_MPLS1(h, l)     \
+	test_bit(PKTPRS_PROTO_MPLS1,    &(h)->proto_bmap[l])
+
+#define PKTPRS_IS_MPLS2(h, l)     \
+	test_bit(PKTPRS_PROTO_MPLS2,    &(h)->proto_bmap[l])
+
+#define PKTPRS_IS_MPLS3(h, l)     \
+	test_bit(PKTPRS_PROTO_MPLS3,    &(h)->proto_bmap[l])
+
 #define PKTPRS_IS_IPV4(h, l)      \
 	test_bit(PKTPRS_PROTO_IPV4,     &(h)->proto_bmap[l])
 
@@ -405,6 +427,15 @@ union l2tphdr {
 			       BIT(PKTPRS_PROTO_VLAN2) | \
 			       BIT(PKTPRS_PROTO_VLAN3) | \
 			       BIT(PKTPRS_PROTO_VLAN4)))
+
+#define PKTPRS_IS_MPLS(h, l, i)   \
+	test_bit(PKTPRS_PROTO_MPLS0 + (i),  &(h)->proto_bmap[l])
+
+#define PKTPRS_MPLS_EXIST(h, l)   \
+	((h)->proto_bmap[l] & (BIT(PKTPRS_PROTO_MPLS0) | \
+			       BIT(PKTPRS_PROTO_MPLS1) | \
+			       BIT(PKTPRS_PROTO_MPLS2) | \
+			       BIT(PKTPRS_PROTO_MPLS3)))
 
 #define PKTPRS_IS_LEVEL(h, l)     ((h)->proto_bmap[l])
 
@@ -577,6 +608,22 @@ static inline struct vlan_hdr *pktprs_vlan_hdr(struct pktprs_hdr *h,
 		return NULL;
 
 	return (struct vlan_hdr *)pktprs_hdr(h, PKTPRS_PROTO_VLAN0 + id, l);
+}
+
+/**
+ * @brief get the mpls header pointer
+ * @param h parser header
+ * @param l header level
+ * @param id mpls index inside the header
+ * @return struct mpls_shim_hdr * mpls header pointer
+ */
+static inline struct mpls_shim_hdr *pktprs_mpls_hdr(struct pktprs_hdr *h,
+						 enum pktprs_hdr_level l, int id)
+{
+	if (id >= MAX_MPLS_HDRS_SUPPORTED)
+		return NULL;
+
+	return (struct mpls_shim_hdr *)pktprs_hdr(h, PKTPRS_PROTO_MPLS0 + id, l);
 }
 
 /**

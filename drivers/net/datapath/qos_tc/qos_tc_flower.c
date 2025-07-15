@@ -15,7 +15,6 @@
 #include <net/tc_act/tc_sample.h>
 #include <net/flow_dissector.h>
 #include <linux/version.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_ext_vlan.h"
 #include "qos_tc_vlan_filter.h"
@@ -152,57 +151,6 @@ static int qos_tc_flower_storage_del(struct net_device *dev,
 	return 0;
 }
 
-#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-			  bool (*check)(const struct tc_action *a))
-{
-	const struct tc_action *a;
-	LIST_HEAD(actions);
-
-	if (tc_no_actions(f->exts))
-		return false;
-
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list)
-		if (check(a))
-			return true;
-
-	return false;
-}
-#elif (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-			  bool (*check)(const struct tc_action *a))
-{
-	const struct tc_action *a;
-	LIST_HEAD(actions);
-
-	if (!tcf_exts_has_actions(f->exts))
-		return false;
-
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list)
-		if (check(a))
-			return true;
-
-	return false;
-}
-#elif (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-bool has_action_id(struct flow_cls_offload *f,
-			  bool (*check)(const struct tc_action *a))
-{
-	const struct tc_action *a;
-	int i;
-
-	if (!tcf_exts_has_actions(f->exts))
-		return false;
-
-	tcf_exts_for_each_action(i, a, f->exts)
-		if (check(a))
-			return true;
-
-	return false;
-}
-#else
 bool has_action_id(struct flow_cls_offload *f, enum flow_action_id id)
 {
 	const struct flow_action_entry *a;
@@ -214,27 +162,14 @@ bool has_action_id(struct flow_cls_offload *f, enum flow_action_id id)
 
 	return false;
 }
-#endif
 
 static bool is_type_mirred(struct net_device *dev,
 			   struct flow_cls_offload *f)
 {
-#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_mirred_redirect) ||
-	       has_action_id(f, &is_tcf_mirred_mirror) ||
-	       has_action_id(f, &is_tcf_mirred_ingress_redirect);
-#elif (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_mirred_egress_redirect) ||
-	       has_action_id(f, &is_tcf_mirred_egress_mirror);
-#elif (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, FLOW_ACTION_REDIRECT) ||
-	       has_action_id(f, FLOW_ACTION_MIRRED);
-#else
 	return has_action_id(f, FLOW_ACTION_REDIRECT) ||
 	       has_action_id(f, FLOW_ACTION_MIRRED) ||
 	       has_action_id(f, FLOW_ACTION_REDIRECT_INGRESS) ||
 	       has_action_id(f, FLOW_ACTION_MIRRED_INGRESS);
-#endif
 }
 
 static bool is_type_ip_drop(struct net_device *dev,
@@ -317,17 +252,11 @@ static bool is_type_ext_vlan(struct net_device *dev,
 			     struct flow_cls_offload *f)
 {
 	if (is_dissector_vlan_compatible(f))
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-		return has_action_id(f, &is_tcf_gact_ok) ||
-		       has_action_id(f, &is_tcf_gact_shot) ||
-		       has_action_id(f, &is_tcf_vlan);
-#else
 		return has_action_id(f, FLOW_ACTION_ACCEPT) ||
 		       has_action_id(f, FLOW_ACTION_DROP) ||
 		       has_action_id(f, FLOW_ACTION_VLAN_PUSH) ||
 		       has_action_id(f, FLOW_ACTION_VLAN_POP) ||
 		       has_action_id(f, FLOW_ACTION_VLAN_MANGLE);
-#endif
 
 	return false;
 }
@@ -335,21 +264,9 @@ static bool is_type_ext_vlan(struct net_device *dev,
 static bool is_type_skbedit(struct net_device *dev,
 			    struct flow_cls_offload *f)
 {
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_skbedit_mark) ||
-	       has_action_id(f, &is_tcf_skbedit_priority);
-#elif (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_skbedit_mark) ||
-	       has_action_id(f, &is_tcf_skbedit_ptype);
-#elif (KERNEL_VERSION(5, 7, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_skbedit_mark) ||
-	       has_action_id(f, &is_tcf_skbedit_ptype) ||
-	       has_action_id(f, &is_tcf_skbedit_priority);
-#else
 	return has_action_id(f, FLOW_ACTION_MARK) ||
 	       has_action_id(f, FLOW_ACTION_PTYPE) ||
 	       has_action_id(f, FLOW_ACTION_PRIORITY);
-#endif
 }
 
 static bool is_type_accept(struct flow_cls_offload *f)
@@ -504,30 +421,14 @@ static int qos_tc_flower_destroy(struct net_device *dev,
 	return qos_tc_flower_storage_del(dev, cookie, f, tc_params);
 }
 
-#if (KERNEL_VERSION(4, 14, 0) < LINUX_VERSION_CODE)
 int qos_tc_flower_offload(struct net_device *dev, bool ingress, void *type_data,
 		const struct qos_tc_params *tc_params)
-#else
-int qos_tc_flower_offload(struct net_device *dev, void *type_data,
-		const struct qos_tc_params *tc_params)
-#endif
 {
 	int ret = 0;
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	struct tc_to_netdev *tc_to_netdev = type_data;
-	struct flow_cls_offload *f = tc_to_netdev->cls_flower;
-	bool ingress = TC_H_MIN(f->common.classid) != TC_H_MIN(TC_H_MIN_EGRESS);
-#else
 	struct flow_cls_offload *f = type_data;
-#endif
 
 	ASSERT_RTNL();
 	netdev_dbg(dev, "%s:start %d\n", __func__, ret);
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (TC_H_MAJ(f->common.classid) != TC_H_MAJ(TC_H_CLSACT))
-		return -EOPNOTSUPP;
-#endif
 
 	switch (f->command) {
 	case FLOW_CLS_REPLACE:
@@ -559,7 +460,6 @@ int qos_tc_flower_offload(struct net_device *dev, void *type_data,
 	return ret;
 }
 
-#if (KERNEL_VERSION(4, 14, 0) < LINUX_VERSION_CODE)
 int qos_tc_block_cb_ingress(enum tc_setup_type type,
 			    void *type_data,
 			    void *cb_priv)
@@ -599,47 +499,6 @@ int qos_tc_block_cb_egress(enum tc_setup_type type,
 	netdev_dbg(dev, "%s:exit %d\n", __func__, ret);
 	return ret;
 }
-
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-int qos_tc_block_offload(struct net_device *dev,
-			 void *type_data)
-{
-	int ret = 0;
-	tc_setup_cb_t *cb;
-	struct tc_block_offload *f = type_data;
-
-	ASSERT_RTNL();
-	netdev_dbg(dev, " tc block offload starting - binder type %d\n",
-		   f->binder_type);
-
-	if (f->binder_type == TCF_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
-		cb = qos_tc_block_cb_ingress;
-	else if (f->binder_type == TCF_BLOCK_BINDER_TYPE_CLSACT_EGRESS)
-		cb = qos_tc_block_cb_egress;
-	else
-		return -EOPNOTSUPP;
-
-	switch (f->command) {
-	case TC_BLOCK_BIND:
-		netdev_dbg(dev, "CLS BIND\n");
-		ret = tcf_block_cb_register(f->block, cb, dev, dev, f->extack);
-		if (ret)
-			return ret;
-
-		return 0;
-	case TC_BLOCK_UNBIND:
-		netdev_dbg(dev, "CLS UNBIND\n");
-		tcf_block_cb_unregister(f->block, cb, dev);
-
-		return 0;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	netdev_dbg(dev, "%s:exit %d\n", __func__, ret);
-	return ret;
-}
-#else
 
 static LIST_HEAD(qos_tc_block_cb_list);
 
@@ -694,10 +553,7 @@ int qos_tc_block_offload(struct net_device *dev,
 	netdev_dbg(dev, "%s:exit %d\n", __func__, ret);
 	return ret;
 }
-#endif
-#endif
 
-#if (KERNEL_VERSION(5, 3, 0) <= LINUX_VERSION_CODE)
 struct net_device *qos_tc_get_indev(struct net_device *dev,
 				    struct flow_cls_offload *f)
 {
@@ -716,24 +572,6 @@ struct net_device *qos_tc_get_indev(struct net_device *dev,
 
 	return __dev_get_by_index(dev_net(dev), match.key->ingress_ifindex);
 }
-#else
-
-/*  Access the indev_ifindex member which is the first element in
- *  struct fl_flow_key, but struct fl_flow_key is not defined in
- *  a header file, but only in net/sched/cls_flower.c
- */
-#define FL_FLOW_KEY_IFINDEX(f) ((int)*(int *)qos_tc_get_key(f))
-
-struct net_device *qos_tc_get_indev(struct net_device *dev,
-				    struct flow_cls_offload *f)
-{
-	int ifi = FL_FLOW_KEY_IFINDEX(f);
-
-	if (ifi)
-		return __dev_get_by_index(dev_net(dev), ifi);
-	return NULL;
-}
-#endif
 
 void qos_tc_storage_debugfs(struct seq_file *file, void *ctx)
 {

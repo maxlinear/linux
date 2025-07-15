@@ -115,14 +115,14 @@ enum l2_cmp_op {
  * @note AKA np sel logic
  */
 enum np_logic {
-	NP_LOGIC_TUNN,		/* tunnels          */
-	NP_LOGIC_IPV4,		/* external IPv6    */
-	NP_LOGIC_IPV6,		/* external IPv4    */
-	NP_LOGIC_IP_SELECT,	/* IP select nibble */
-	NP_LOGIC_IPV4_2,	/* internal IPv4    */
-	NP_LOGIC_IPV6_2,	/* internal IPv6    */
-	NP_LOGIC_UDP,		/* UDP tunnels      */
-	NP_LOGIC_END,		/* for protocols prior to the payload */
+	NP_LOGIC_TUNN,			/* tunnels          */
+	NP_LOGIC_IPV4,			/* external IPv6    */
+	NP_LOGIC_IPV6,			/* external IPv4    */
+	NP_LOGIC_IP_SELECT,		/* IP select nibble */
+	NP_LOGIC_IPV4_2_L2TP,	/* internal IPv4 or L2TP   */
+	NP_LOGIC_IPV6_2,		/* internal IPv6    */
+	NP_LOGIC_UDP,			/* UDP tunnels      */
+	NP_LOGIC_END,			/* for protocols prior to the payload */
 	NP_LOGICS_NUM
 };
 

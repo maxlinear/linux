@@ -54,6 +54,9 @@
 #define BLINK_FREQ_MASK	0x3
 #define BLINK_SRC_OFF(pin, src)		(((pin) * 6) + 4)
 #define BLINK_SRC_MASK	0x3
+/* represent for LED 0-23 */
+#define BLINK_GEN_PIN   3
+#define LED_BLINK_REG_OFF(pin)		((pin) == BLINK_GEN_PIN || ((pin) >= 29) ?  LED_BLINK_H8_1 : LED_BLINK_H8_0)
 
 /* CON1 */
 #define US		30
@@ -70,7 +73,28 @@
 #define BRIGHTNESS_MAX		255
 
 /**
- * HW support 2HZ/4HZ/8HZ/10HZ/50KHZ/100KHZ/200KHZ/250KZ/1MHZ
+ * If clock source is FPID, HW blink rate can be 2HZ/4HZ/8HZ/10HZ
+ * If clock source is GPTC, the base frequency will be configured in
+ * mxl,gptc-clkrate, it's blink rate is
+ * mxl,gptc-clkrate / 200/ (4 | 5 | 10 | 20)
+ * if clock source is GPTC HS, the blink rate can be 2HZ/4HZ/8HZ/10HZ or
+ * mxl,gptc-clkrate / 200/ (1 | 4 | 5 | 10 | 20)
+ * default clock source is GPTC HS, blink rate is 2HZ by default.
+ * see below illustration
+ *
+ * FPID---|--2HZ---|
+ *        |--4HZ---|--FPID based blink rate(mxl,sso-def-blinkrate)
+ *        |--8HZ---|
+ *        |--10HZ--|
+ *
+ * gptc-clk---/200 ---|---/20--|
+ *                    |---/10--|--->gptc based blink rate(mxl,sso-def-blinkrate)
+ *                    |---/5---|
+ *                    |---/4---|
+ *
+ * LED has update rate and blink rate.
+ * in FPID and GPTC mode, update rate is same as blink rate.
+ * in GPTC HS mode, they can be set separately.
  */
 enum {
 	MAX_FPID_FREQ_RANK = 3, /* 0 - 3 */
@@ -108,6 +132,7 @@ enum {
 	SSO_SW_UPDATE = 0,
 	SSO_GPTC_CLK,
 	SSO_FPID_CLK,
+	SSO_GPTC_HS_CLK,
 	SSO_UPDATE_MAX
 };
 
@@ -117,8 +142,6 @@ enum {
 	FCDSC_6_25MHZ, /* 6.25MHZ */
 	FCDSC_3_125MHZ, /* 3.125MHZ */
 };
-
-static const u32 freq_div_tbl[] = {4000, 2000, 1000, 800};
 
 struct sso_led_priv;
 /**
@@ -151,6 +174,7 @@ struct sso_led_desc {
 	unsigned int blinking:1;
 	unsigned int default_on:1;
 	unsigned int led_test:1;
+	unsigned int is_low_active:1;
 };
 
 /**
@@ -173,15 +197,12 @@ struct sso_led {
 /**
  * struct sso_cfg
  *
- * @fpid_clk: sso slow clock
- * @fpid_clkrate: sso slow clock rate
  * @gptc_clkrate: sso fast clock rate
  * @brightness: default brightness for all leds
  * @blink_rate_idx: default brink rate idx of freq
  * @update_src: sso blink source
  */
 struct sso_cfg {
-	u32 fpid_clkrate;
 	u32 gptc_clkrate;
 	u32 brightness;
 	int blink_rate_idx;
@@ -210,6 +231,7 @@ struct sso_led_priv {
 };
 
 static void sso_led_set_blink(struct sso_led_priv *priv, u32 pin, bool set);
+static void led_output(struct sso_led *led, int val);
 
 static struct sso_led
 *cdev_to_sso_led_data(struct led_classdev *led_cdev)
@@ -246,8 +268,10 @@ hw_blink_store(struct device *dev, struct device_attribute *attr,
 	if (org_state == state)
 		return size;
 
-	if (led->desc.brightness)
+	if (led->desc.brightness) {
+		led_output(led, 1);
 		sso_led_set_blink(led->priv, led->desc.pin, state);
+	}
 
 	return size;
 }
@@ -283,26 +307,93 @@ static int sso_led_write_mask(struct regmap *map, u32 reg, u32 off,
 	return sso_led_writel(map, reg, reg_val);
 }
 
+/**
+ * set blink rate for LED 24 - 31
+ * set blink rate for LED 0-32 in GPTC high speed mode
+ */
+static void sso_led_set_blink_rate(struct sso_led_priv *priv, u32 led_id,
+				   u32 blink_rate_idx)
+{
+	u32 reg;
+	u32 freq_idx;
+	u32 blink_src;
+
+	reg = LED_BLINK_REG_OFF(led_id);
+
+	if (blink_rate_idx <= MAX_FPID_FREQ_RANK) {
+		blink_src = CLK_SRC_FPID;
+		freq_idx = blink_rate_idx;
+	} else if (blink_rate_idx <= MAX_GPTC_FREQ_RANK) {
+		blink_src = CLK_SRC_GPTC;
+		freq_idx = blink_rate_idx - MAX_FPID_FREQ_RANK - 1;
+	} else {
+		blink_src = CLK_SRC_GPTC_HS;
+		freq_idx = 0;
+	}
+
+	/* freq setting */
+	if (blink_src != CLK_SRC_GPTC_HS) {
+		sso_led_write_mask(priv->mmap, reg,
+				   BLINK_FREQ_OFF(led_id, blink_src),
+				   BLINK_FREQ_MASK, freq_idx);
+	}
+
+	/* select clock source */
+	sso_led_write_mask(priv->mmap, reg,
+			   BLINK_SRC_OFF(led_id, blink_src),
+			   BLINK_SRC_MASK, blink_src);
+}
+
+static void sso_led_set_def_blinkrate(struct sso_led_priv *priv)
+{
+	struct sso_cfg *cfg = &priv->cfg;
+	u32 freq_idx = 0;
+
+	switch (cfg->update_src) {
+	case SSO_FPID_CLK:
+		sso_led_write_mask(priv->mmap, SSO_CON1, BLINK_FPID,
+				   BLINK_FPID_MASK, cfg->blink_rate_idx);
+		break;
+
+	case SSO_GPTC_CLK:
+		freq_idx = cfg->blink_rate_idx - MAX_FPID_FREQ_RANK - 1;
+		sso_led_write_mask(priv->mmap, SSO_CON1, BLINK_GPTC,
+				   BLINK_GPTC_MASK, freq_idx);
+		break;
+
+	case SSO_GPTC_HS_CLK:
+		sso_led_set_blink_rate(priv, BLINK_GEN_PIN, cfg->blink_rate_idx);
+		break;
+
+	default:
+		dev_err(priv->dev, "SSO update src is wrong!\n");
+		return;
+	}
+}
+
 static int sso_led_hw_init(struct sso_led_priv *priv)
 {
 	struct sso_cfg *cfg = &priv->cfg;
-	u32 blink_r; /* 1: separate update rate and blink rate */
 	u32 fcdsc; /* fixed divider shift clock, set to less than 25Mhz in leagcy mode */
+	u32 fast_update;
+	u32 update_src;
 
-	if (sso_led_write_mask(priv->mmap, SSO_CON1, US,
-			       US_MASK, cfg->update_src))
-		return -EINVAL;
-
-	if (cfg->update_src != SSO_GPTC_CLK) {
-		blink_r = 0;
+	if (cfg->update_src != SSO_GPTC_HS_CLK) {
 		fcdsc = FCDSC_12_5MHZ;
-	} else {
-		blink_r = 1;
+		fast_update = 0;
+		update_src = cfg->update_src;
+
+	} else { /* GPTC HS mode */
 		fcdsc = FCDSC_25MHZ;
+		fast_update = 1;
+		update_src = SSO_GPTC_CLK;
 	}
 
-	sso_led_update_bit(priv->mmap, SSO_CON0, BLINK_R, blink_r);
+	sso_led_write_mask(priv->mmap, SSO_CON1, US, US_MASK, update_src);
+	sso_led_update_bit(priv->mmap, SSO_CON0, BLINK_R, fast_update);
 	sso_led_write_mask(priv->mmap, SSO_CON1, FCDSC, FCDSC_MASK, fcdsc);
+
+	sso_led_set_def_blinkrate(priv);
 
 	return 0;
 }
@@ -318,13 +409,23 @@ static u32 sso_rectify_brightness(u32 brightness)
 static int sso_rectify_blink_rate(struct sso_led_priv *priv, u32 rate)
 {
 	int i;
+	struct sso_cfg *cfg = &priv->cfg;
 
 	for (i = 0; i < MAX_FREQ_RANK; i++) {
 		if (rate <= priv->freq[i])
-			return i;
+			break;
 	}
 
-	return i - 1;
+	if (cfg->update_src == SSO_FPID_CLK && i > MAX_FPID_FREQ_RANK)
+		return MAX_FPID_FREQ_RANK;
+
+	if (cfg->update_src == SSO_GPTC_CLK && i > MAX_GPTC_FREQ_RANK)
+		return MAX_GPTC_FREQ_RANK;
+
+	if (i >= MAX_FREQ_RANK)
+		return MAX_GPTC_HS_FREQ_RANK;
+
+	return i;
 }
 
 static unsigned int sso_led_pin_to_group(u32 pin)
@@ -335,31 +436,6 @@ static unsigned int sso_led_pin_to_group(u32 pin)
 		return LED_GRP1_24_28;
 	else
 		return LED_GRP2_29_31;
-}
-
-static u32 sso_led_get_blink_freq_src(struct sso_led_priv *priv, int freq_idx)
-{
-	struct sso_cfg *cfg;
-
-	cfg = &priv->cfg;
-
-	if (freq_idx == MAX_GPTC_HS_FREQ_RANK)
-		return CLK_SRC_GPTC_HS;
-
-	if (cfg->update_src == SSO_FPID_CLK)
-		return CLK_SRC_FPID;
-
-	return CLK_SRC_GPTC;
-}
-
-static u32 sso_led_pin_blink_off(u32 pin, unsigned int group)
-{
-	if (group == LED_GRP2_29_31)
-		return pin - LED_GRP1_PIN_MAX;
-	else if (group == LED_GRP1_24_28)
-		return pin - LED_GRP0_PIN_MAX;
-	else	/* led 0 - 23 in led 32 location */
-		return SSO_LED_MAX_NUM - LED_GRP1_PIN_MAX;
 }
 
 static void
@@ -378,53 +454,22 @@ static void sso_led_freq_set(struct sso_led_priv *priv,
 			     struct sso_led_desc *desc, int freq_idx)
 {
 	unsigned int group;
-	u32 reg, off, mask, freq_src, val_freq, pin;
-	static bool freq_set_led0_23;
+	u32 pin;
 
 	pin = desc->pin;
 	group = sso_led_pin_to_group(pin);
-	freq_src = sso_led_get_blink_freq_src(priv, freq_idx);
-	off = sso_led_pin_blink_off(pin, group);
 
-	if (group == LED_GRP0_0_23) {
-		if (!freq_set_led0_23)
-			freq_set_led0_23 = true;
-		else if (!desc->led_test)
-			return;
-	}
+	/**
+	 * LED group 0-23 use default frequency
+	 * it only need be configured in test mode
+	 */
+	if (group == LED_GRP0_0_23 && !desc->led_test)
+		return;
 
-	if (group == LED_GRP1_24_28)
-		reg = LED_BLINK_H8_0;
+	if (group == LED_GRP0_0_23)
+		sso_led_set_def_blinkrate(priv);
 	else
-		reg = LED_BLINK_H8_1;
-
-	if (freq_src == CLK_SRC_GPTC)
-		val_freq = freq_idx - MAX_FPID_FREQ_RANK - 1;
-	else
-		val_freq = freq_idx;
-
-	/* set blink rate idx */
-	if (freq_src != CLK_SRC_GPTC_HS)
-		sso_led_write_mask(priv->mmap, reg,
-				   BLINK_FREQ_OFF(off, freq_src),
-				   BLINK_FREQ_MASK, val_freq);
-
-	/* select clock source */
-	sso_led_write_mask(priv->mmap, reg,
-			   BLINK_SRC_OFF(off, freq_src),
-			   BLINK_SRC_MASK, freq_src);
-
-	/* LED0-23 blink need to CON1 FPID/GPC freq too */
-	if (group == LED_GRP0_0_23 && freq_src != CLK_SRC_GPTC_HS) {
-		if (freq_src == CLK_SRC_FPID) {
-			off = BLINK_FPID;
-			mask = BLINK_FPID_MASK;
-		} else {
-			off = BLINK_GPTC;
-			mask = BLINK_GPTC_MASK;
-		}
-		sso_led_write_mask(priv->mmap, SSO_CON1, off, mask, val_freq);
-	}
+		sso_led_set_blink_rate(priv, pin, freq_idx);
 }
 
 /**
@@ -447,13 +492,31 @@ static void led_pad_output(struct sso_led *led, int val)
 
 static void led_output(struct sso_led *led, int val)
 {
+	struct sso_cfg *cfg = &led->priv->cfg;
+	struct sso_led_desc *desc = &led->desc;
+
 	if (led->desc.hw_trig) /* HW controlled LED */
 		return;
 
-	if (led->gpiod)
-		gpiod_set_value(led->gpiod, val);
-	else
-		led_pad_output(led, val);
+	if (desc->brightness == LED_OFF) {
+		val = desc->is_low_active;
+	} else {
+		// brightness: 1~255
+		if (cfg->update_src == SSO_GPTC_HS_CLK) {
+			// In order to make dimming function, we need to enable LED in the LED controller. Brightess is controlled by DUTY_CYCLE.
+			val = 1;
+		} else {
+			// Birghtness is always 255 in both FPID and SW mode.
+			if (desc->hw_blink && desc->blinking) {
+				// To enable the hw blink function, we need to activate the LED in the SSOLED controller.
+				val = 1;
+			} else {
+				val = !desc->is_low_active;
+			}
+		}
+	}
+
+	led_pad_output(led, val);
 }
 
 static void sso_led_brightness_set(struct led_classdev *led_cdev,
@@ -475,8 +538,10 @@ static void sso_led_brightness_set(struct led_classdev *led_cdev,
 	 * To make it compatible to Linux sys interface, user still
 	 * can use brightness to control LED on/off
 	 */
-	if (priv->cfg.update_src == SSO_GPTC_CLK)
-		sso_led_writel(priv->mmap, DUTY_CYCLE(desc->pin), brightness);
+	if (priv->cfg.update_src == SSO_GPTC_HS_CLK) {
+		sso_led_writel(priv->mmap, DUTY_CYCLE(desc->pin),
+				desc->is_low_active ? (BRIGHTNESS_MAX - brightness) : brightness);
+	}
 
 	if (brightness == LED_OFF)
 		val = 0;
@@ -510,9 +575,9 @@ static void sso_led_hw_cfg(struct sso_led_priv *priv, struct sso_led *led)
 		sso_led_set_hw_trigger(priv, desc->pin, 1);
 
 	/* set brightness */
-	if (priv->cfg.update_src == SSO_GPTC_CLK) {
+	if (priv->cfg.update_src == SSO_GPTC_HS_CLK) {
 		sso_led_writel(priv->mmap, DUTY_CYCLE(desc->pin),
-			       desc->brightness);
+				desc->is_low_active ? (BRIGHTNESS_MAX - desc->brightness) : desc->brightness);
 	} else {  /* only support 255 */
 		sso_led_writel(priv->mmap, DUTY_CYCLE(desc->pin),
 			       BRIGHTNESS_MAX);
@@ -636,6 +701,9 @@ static int sso_led_dt_parse(struct sso_led_priv *priv)
 		if (fwnode_property_present(child, "mxl,sso-hw-trigger"))
 			desc->hw_trig = 1;
 
+		if (fwnode_property_present(child, "mxl,sso-low_active"))
+			desc->is_low_active = 1;
+
 		if (desc->hw_trig) {
 			desc->default_trigger = NULL;
 			desc->hw_blink = 0;
@@ -722,31 +790,29 @@ static int sso_dt_parse(struct sso_led_priv *priv)
 }
 
 /**
- * FPID blink rate: 8khz / (4000, 2000, 1000, 800) -> 2HZ, 4HZ, 8HZ, 10HZ
- * GPTC blink rate: 200MHZ / (4000, 2000, 1000, 800)
- *                  -> 50KHZ, 100KHZ, 200KHZ, 250KHZ
- * GPTC High speed blink rate: 200Mhz / 200 -> 1Mhz
+ * FPID blink rate: 2HZ, 4HZ, 8HZ, 10HZ
+ * GPTC blink rate: gptc_clkrate / 200 / (4/5/10/20)
+ * GPTC High speed blink rate is 2HZ fixed, but
+ * update rate will be gptc_clkrate / 200
  */
 static void sso_init_freq(struct sso_led_priv *priv)
 {
 	int i;
 	struct sso_cfg *cfg = &priv->cfg;
-	u32 blink_rate = 0;
+	u32 blink_rate = cfg->gptc_clkrate;
+	u32 fpid_freq[] = {2, 4, 8, 10};
+	u32 gptc_freq_div_tbl[] = {20, 10, 5, 4};
+	u32 gptc_freq;
 
+	do_div(blink_rate, 200);
 	for (i = 0; i < MAX_FREQ_RANK; i++) {
 		if (i <= MAX_FPID_FREQ_RANK) {
-			blink_rate = cfg->fpid_clkrate;
-			do_div(blink_rate, freq_div_tbl[i]);
-			priv->freq[i] = blink_rate;
+			priv->freq[i] = fpid_freq[i];
 		} else if (i <= MAX_GPTC_FREQ_RANK) {
-			blink_rate = cfg->gptc_clkrate;
-			do_div(blink_rate,
-			       freq_div_tbl[i - MAX_FPID_FREQ_RANK - 1]);
-			priv->freq[i] = blink_rate;
-		} else {
-			blink_rate = cfg->gptc_clkrate;
-			do_div(blink_rate, 200);
-			priv->freq[i] = blink_rate;
+			gptc_freq = blink_rate;
+			do_div(gptc_freq,
+			       gptc_freq_div_tbl[i - MAX_FPID_FREQ_RANK - 1]);
+			priv->freq[i] = gptc_freq;
 		}
 	}
 
@@ -848,6 +914,7 @@ sso_led_create_write(struct file *s, const char __user *buffer,
 	desc->hw_trig = 0;
 	desc->hw_blink = 1;
 	desc->led_test = 1;
+	desc->is_low_active = 0;
 
 	if (sso_create_led(priv, led))
 		return -EINVAL;
@@ -919,6 +986,12 @@ static void *sso_led_show_seq_start(struct seq_file *s, loff_t *pos)
 {
 	struct sso_led_priv *priv = s->private;
 
+	seq_printf(s, "-------------Default-----------------------\n");
+	seq_printf(s, "CLK SRC: %s\n", priv->cfg.update_src == SSO_SW_UPDATE ? "SW" : priv->cfg.update_src == SSO_FPID_CLK ? "FPID" : "GPTC");
+	seq_printf(s, "GPTC CLK rate: %u\n", priv->cfg.gptc_clkrate);
+	seq_printf(s, "Blink rate:%u\n", priv->freq[priv->cfg.blink_rate_idx]);
+	seq_printf(s, "Brightness:%u\n", priv->cfg.brightness);
+
 	return seq_list_start(&priv->led_list, *pos);
 }
 
@@ -951,6 +1024,7 @@ static int sso_led_show_seq_show(struct seq_file *s, void *v)
 	seq_printf(s, "%s driven LED\n", (!desc->hw_trig) ? "SW" : "HW");
 	seq_printf(s, "%s blinking\n", (!desc->hw_blink) ? "SW" : "HW");
 	seq_printf(s, "blinking status: %s\n", (desc->blinking) ? "Yes" : "No");
+	seq_printf(s, "low active: %s\n", (desc->is_low_active) ? "Yes" : "No");
 
 	return 0;
 }
@@ -988,7 +1062,7 @@ static int sso_led_proc_init(struct sso_led_priv *priv)
 	char sso_led_dir[64] = {0};
 	struct dentry *file;
 
-	strlcpy(sso_led_dir, priv->dev->of_node->name, sizeof(sso_led_dir));
+	strscpy(sso_led_dir, priv->dev->of_node->name, sizeof(sso_led_dir));
 	priv->debugfs = debugfs_create_dir(sso_led_dir, NULL);
 
 	if (!priv->debugfs)
@@ -1054,13 +1128,6 @@ static int mxl_sso_led_probe(struct platform_device *pdev)
 	}
 
 	cfg = &priv->cfg;
-	if (device_property_read_u32(dev, "mxl,fpid-clkrate", &prop)) {
-		dev_err(dev, "Failed to get fpid clock rate\n");
-		goto __hw_err;
-	} else {
-		cfg->fpid_clkrate = prop;
-	}
-
 	if (device_property_read_u32(dev, "mxl,gptc-clkrate", &prop)) {
 		dev_err(dev, "Failed to get gptc clock rate\n");
 		goto __hw_err;

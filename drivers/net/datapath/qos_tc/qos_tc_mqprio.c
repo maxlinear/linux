@@ -15,7 +15,7 @@
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
 #include <linux/version.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 
 /* create qdisc tree */
@@ -171,13 +171,8 @@ int qos_tc_mqprio_offload(struct net_device *dev,
 			  const struct qos_tc_params *tc_params)
 {
 	int err = 0;
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	struct tc_to_netdev *tc_to_netdev = type_data;
-	struct tc_mqprio_qopt *opt = tc_to_netdev->mqprio;
-#else
 	struct tc_mqprio_qopt_offload *qopt_offload = type_data;
 	struct tc_mqprio_qopt *opt = &qopt_offload->qopt;
-#endif
 
 	ASSERT_RTNL();
 	netdev_dbg(dev, "MQPRIO: offload starting\n");

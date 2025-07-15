@@ -9,7 +9,7 @@
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <net/datapath_api_vlan.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_vlan_storage.h"
 
@@ -206,13 +206,8 @@ static int sort_category_cmp(int prio_a, u64 a, int prio_b, u64 b)
 	       rule_sort_category_get(prio_b, b);
 }
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp0(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b)
-#else
 int qos_tc_cookie_cmp0(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b)
-#endif
 {
 	struct dp_vlan0 *la = list_entry(lh_a, struct dp_vlan0, list);
 	struct dp_vlan0 *lb = list_entry(lh_b, struct dp_vlan0, list);
@@ -229,13 +224,8 @@ int qos_tc_cookie_cmp0(void *priv, const struct list_head *lh_a,
 	return prio_cmp(la->prio, lb->prio);
 }
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp1(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b)
-#else
 int qos_tc_cookie_cmp1(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b)
-#endif
 {
 	struct dp_vlan1 *la = list_entry(lh_a, struct dp_vlan1, list);
 	struct dp_vlan1 *lb = list_entry(lh_b, struct dp_vlan1, list);
@@ -252,13 +242,8 @@ int qos_tc_cookie_cmp1(void *priv, const struct list_head *lh_a,
 	return prio_cmp(la->prio, lb->prio);
 }
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp2(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b)
-#else
 int qos_tc_cookie_cmp2(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b)
-#endif
 {
 	struct dp_vlan2 *la = list_entry(lh_a, struct dp_vlan2, list);
 	struct dp_vlan2 *lb = list_entry(lh_b, struct dp_vlan2, list);

@@ -47,22 +47,24 @@ static u32 gcid, gtid;
 
 static void uc_dbg_nf_cfg_set(char *cmd_buf, void *data)
 {
-	u16 pid, qos_port, tx_queue, host_q, subif;
+	u16 pid, qos_port, tx_queue, uc_queue, host_q, subif;
 	u32 nf;
 
-	if (sscanf(cmd_buf, "%u %hu %hu %hu %hu %hu", &nf, &pid, &subif,
-		   &qos_port, &tx_queue, &host_q) != 6) {
+	if (sscanf(cmd_buf, "%u %hu %hu %hu %hu %hu %hu",
+		   &nf, &pid, &subif, &qos_port, &uc_queue, &tx_queue, &host_q)
+		!= 6) {
 		pr_err("sscanf error\n");
 		return;
 	}
 
-	if (uc_nf_set(nf, pid, subif, qos_port, tx_queue, host_q, NULL)) {
+	if (uc_nf_set(nf, pid, subif, qos_port, tx_queue, uc_queue, host_q, NULL)) {
 		pr_err("failed to set nf\n");
 		return;
 	}
 
-	pr_info("UC_TYPE[EGRESS] NF[%u] PID[%hu] SUBIF [%hu] QOS_RX_PORT[%hu] QOS_TX_QUEUE[%hu]\n",
-		nf, pid, subif, qos_port, tx_queue);
+	pr_info("UC_TYPE[EGRESS] NF[%u] PID[%hu] SUBIF[%hu] QOS_RX_PORT[%hu] "
+		"QOS_TX_QUEUE[%hu] UC_QUEUE[%hu]\n",
+		nf, pid, subif, qos_port, tx_queue, uc_queue);
 }
 
 static void uc_dbg_nf_cfg_help(struct seq_file *f)

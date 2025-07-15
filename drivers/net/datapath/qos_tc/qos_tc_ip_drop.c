@@ -12,7 +12,6 @@
 #include <net/datapath_api.h>
 #include <net/flow_dissector.h>
 #include <net/pkt_cls.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_parser.h"
 #include "qos_tc_pce.h"

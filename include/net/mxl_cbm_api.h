@@ -1490,6 +1490,15 @@ int intel_pcie_dc_iatu_inbound_add(void *sysdata, u32 start, size_t size,
  * Remove atu_index specified address translation region
  */
 int intel_pcie_dc_iatu_inbound_remove(void *sysdata, u32 atu_index);
+
+/**
+ * intel_pcie_firewall_device - get PCIe controller device for firewall functions.
+ * @sysdata: PCI sysdata. It should be passed back from pci client device.
+ *
+ * Return PCIe Controller device pointer
+ */
+struct device *intel_pcie_firewall_device(void *sysdata);
+
 #endif
 
 struct cbm_ops {

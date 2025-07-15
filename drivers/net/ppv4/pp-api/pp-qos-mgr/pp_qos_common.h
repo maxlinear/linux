@@ -1,10 +1,21 @@
 /*
- * pp_qos_common.h
- * Description: Packet Processor QoS Driver
- *
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2017-2020 Intel Corporation
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR APARTICULARPURPOSE.See the
+ * GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public
+ * License along with this program; if not,see
+ * <http://www.gnu.org/licenses/>.
  * SPDX-License-Identifier: GPL-2.0-only
- * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * Description: Packet Processor QoS Driver
  */
+
 #ifndef PP_QOS_COMMON_H
 #define PP_QOS_COMMON_H
 
@@ -52,9 +63,6 @@
 #define QOS_LOCK(qdev)           spin_lock_bh(&qdev->lock)
 #define QOS_UNLOCK(qdev)         spin_unlock_bh(&qdev->lock)
 #define QOS_SPIN_IS_LOCKED(qdev) spin_is_locked(&qdev->lock)
-
-#define PPV4_QOS_AQM_BUF_OFFSET        (0x7FC0)
-#define PPV4_QOS_AQM_BUF_SIZE          (0x40)
 
 #define DUMP_LOG_ON_FAILURE
 

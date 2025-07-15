@@ -565,7 +565,7 @@ static void rx_fifo_read_full_duplex(struct lantiq_ssc_spi *spi)
 
 		switch (spi->bits_per_word) {
 		case 2 ... 8:
-			bytes = 8;
+			bytes = 1;
 			break;
 		case 16:
 			bytes = 2;

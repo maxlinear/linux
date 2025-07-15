@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2016-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -597,11 +597,23 @@ static inline bool cqm_is_port_valid(const u32 id)
 	return (id != CBM_PORT_INVALID) ? 1 : 0;
 }
 
-static bool is_system_pool(const u8 id, const unsigned long num_sys_pool)
+static bool is_system_pool(const u8 id)
 {
-	if (id < num_sys_pool)
-		return true;
-	return false;
+	if (id < CQM_LGM_TOTAL_BM_POOLS)
+		return (cqm_ctrl->lgm_pool_type[id] == CQM_NIOC_SHARED) ||
+		       (cqm_ctrl->lgm_pool_type[id] == SSB_NIOC_SHARED);
+	else
+		return false;
+}
+
+static bool is_lrouc_pool(const u8 id)
+{
+	if (id < CQM_LGM_TOTAL_BM_POOLS)
+		return (cqm_ctrl->lgm_pool_type[id] == SSB_LROUC_NIOC_SHARED) ||
+		       (cqm_ctrl->lgm_pool_type[id] == SSB_LROUC_NIOC_ISOLATED);
+
+	else
+		return false;
 }
 
 void deq_umt_trigger(const int *cbm_port, struct umt_trig *ctrl)
@@ -3439,6 +3451,21 @@ NO_OPTIMIZE cqm_cpu_pkt_tx(struct sk_buff *skb, struct cbm_tx_data *data,
 		goto ERR_CASE_2;
 	}
 
+	/* PP hardware will mis-behave if packet with length <17 Bytes is sent
+	 * to PP. However, padding should not be done in CQM driver as some
+	 * drivers, e.g. DSL, do not expect padding. Padding, if required, should
+	 * be done by different drivers at RX.
+	 *
+	 * Here, if packet length is <17 Bytes, print a warning message.
+	 */
+	if (skb->len < 17) {
+		struct dma_desc *dma_desc = (struct dma_desc *)&desc;
+		dev_warn(cqm_ctrl->dev,
+			 "Warning: %s: short pkt (%u B) to port %u with policy: %u\n",
+			 skb->dev ? netdev_name(skb->dev) : "Unknown device",
+			 skb->len, dma_desc->ep, dma_desc->policy);
+	}
+
 	if (data->pmac)
 		cqm_cpu_pkt_tx_chksum_wa(skb, data, skbdptr_in_buf);
 
@@ -3875,13 +3902,6 @@ NO_OPTIMIZE cqm_cpu_port_get(struct cbm_cpu_port_data *data, u32 flags)
 		if (!p_info->valid)
 			continue;
 		switch (p_info->port_type) {
-		/* prepare this port for dma header port */
-		case EQM_DMA_HEADER:
-			p_info->dma_dt_init_type = ENQ_DMA_HEADER_MODE_CHNL;
-			cqm_dma_port_enable(i, LGM_EQM_DMA_HDR_ONLY |
-					    LGM_EQM_DMA_NO_BUF,
-					    p_info->buf_size, p_info->buf_type);
-			break;
 		/* prepare this port for size2 dma enq */
 		case EQM_DMA_SIZE2:
 			p_info->dma_dt_init_type = ENQ_DMA_SIZE2_CHNL;
@@ -3918,7 +3938,6 @@ NO_OPTIMIZE cqm_cpu_port_get(struct cbm_cpu_port_data *data, u32 flags)
 		case ENQ_DMA_SIZE1_CHNL:
 		case ENQ_DMA_SIZE2_CHNL:
 		case ENQ_DMA_SIZE3_CHNL:
-		case ENQ_DMA_HEADER_MODE_CHNL:
 			ret = cqm_enqueue_dma_port_init(i,
 							p_info->dma_dt_ctrl,
 							p_info->dma_dt_ch,
@@ -5342,25 +5361,19 @@ static bool NO_OPTIMIZE cqm_release_enqport(const u32 enq, const u32 dc_deq)
 	return true;
 }
 
-/* Helper function to get the index of first SSB pool.
- * For 5-pool configuration with pool 0 being SSB pool,
- * this function should return 0.
- * Otherwise, it returns -1.
- */
-static int cqm_get_first_ssb_pool_idx(int *index)
+static size_t cqm_get_ssb_pool_size(void)
 {
 	int idx;
+	size_t size = 0;
 
-	for (idx = 0; idx < CQM_LGM_TOTAL_BM_POOLS; idx++) {
-		if (cqm_ctrl->lgm_pool_type[idx] == SSB_NIOC_SHARED)
-			break;
-	}
-	if (idx >= CQM_LGM_TOTAL_BM_POOLS) {
-		dev_err(cqm_ctrl->dev, "Unable to find ssb pool\n");
-		return CBM_FAILURE;
-	}
-	*index = idx;
-	return CBM_SUCCESS;
+	for (idx = 0; idx < CQM_LGM_TOTAL_BM_POOLS; idx++)
+		if (cqm_ctrl->lgm_pool_type[idx] == SSB_NIOC_SHARED ||
+		    cqm_ctrl->lgm_pool_type[idx] == SSB_LROUC_NIOC_SHARED ||
+		    cqm_ctrl->lgm_pool_type[idx] == SSB_LROUC_NIOC_ISOLATED)
+			size += (size_t)cqm_ctrl->lgm_pool_ptrs[idx] *
+				cqm_ctrl->lgm_pool_size[idx];
+
+	return size;
 }
 
 /* Helper function to get the index of first non-SSB pool.
@@ -5578,8 +5591,7 @@ NO_OPTIMIZE dp_port_dealloc_complete(struct cbm_dp_alloc_complete_data *dp,
 			start = eqp_info->policy_res.ingress_policy;
 			end = start + eqp_info->policy_res.ingress_cnt - 1;
 
-			if (is_system_pool(get_pool_from_policy(start),
-					   CQM_LGM_TOTAL_POOLS) &&
+			if (is_system_pool(get_pool_from_policy(start)) &&
 					   (!(sh_f && id))) {
 				for (i = start; i <= end; i++) {
 					info = &cqm_ctrl->cqm_bm_policy_dts[i];
@@ -5641,8 +5653,7 @@ NO_OPTIMIZE dp_port_dealloc_complete(struct cbm_dp_alloc_complete_data *dp,
 		CQM_DEBUG(CQM_DBG_FLAG_DP_INTF,
 			  "%s egress start: %d end:%d\n",
 			  __func__, start, end);
-		if (is_system_pool(get_pool_from_policy(start),
-				   CQM_LGM_TOTAL_POOLS)) {
+		if (is_system_pool(get_pool_from_policy(start))) {
 			for (i = start; i <= end; i++) {
 				info = &cqm_ctrl->cqm_bm_policy_dts[i];
 				info->busy = 0;
@@ -6523,7 +6534,8 @@ static s32 NO_OPTIMIZE cqm_dp_spl_conn(int inst, struct dp_spl_cfg *conn)
 	conn->num_egp = 0;
 	switch (conn->type) {
 	case DP_SPL_TOE:
-		conn->num_igp = 2;
+		/*EQM_LRO port is not used.Enable only EQM_TSO port*/
+		conn->num_igp = 1;
 		/* same EGP is shared by both IGPs
 		 * LRO ACK and TSO use the same intermediate port
 		 * num_EGP = 1 TOE DQ port + 1 intermediate DMA port for the
@@ -8130,19 +8142,28 @@ static unsigned long
 NO_OPTIMIZE cqm_gen_pool_alloc(u32 ioc_f, size_t size, dma_addr_t *phy,
 		   enum E_GEN_POOL_TYPE ptype, int sai)
 {
-	struct mxl_pool_alloc_data data;
+	struct mxl_pool_alloc_data data = {0};
 	struct gen_pool *pool = NULL;
 	unsigned long vaddr, attr = 0;
 
 	dev_info(cqm_ctrl->dev,
 		 "%s is called, genpool type:%d, size:%d, ioc:%d, sai:%d\n",
 		 __func__, ptype, (u32)size, ioc_f, sai);
-	if (ptype == GEN_CPU_POOL)
+
+	if (ptype == GEN_CPU_POOL) {
 		pool = of_gen_pool_get(cqm_ctrl->dev->of_node, "cpupool", 0);
-	else if (ptype == GEN_SYS_POOL)
+
+		/* already added by static rule */
+		data.opt = MXL_FW_OPT_SKIP_HW_FWRULE;
+	} else if (ptype == GEN_SYS_POOL) {
 		pool = of_gen_pool_get(cqm_ctrl->dev->of_node, "syspool", 0);
-	else
+
+		/* already added by static rule */
+		data.opt = MXL_FW_OPT_SKIP_HW_FWRULE;
+	} else {
 		pool = of_gen_pool_get(cqm_ctrl->dev->of_node, "rwpool", 0);
+	}
+
 	if (!pool) {
 		dev_err(cqm_ctrl->dev, "%s of_gen_pool_get error\n",
 			__func__);
@@ -8153,11 +8174,11 @@ NO_OPTIMIZE cqm_gen_pool_alloc(u32 ioc_f, size_t size, dma_addr_t *phy,
 	data.sai = sai;
 	data.perm = FW_READ_WRITE;
 	if (!ioc_f) {
-		data.opt = MXL_FW_OPT_USE_NONCOHERENT;
+		data.opt |= MXL_FW_OPT_USE_NONCOHERENT;
 		attr = DMA_ATTR_NON_CONSISTENT;
 	}
 	/*pool addresses are to be 64K aligned*/
-	vaddr = gen_pool_alloc_algo(pool, size, mxl_soc_pool_algo, &data);
+	vaddr = mxl_soc_pool_alloc(pool, size, &data);
 
 	if (vaddr) {
 		dev_dbg(cqm_ctrl->dev, "Successfully allocated buf: 0x%lx\n",
@@ -8184,21 +8205,24 @@ static bool
 cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 {
 	unsigned long head, cpu_base_pool, voice_pool, id, offset, head_cpu = 0;
+	unsigned long lrouc_pool;
 	dma_addr_t *phy = &cqm_ctrl->dma_hndl_p[0];
 	dma_addr_t *phy_cpu;
 	u8 total = cqm_ctrl->total_pool_entries;
 	int cpu_pool_ioc = cqm_ctrl->is_cpu_pool_ioc;
 	struct gen_pool *fsqm_pool;
 	dma_addr_t pool_phy;
-	void *pool_virt;
-	size_t bm_pool0_sz;
+	void *pool_virt = NULL;
+	int idx;
+	size_t bm_pool_ssb_sz = 0;
 	u32 val = 0;
-	int ssb_pool_start_idx, system_pool_start_idx;
+	int system_pool_start_idx;
 
 	if (cpu_pool_ioc) {
 		cpu_base_pool = get_matching_pool(CPU_DEV, EGRESS);
 		cqm_ctrl->cpu_base_pool = cpu_base_pool;
 		voice_pool = get_matching_pool(VOICE, INGRESS);
+		lrouc_pool = get_matching_pool(LROUC, INGRESS);
 		phy_cpu = &cqm_ctrl->dma_hndl_p[cpu_base_pool];
 		if (cpu_base_pool == INVALID_POOL_ID ||
 		    voice_pool == INVALID_POOL_ID) {
@@ -8209,6 +8233,7 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 	} else {
 		cpu_base_pool = total + 1;
 		voice_pool = total + 1;
+		lrouc_pool = total + 1;
 	}
 
 	for (id = 0; id < total; id++) {
@@ -8219,8 +8244,12 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 				pdata->pool_ptrs[id] * pdata->pool_size[id];
 		} else if (id == voice_pool) {
 			continue;
+		} else if (id == lrouc_pool) {
+			continue;
 		} else {
-			if (pdata->pool_type[id] != SSB_NIOC_SHARED)
+			if (pdata->pool_type[id] != SSB_NIOC_SHARED &&
+			    pdata->pool_type[id] != SSB_LROUC_NIOC_SHARED &&
+			    pdata->pool_type[id] != SSB_LROUC_NIOC_ISOLATED)
 				cqm_ctrl->max_mem_alloc_sys +=
 					pdata->pool_ptrs[id] *
 					pdata->pool_size[id];
@@ -8234,25 +8263,31 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 	else
 		val = 0;
 
-	bm_pool0_sz = (size_t)cqm_ctrl->lgm_pool_ptrs[0] *
-		cqm_ctrl->lgm_pool_size[0];
-	if (bm_pool0_sz > (size_t)val) {
-		pr_err("mxl,sram-size %zu is smaller than BM pool0 size %zu\n",
-		       (size_t)val, bm_pool0_sz);
+	bm_pool_ssb_sz = cqm_get_ssb_pool_size();
+	if (bm_pool_ssb_sz > (size_t)val) {
+		pr_err("mxl,sram-size %zu is smaller than BM SSB pool size %zu\n",
+		       (size_t)val, bm_pool_ssb_sz);
 		return -ENODEV;
 	}
 
-	pool_virt = gen_pool_dma_alloc(fsqm_pool, bm_pool0_sz,
-				       &pool_phy);
-	if (!pool_virt) {
-		dev_err(&pdev->dev,
-			"Failed to get the requested size from pool!\n");
-		return -ENODEV;
-	}
-	if (!cqm_get_first_ssb_pool_idx(&ssb_pool_start_idx)) {
-		cqm_ctrl->bm_buf_base[ssb_pool_start_idx] = (unsigned long)pool_virt;
-		cqm_ctrl->bm_buf_phy[ssb_pool_start_idx] = pool_phy;
-	}
+	for (idx = 0; idx < CQM_LGM_TOTAL_BM_POOLS; idx++)
+		if (cqm_ctrl->lgm_pool_type[idx] == SSB_NIOC_SHARED ||
+		    cqm_ctrl->lgm_pool_type[idx] == SSB_LROUC_NIOC_SHARED ||
+		    cqm_ctrl->lgm_pool_type[idx] == SSB_LROUC_NIOC_ISOLATED) {
+			size_t pool_size = (size_t)cqm_ctrl->lgm_pool_ptrs[idx] *
+				cqm_ctrl->lgm_pool_size[idx];
+			if (fsqm_pool)
+				pool_virt = gen_pool_dma_alloc(fsqm_pool,
+							       pool_size,
+							       &pool_phy);
+			if (!pool_virt) {
+				dev_err(&pdev->dev,
+					"Failed to get the requested size from pool!\n");
+				return -ENODEV;
+			}
+			cqm_ctrl->bm_buf_base[idx] = (unsigned long)pool_virt;
+			cqm_ctrl->bm_buf_phy[idx] = pool_phy;
+		}
 
 	if (!cpu_pool_ioc) {
 		head = (unsigned long)
@@ -8294,6 +8329,8 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 			cqm_ctrl->bm_buf_base[id] = head_cpu;
 			cqm_ctrl->bm_buf_phy[id] = *phy_cpu;
 		} else if (id == voice_pool) {
+			continue;
+		} else if (id == lrouc_pool) {
 			continue;
 		} else {
 			cqm_ctrl->bm_buf_base[id] +=
@@ -8472,8 +8509,12 @@ static s32 NO_OPTIMIZE cqm_pp_pool_setup(const struct cqm_data *pdata)
 		pp.flags = POOL_ENABLE_FOR_MIN_GRNT_POLICY_CALC;
 		/* typically extended pools are isolated pools */
 		if (bm_pool_conf[pool].buf_type == BUF_TYPE_CPU_ISOLATED ||
-		    bm_pool_conf[pool].buf_type == BUF_TYPE_NIOC_ISOLATED)
+		    bm_pool_conf[pool].buf_type == BUF_TYPE_NIOC_ISOLATED ||
+		    bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC_ISOLATED)
 			pp.flags |= POOL_ISOLATED;
+		if (bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC ||
+		    bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC_ISOLATED)
+			pp.flags |= POOL_SSB;
 		if (pool != voice_pool)
 			pp_bmgr_pool_configure(&pp, &pool);
 	}
@@ -8563,7 +8604,7 @@ NO_OPTIMIZE cqm_pp_policy_setup(enum DIRECTION dir,
 		return ret;
 	}
 	/* system policy init already finished in cbm init state */
-	if (is_system_pool(get_pool_from_policy(start), cqm_ctrl->num_sys_pools)) {
+	if (is_system_pool(get_pool_from_policy(start))) {
 		for (i = start; i <= end; i++) {
 			p = &cqm_ctrl->cqm_bm_policy_dts[i];
 			p->busy = dir;
@@ -8646,6 +8687,9 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 		case SSB_NIOC_SHARED:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_SSB;
 			break;
+		case SSB_LROUC_NIOC_SHARED:
+			bm_pool_conf[pool].buf_type = BUF_TYPE_SSB_LROUC;
+			break;
 		case CQM_NIOC_SHARED:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_NIOC_SHARED;
 			break;
@@ -8654,6 +8698,9 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 			break;
 		case CQM_NIOC_ISOLATED:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_NIOC_ISOLATED;
+			break;
+		case SSB_LROUC_NIOC_ISOLATED:
+			bm_pool_conf[pool].buf_type = BUF_TYPE_SSB_LROUC_ISOLATED;
 			break;
 		default:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_INVALID;
@@ -8775,7 +8822,8 @@ static s32 cqm_sys_bm_init(const u32 num_sys_pool)
 	u16 i;
 
 	for (i = 0; i < CQM_LGM_NUM_BM_POLICY; i++) {
-		if (!is_system_pool(get_pool_from_policy(i), num_sys_pool))
+		if (!is_system_pool(get_pool_from_policy(i)) &&
+		    !is_lrouc_pool(get_pool_from_policy(i)))
 			continue;
 
 		if (unlikely(cqm_pp_policy_init(i, i))) {
@@ -9585,8 +9633,7 @@ static int NO_OPTIMIZE conf_enq_dma_port(const struct eqm_dma_port *eqp_conf)
 		eqp_info->dma_dt_ctrl = eqp_conf->dma_ctrl;
 		eqp_info->valid = 1;
 		switch (eqp_info->port_type) {
-		/* prepare this port for dma header port */
-		case EQM_DMA_HEADER:
+		/*EQM_DMA_HEADER port is not used.Disable unused ports*/
 		case EQM_RXDMA:
 			eqp_info->buf_size = fsqm_pool_conf[0].buf_frm_size;
 			eqp_info->buf_type = BUF_TYPE_FSQM;
@@ -10785,7 +10832,7 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 	void *pool_virt;
 	struct cqm_soc_data *soc_data = NULL;
 	u32 val = 0;
-	size_t sz, bm_pool0_sz;
+	size_t sz, bm_ssb_pool_sz;
 	int sys_type;
 
 	/* for A0: CONFIG_LGM_A0_IOC is needed to enable CONFIG_IOC_POOL */
@@ -10986,15 +11033,14 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 		 * FSQM. Size for BM pool 0 is buf_frm_size * buf_frm_num.
 		 * Size for fsqm is sram-size - size of BM pool 0.
 		 */
-		bm_pool0_sz = (size_t)cqm_ctrl->lgm_pool_ptrs[0] *
-			      cqm_ctrl->lgm_pool_size[0];
-		if (bm_pool0_sz > (size_t)val) {
+		bm_ssb_pool_sz = cqm_get_ssb_pool_size();
+		if (bm_ssb_pool_sz > (size_t)val) {
 			dev_err(&pdev->dev,
-				"mxl,sram-size %zu < BM pool0 size %zu\n",
-				(size_t)val, bm_pool0_sz);
+				"mxl,sram-size %zu < BM SSB pool size %zu\n",
+				(size_t)val, bm_ssb_pool_sz);
 			return -ENODEV;
 		}
-		cqm_ctrl->fsqm_sz = (size_t)val - bm_pool0_sz;
+		cqm_ctrl->fsqm_sz = (size_t)val - bm_ssb_pool_sz;
 
 		sz = gen_pool_avail(fsqm_pool);
 		if (cqm_ctrl->fsqm_sz > sz) {

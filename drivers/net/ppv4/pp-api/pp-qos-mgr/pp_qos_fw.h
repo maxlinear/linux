@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -137,6 +137,9 @@ void create_get_sys_info_cmd(struct pp_qos_dev *qdev,
 			     bool dump_entries);
 void create_mod_log_bmap_set_cmd(struct pp_qos_dev *qdev, u32 bmap);
 void create_mod_log_bmap_get_cmd(struct pp_qos_dev *qdev, u32 *bmap);
+void create_aqm_q_to_ctx_cmd(struct pp_qos_dev *qdev, u32 act, u32 queue, u32 ctx);
+void create_set_pci_addr_cmd(struct pp_qos_dev *qdev, struct pp_qos_pci_addr *pci_addr);
+void create_set_aqm_engine_cmd(struct pp_qos_dev *qdev, u8 aqm_engine);
 void print_fw_log(struct pp_qos_dev *qdev);
 s32 qos_get_debug_stats(struct pp_qos_dev *qdev, debug_counters_t *dbg_stats);
 s32 qos_get_aqm_info(struct pp_qos_dev *qdev, wred_aqm_db_t *aqm_db);

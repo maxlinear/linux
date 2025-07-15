@@ -562,8 +562,8 @@ int sgam_get_account_stats(struct sgam_cmd_acct_stats *stats_info)
 	stats_info->sgc_grp = sgam_convert_pp_to_sgam_sgc_grp(pp_sgc_grp);
 	stats_info->acct_stat.packets = hw_stats.packets;
 	stats_info->acct_stat.bytes = hw_stats.bytes;
-	stats_info->acct_stat.ing_droped_bytes = hw_stats.ing_droped_bytes;
-	stats_info->acct_stat.egr_droped_bytes = hw_stats.egr_droped_bytes;
+	stats_info->acct_stat.ing_dropped_bytes = hw_stats.ing_dropped_bytes;
+	stats_info->acct_stat.egr_dropped_bytes = hw_stats.egr_dropped_bytes;
 	ret = SGAM_SUCCESS;
 
 DONE:

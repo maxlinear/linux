@@ -32,6 +32,7 @@
 #include <linux/slab.h>
 #include <linux/suspend.h>
 #include <linux/units.h>
+#include <linux/platform_data/lgm_epu.h>
 
 #include "i2c-designware-core.h"
 
@@ -131,6 +132,20 @@ static int mscc_twi_set_sda_hold_time(struct dw_i2c_dev *dev)
 	return 0;
 }
 
+static int lgm_i2c_acquire_hwlock(struct dw_i2c_dev *dev)
+{
+	if (dev->shared_with_punit)
+		epu_notifier_blocking_chain(I2C_SEM_EVENT_REQUEST, NULL);
+
+	return 0;
+}
+
+static void lgm_i2c_release_hwlock(struct dw_i2c_dev *dev)
+{
+	if (dev->shared_with_punit)
+		epu_notifier_blocking_chain(I2C_SEM_EVENT_RELEASE, NULL);
+}
+
 static int dw_i2c_of_configure(struct platform_device *pdev)
 {
 	struct dw_i2c_dev *dev = platform_get_drvdata(pdev);
@@ -143,6 +158,8 @@ static int dw_i2c_of_configure(struct platform_device *pdev)
 		break;
 	case MODEL_MXL_LGM:
 		dev->shared_with_punit = true;
+		dev->acquire_lock = lgm_i2c_acquire_hwlock;
+		dev->release_lock = lgm_i2c_release_hwlock;
 		break;
 	default:
 		break;
@@ -350,6 +367,18 @@ static int dw_i2c_plat_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void dw_i2c_plat_shutdown(struct platform_device *pdev)
+{
+	struct dw_i2c_dev *dev = platform_get_drvdata(pdev);
+
+	if (dev->shared_with_punit)
+		i2c_del_adapter(&dev->adapter);
+	/**
+	 * Note i2c0 HW must remain available for any
+	 * future tranction between EPU and PMIC
+	 */
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int dw_i2c_plat_prepare(struct device *dev)
 {
@@ -426,6 +455,7 @@ MODULE_ALIAS("platform:i2c_designware");
 static struct platform_driver dw_i2c_driver = {
 	.probe = dw_i2c_plat_probe,
 	.remove = dw_i2c_plat_remove,
+	.shutdown = dw_i2c_plat_shutdown,
 	.driver		= {
 		.name	= "i2c_designware",
 		.of_match_table = of_match_ptr(dw_i2c_of_match),

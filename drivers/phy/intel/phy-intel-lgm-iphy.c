@@ -709,7 +709,25 @@ static int intel_combo_phy_init(struct phy *phy)
 	}
 
 	if (intel_iphy_require_peripheral(iphy)) {
+		struct phy_ctx *peripheral_iphy;
+
+		peripheral_iphy = phy_get_drvdata(peripheral->phy);
+		if (priv == peripheral_iphy->parent) {
+			dev_err(dev, "PHY[%u:%u] peripheral phy is not valid\n",
+				COMBO_PHY_ID(iphy), PHY_ID(iphy));
+			goto init_err;
+		}
+
+		/* Although priv in intel_combo_phy_init() and priv in
+		 * intel_combo_peripheral_phy_init() are different, one points to
+		 * combophy0, the other points to combophy1, kernel considers
+		 * the priv->ops.lock(priv) in the 2 functions as recursive lock.
+		 * So, we need to unlock priv before calling
+		 * intel_combo_peripheral_phy_init() and lock it again afterward.
+		 */
+		priv->ops.unlock(priv);
 		intel_combo_peripheral_phy_init(peripheral->phy);
+		priv->ops.lock(priv);
 	} else {
 		ret = intel_iphy_app_init(iphy);
 		if (ret) {

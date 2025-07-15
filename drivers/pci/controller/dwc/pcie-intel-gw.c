@@ -787,6 +787,20 @@ int intel_pcie_dc_iatu_inbound_remove(void *sysdata, u32 atu_index)
 }
 EXPORT_SYMBOL_GPL(intel_pcie_dc_iatu_inbound_remove);
 
+struct device *intel_pcie_firewall_device(void *sysdata)
+{
+	struct pcie_port *pp = sysdata;
+	struct dw_pcie *pci;
+
+	if (!sysdata)
+		return ERR_PTR(-EINVAL);
+
+	pci = to_dw_pcie_from_pp(pp);
+
+	return pci->dev;
+}
+EXPORT_SYMBOL_GPL(intel_pcie_firewall_device);
+
 static int intel_pcie_msi_host_init(struct pcie_port *pp)
 {
 	struct platform_device *pdev;

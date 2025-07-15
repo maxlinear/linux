@@ -118,6 +118,8 @@ static const char * const mod_flag_str[MOD_FLAG_NUM + 1] = {
 	[MOD_IPOGRE_V6_ENCP_BIT]     = "IPoGREv6 encap",
 	[MOD_DSLITE_DECP_BIT]        = "DsLite decap",
 	[MOD_DSLITE_ENCP_BIT]        = "DsLite encap",
+	[MOD_MPLS_V4_DECP_BIT]       = "EoMPLS IPv4 decap",
+	[MOD_MPLS_V6_DECP_BIT]       = "EoMPLS IPv6 decap",
 	[MOD_6RD_ENCP_BIT]           = "6RD encap",
 	[MOD_6RD_DECP_BIT]           = "6RD decap",
 	[MOD_ESP_TUNNEL_BPAS_BIT]    = "ESP tunnel bypass",
@@ -155,6 +157,8 @@ static const char * const mod_flag_str[MOD_FLAG_NUM + 1] = {
 #define MOD_IPOGRE_V6_ENCP_MSK     BIT(MOD_IPOGRE_V6_ENCP_BIT)
 #define MOD_DSLITE_DECP_MSK        BIT(MOD_DSLITE_DECP_BIT)
 #define MOD_DSLITE_ENCP_MSK        BIT(MOD_DSLITE_ENCP_BIT)
+#define MOD_MPLS_V4_DECP_MSK	   BIT(MOD_MPLS_V4_DECP_BIT)
+#define MOD_MPLS_V6_DECP_MSK	   BIT(MOD_MPLS_V6_DECP_BIT)
 #define MOD_6RD_ENCP_MSK           BIT(MOD_6RD_ENCP_BIT)
 #define MOD_6RD_DECP_MSK           BIT(MOD_6RD_DECP_BIT)
 #define MOD_ESP_TUNNEL_BPAS_MSK    BIT(MOD_ESP_TUNNEL_BPAS_BIT)
@@ -586,6 +590,18 @@ static const struct supp_mod supp_mod_types[] = {
 			  MOD_HDR_L3_RPLC_MSK | MOD_IPV6_IPV4_TRANS_MSK |
 			  MOD_L4_NAPT_MSK,
 		.recipe = MOD_RCP_IPV6_IPV4_TRANS, /* MOD_RCP_IPV4_IPV6_ENCAP */
+	},
+	/* ================================================================ */
+	/*                    EoMPLS Decapsulation                          */
+	/* ================================================================ */
+	{ /* ETH over MPLS IPv4 decapsulation */
+		.flags  = MOD_IPV4_NAT_MSK | MOD_L4_NAPT_MSK |
+			  MOD_MPLS_V4_DECP_MSK,
+		.recipe = MOD_RCP_DSLITE_DECP_NAPT,
+	},
+	{ /* ETH over MPLS IPv6 decapsulation */
+		.flags  = MOD_MPLS_V6_DECP_MSK | MOD_IPV6_HOPL_MSK,
+		.recipe = MOD_RCP_6RD_DECP_ROUTED
 	},
 };
 

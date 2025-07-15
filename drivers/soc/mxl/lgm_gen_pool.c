@@ -134,6 +134,35 @@ void mxl_soc_pool_free(struct gen_pool *pool,
 }
 EXPORT_SYMBOL_GPL(mxl_soc_pool_free);
 
+unsigned long mxl_soc_pool_alloc(struct gen_pool *pool, size_t size, void *allocdata)
+{
+	unsigned long addr;
+	struct mxl_pool_alloc_data *usrdata = allocdata;
+
+	if (!pool || !usrdata)
+		return 0;
+
+	addr = gen_pool_alloc_algo(pool, size, gen_pool_first_fit, NULL);
+	if (!addr)
+		return addr;
+
+	if (usrdata->opt & MXL_FW_OPT_SKIP_HW_FWRULE)
+		return addr;
+
+	if (lgm_gen_pool_add_rule(usrdata->dev, usrdata->sai, __pa(addr), size,
+				  usrdata->perm, NOC_FW_EVENT_ADD,
+				  usrdata->opt)) {
+		gen_pool_free(pool, addr, size);
+		return 0;
+	}
+
+	return addr;
+}
+EXPORT_SYMBOL_GPL(mxl_soc_pool_alloc);
+
+#if 0
+/* This API is deprecated, instead use mxl_soc_pool_alloc */
+
 unsigned long
 mxl_soc_pool_algo(unsigned long *map, unsigned long size,
 		  unsigned long start, unsigned int nr, void *data,
@@ -165,6 +194,7 @@ mxl_soc_pool_algo(unsigned long *map, unsigned long size,
 	return addr;
 }
 EXPORT_SYMBOL_GPL(mxl_soc_pool_algo);
+#endif
 
 static int lgm_gen_pool_dt_probe(struct lgm_gen_pool_dev *genpl_dev)
 {

@@ -18,7 +18,6 @@
 #include <linux/version.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/tc_act/tc_vlan.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_pce.h"
 #include "qos_tc_parser.h"
@@ -47,9 +46,7 @@ static int qos_tc_parse_flower(struct net_device *dev,
 			  BIT(FLOW_DISSECTOR_KEY_VLAN) |
 			  BIT(FLOW_DISSECTOR_KEY_CVLAN) |
 			  BIT(FLOW_DISSECTOR_KEY_ICMP) |
-#if (KERNEL_VERSION(5, 3, 0) <= LINUX_VERSION_CODE)
 			  BIT(FLOW_DISSECTOR_KEY_META) |
-#endif
 			  BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS))) {
 		pr_debug("%s: Unsupported key used: 0x%x\n", __func__,
 			 d->used_keys);
@@ -119,113 +116,6 @@ static int qos_tc_set_forward_port(struct net_device *dev,
 	return 0;
 }
 
-#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
-static int qos_tc_parse_act_mirred(struct net_device *dev,
-				   struct flow_cls_offload *f,
-				   u16 nForwardPortMap[16],
-				   bool *drop_act,
-				   struct net_device **mirr_dev)
-{
-	const struct tc_action *a;
-	struct tcf_gact *gact;
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-	int ifindex;
-#else
-	int i;
-#endif
-	int ret = 0;
-
-	*drop_act = false;
-	*mirr_dev = NULL;
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (tc_no_actions(f->exts))
-#else
-	if (!tcf_exts_has_actions(f->exts))
-#endif
-		return -EINVAL;
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		/* If one of the actions is a drop action just configure a drop
-		 * rule and no forwarding. Normal drop rules are configured in
-		 * the extended VLAN configuration, this only gets called if
-		 * the first action is a mirred action.
-		 */
-		if (is_tcf_gact_shot(a)) {
-			*drop_act =  true;
-			return 0;
-		}
-	}
-
-	/* We support one drop action (is_tcf_gact_shot()) or multiple mirred
-	 * redirect actions. If multiple mirred redirect actions are piped
-	 * together the traffic will be duplicated and forwarded to all
-	 * these devices.
-	 */
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-
-#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
-		if (is_tcf_mirred_redirect(a) ||
-		    is_tcf_mirred_ingress_redirect(a)) {
-#else
-		if (is_tcf_mirred_egress_redirect(a) ||
-		    is_tcf_mirred_ingress_redirect(a)) {
-#endif
-
-#if (KERNEL_VERSION(4, 16, 0) > LINUX_VERSION_CODE)
-			ifindex = tcf_mirred_ifindex(a);
-			*mirr_dev = dev_get_by_index(dev_net(dev),
-						     ifindex);
-#else
-			*mirr_dev = tcf_mirred_dev(a);
-#endif
-			if (!*mirr_dev)
-				return -ENODEV;
-
-			/* mirred dev is still in use for ingress redirect.
-			 * Do not call dev_put here in this case.
-			 */
-			if (!is_tcf_mirred_ingress_redirect(a)) {
-				ret = qos_tc_set_forward_port(dev, *mirr_dev,
-							      nForwardPortMap);
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-				dev_put(*mirr_dev);
-#endif
-				if (ret)
-					return ret;
-			}
-		} else if (a->ops && a->ops->type == TCA_ACT_GACT) {
-			/* Only accept pipe actions here which are used to pipe
-			 * together multiple mirred redirect rules.
-			 */
-			gact = to_gact(a);
-			if (gact->tcf_action != TC_ACT_PIPE)
-				return -EINVAL;
-		} else if (is_tcf_vlan(a)) {
-			/* Sometimes redirect is combined with vlan action */
-			continue;
-		} else {
-			netdev_err(dev, "%s: unsupported action: %i\n",
-				   __func__, a->ops ? a->ops->type : -1);
-			return -EINVAL;
-		}
-	}
-
-	netdev_dbg(dev, "%s: ret: %d\n", __func__, ret);
-	return ret;
-}
-#else
 static int qos_tc_parse_act_mirred(struct net_device *dev,
 				   struct flow_cls_offload *f,
 				   u16 nForwardPortMap[16],
@@ -285,7 +175,6 @@ static int qos_tc_parse_act_mirred(struct net_device *dev,
 	netdev_dbg(dev, "%s: ret: %d\n", __func__, ret);
 	return ret;
 }
-#endif
 
 static void qos_tc_set_flt_pce_type(struct net_device *dev,
 				    struct qos_tc_mirr_filter *flt)
@@ -326,13 +215,7 @@ static void qos_tc_set_flt_pce_type(struct net_device *dev,
 
 static bool is_type_mirred_ingress_redirect(struct flow_cls_offload *f)
 {
-#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
-	return has_action_id(f, &is_tcf_mirred_ingress_redirect);
-#elif (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
-	return false;
-#else
 	return has_action_id(f, FLOW_ACTION_REDIRECT_INGRESS);
-#endif
 }
 
 static bool force_port_forwarding(struct net_device *dev,
@@ -359,13 +242,11 @@ int qos_tc_mirred_offload(struct net_device *dev,
 	u16 nForwardPortMap[16] = {0,};
 	int ret = 0;
 
-#if (KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE)
 	/* Only mirred egress and
 	 * redirect egress and ingress are supported
 	 */
 	if (has_action_id(f, FLOW_ACTION_MIRRED_INGRESS))
 		return -EOPNOTSUPP;
-#endif
 
 	ret = qos_tc_parse_flower(dev, f, &flt);
 	if (ret != 0)
@@ -381,10 +262,6 @@ int qos_tc_mirred_offload(struct net_device *dev,
 		netdev_dbg(dev, "%s: MIRRED ingress redirect handling\n",
 			   __func__);
 		ret = qos_tc_ext_vlan_add(dev, f, true, mirr_dev);
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-		if (ret != 0 && mirr_dev)
-			dev_put(mirr_dev);
-#endif
 		return ret;
 	}
 

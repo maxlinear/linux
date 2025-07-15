@@ -35,6 +35,30 @@
 
 char *dash_line_str = "|----------------------------------------|";
 
+enum tdox_conf_update_ops {
+	tdox_update_help = 1,
+	tdox_update_tout,
+	tdox_update_max_reach_target,
+	tdox_update_max_supp_ratio,
+	tdox_update_max_supp_bytes,
+};
+
+static const match_table_t tdox_conf_update_tkns = {
+	{tdox_update_help,             "help"},
+	{tdox_update_tout,             "timeout=%u"},
+	{tdox_update_max_reach_target, "max_reach_target=%u"},
+	{tdox_update_max_supp_ratio,   "max_supp_ratio=%u"},
+	{tdox_update_max_supp_bytes,   "max_supp_bytes=%u"},
+	{ 0 },
+};
+
+const char *tdox_flds[] = {
+	"timeout",
+	"max_reach_target",
+	"max_supp_ratio",
+	"max_supp_bytes"
+};
+
 static void __smgr_dbg_tdox_stats_diff(struct smgr_tdox_stats *hs,
 					struct smgr_tdox_stats *hs2,
 					struct smgr_tdox_uc_stats *ucs,
@@ -220,6 +244,17 @@ PP_DEFINE_DEBUGFS(tdox_stats, __smgr_dbg_tdox_stats, NULL);
 PP_DEFINE_DEBUGFS(tdox_clr_stats, __smgr_dbg_tdox_clr_stats, NULL);
 PP_DEFINE_DEBUGFS(tdox_pps_stats, __smgr_dbg_tdox_pps_stats, NULL);
 
+void tdox_conf_update_help(void)
+{
+	u32 idx;
+
+	pr_info("echo [fld]=[value]... > config\n");
+	pr_info("Supported fields:\n");
+	pr_info("=================\n");
+	for (idx = 0; idx < ARRAY_SIZE(tdox_flds); idx++)
+		pr_info("%s\n", tdox_flds[idx]);
+}
+
 static void __smgr_dbg_tdox_conf_get(struct seq_file *f)
 {
 	struct smgr_tdox_conf conf;
@@ -252,23 +287,60 @@ static void __smgr_dbg_tdox_conf_get(struct seq_file *f)
 	seq_printf(f, "%s\n", dash_line_str);
 }
 
-static void __smgr_dbg_tdox_conf_set(char *cmd_buf, void *data)
+static void __smgr_dbg_tdox_conf_set(char *args, void *data)
 {
 	struct smgr_tdox_conf conf;
+	enum tdox_conf_update_ops opt;
+	substring_t substr[MAX_OPT_ARGS];
+	u32 val;
+	char *tok;
 
-	if (sscanf(cmd_buf, "%u %u %u %u", &conf.timeout, &conf.max_reach_target,
-		&conf.max_supp_ratio, &conf.max_supp_bytes) != 4) {
-		pr_info("\nUSAGE: <Timeout (usec)> <Max Reach Target> <Max Supp Ratio> <Max Supp Bytes>\n");
-		pr_info("Aggressive / Non Aggresive values are fixed\n");
+	if (smgr_tdox_conf_get(&conf)) {
+		pr_err("failed to get tdox conf parameters \n");
 		return;
 	}
 
-	if (smgr_tdox_conf_set(conf)) {
-		pr_info("failed to set tdox parameters \n");
-		return;
+	args = strim(args);
+	while ((tok = strsep(&args, " \t\n,")) != NULL) {
+		if (!*tok)
+			continue;
+		opt = match_token(tok, tdox_conf_update_tkns, substr);
+		switch (opt) {
+		case tdox_update_help:
+			tdox_conf_update_help();
+			return;
+		case tdox_update_tout:
+			if (match_uint(substr, &val))
+				goto opt_parse_err;
+			conf.timeout = val;
+			break;
+		case tdox_update_max_reach_target:
+			if (match_uint(substr, &val))
+				goto opt_parse_err;
+			conf.max_reach_target = val;
+			break;
+		case tdox_update_max_supp_ratio:
+			if (match_uint(substr, &val))
+				goto opt_parse_err;
+			conf.max_supp_ratio = val;
+			break;
+		case tdox_update_max_supp_bytes:
+			if (match_uint(substr, &val))
+				goto opt_parse_err;
+			conf.max_supp_bytes = val;
+			break;
+		default:
+			goto opt_parse_err;
+		}
 	}
 
-	pr_debug("Tdox conf parameters set\n");
+	if (smgr_tdox_conf_set(&conf))
+		pr_err("failed to set tdox parameters\n");
+
+	return;
+
+opt_parse_err:
+	tdox_conf_update_help();
 }
 
 PP_DEFINE_DEBUGFS(tdox_conf, __smgr_dbg_tdox_conf_get,

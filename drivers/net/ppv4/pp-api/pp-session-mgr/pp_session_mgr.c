@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -469,6 +469,40 @@ static inline bool __smgr_is_iptun_encp_sess(struct sess_info *s)
 	return (!PKTPRS_IS_MULTI_IP(SESS_RX_PKT(s)) &&
 		PKTPRS_IS_MULTI_IP(SESS_TX_PKT(s)) &&
 		!SESS_TX_IS_OUTER_ESP(s));
+}
+
+/**
+ * @brief Check whether a session is EoMPLS decapsulation
+ *        where outer layer at ingress includes
+ *        only MAC and MPLS headers
+ * @param s the session to test
+ * @return bool true if it is, false otherwise
+ */
+static inline bool __smgr_is_eompls_decp_sess(struct sess_info *s)
+{
+	if (__smgr_is_tunn_term_sess(s) &&
+	    SESS_RX_IS_OUTER_MPLS(s) &&
+	    !SESS_RX_IS_OUTER_IP(s))
+		return true;
+
+	return false;
+}
+
+/**
+ * @brief Check whether a session is EoMPLS encapsulation
+ *        where outer layer at egress includes
+ *        only MAC and MPLS headers
+ * @param s the session to test
+ * @return bool true if it is, false otherwise
+ */
+static inline bool __smgr_is_eompls_encp_sess(struct sess_info *s)
+{
+	if (__smgr_is_tunn_term_sess(s) &&
+	    SESS_TX_IS_OUTER_MPLS(s) &&
+	    !SESS_TX_IS_OUTER_IP(s))
+		return true;
+
+	return false;
 }
 
 static inline bool __smgr_is_first_frag_bypass(struct sess_info *s, u8 lvl)
@@ -1314,6 +1348,44 @@ static inline bool __smgr_is_l2tpip_sess_supported(struct sess_info *s)
 	return false;
 }
 
+/**
+ * @brief Check whether an EoMPLS session is supported
+ * @param s the session to test
+ * @return bool true if it is, false otherwise
+ */
+static inline bool __smgr_is_eompls_sess_supported(struct sess_info *s)
+{
+	/* decapsulation */
+	if (!SESS_RX_IS_OUTER_IP(s) &&
+	    SESS_RX_IS_OUTER_MPLS(s) &&
+	    SESS_RX_IS_INNER_MAC(s) &&
+	    SESS_RX_IS_INNER_IP(s) &&
+	    SESS_RX_IS_INNER_L4(s) &&
+	    !SESS_TX_IS_OUTER_MPLS(s)) {
+		if (SESS_RX_IS_INNER_V4(s)) {
+			pr_debug("Eth over MPLS ipv4 decapsulation\n");
+			SESS_MOD_FLAG_SET(s, MOD_MPLS_V4_DECP_BIT);
+		} else {
+			pr_debug("Eth over MPLS ipv6 decapsulation\n");
+			SESS_MOD_FLAG_SET(s, MOD_MPLS_V6_DECP_BIT);
+		}
+		return true;
+	}
+
+	/* encapsulation */
+	if (!SESS_TX_IS_OUTER_IP(s) &&
+	    SESS_TX_IS_OUTER_MPLS(s) &&
+	    SESS_TX_IS_INNER_MAC(s) &&
+	    SESS_TX_IS_INNER_IP(s) &&
+	    SESS_TX_IS_INNER_L4(s) &&
+	    !SESS_RX_IS_OUTER_MPLS(s)) {
+		pr_debug("Eth over MPLS encapsulation\n");
+		return true;
+	}
+
+	return false;
+}
+
 #define MOCA_CTP_PROTO 0xFFFF
 
 /**
@@ -1495,11 +1567,33 @@ static inline bool __smgr_is_pppoe_changed(struct sess_info *s, u8 lvl)
 	return true;
 }
 
+static inline bool __smgr_is_mpls_changed(struct sess_info *s, u8 lvl)
+{
+	u8 i;
+
+	if (!PKTPRS_MPLS_EXIST(SESS_RX_PKT(s), lvl) &&
+	    !PKTPRS_MPLS_EXIST(SESS_TX_PKT(s), lvl))
+		return false;
+
+	for (i = 0; i < MAX_MPLS_HDRS_SUPPORTED; i++) {
+		if (!PKTPRS_IS_MPLS(SESS_RX_PKT(s), lvl, i) &&
+		    !PKTPRS_IS_MPLS(SESS_TX_PKT(s), lvl, i))
+			return false;
+		/* mpls was added or removed? */
+		if (PKTPRS_IS_MPLS(SESS_RX_PKT(s), lvl, i) !=
+		    PKTPRS_IS_MPLS(SESS_TX_PKT(s), lvl, i))
+			return true;
+	}
+
+	return false;
+}
+
 static inline bool __smgr_is_outer_l2_changed(struct sess_info *s)
 {
-	return __smgr_is_mac_changed(s, HDR_OUTER)  ||
-	       __smgr_is_vlan_changed(s, HDR_OUTER) ||
-	       __smgr_is_pppoe_changed(s, HDR_OUTER);
+	return __smgr_is_mac_changed(s, HDR_OUTER)   ||
+	       __smgr_is_vlan_changed(s, HDR_OUTER)  ||
+	       __smgr_is_pppoe_changed(s, HDR_OUTER) ||
+	       __smgr_is_mpls_changed(s, HDR_OUTER);
 }
 
 /**
@@ -2529,6 +2623,30 @@ unlock:
 	return  ret;
 }
 
+s32 smgr_syncq_set(bool enable)
+{
+	struct smgr_database *db = smgr_get_db();
+
+	if (ptr_is_null(db))
+		return -EINVAL;
+
+	db->syncq_en = enable;
+
+	pr_debug("Set syncq %s\n", BOOL2STR(db->syncq_en));
+
+	return 0;
+}
+
+bool smgr_syncq_get(void)
+{
+	struct smgr_database *db = smgr_get_db();
+
+	if (ptr_is_null(db))
+		return false;
+
+	return db->syncq_en;
+}
+
 s32 smgr_state_set(enum smgr_state state)
 {
 	struct smgr_database *db = smgr_get_db();
@@ -2967,8 +3085,10 @@ static bool __smgr_is_sess_supported(struct sess_info *s)
 		!__smgr_is_accl_mode(PP_ACCL_MODE_UNKNOWN_L3)) {
 		if (__smgr_is_moca_ctp_sess(s))
 			return true;
-		pr_debug("rx outer packet unsupported l3\n");
-		goto not_supported;
+		if (!SESS_RX_IS_OUTER_MPLS(s)) {
+			pr_debug("rx outer packet unsupported l3\n");
+			goto not_supported;
+		}
 	}
 
 	if (!__smgr_is_pppoe_supported(s)) {
@@ -2993,7 +3113,8 @@ static bool __smgr_is_sess_supported(struct sess_info *s)
 	}
 
 	/* for ESP we have a special case where outer IP doesn't exist */
-	if (!SESS_TX_IS_OUTER_ESP(s) && !SESS_TX_IS_OUTER_IP(s)) {
+	if (!SESS_TX_IS_OUTER_ESP(s) && !SESS_TX_IS_OUTER_IP(s) &&
+	    !SESS_TX_IS_OUTER_MPLS(s)) {
 		pr_debug("tx outer packet unsupported l3\n");
 		goto not_supported;
 	}
@@ -3090,6 +3211,12 @@ static bool __smgr_is_sess_supported(struct sess_info *s)
 		goto not_supported;
 	}
 
+	/* EoMPLS */
+	if (__smgr_is_eompls_sess_supported(s)) {
+		pr_debug("EoMPLS session\n");
+		return true;
+	}
+
 	/* don't support all other tunnels terminations */
 not_supported:
 	pr_debug("unsupported session\n");
@@ -3171,6 +3298,7 @@ static s32 __smgr_sess_ent_free(struct sess_db_entry *ent)
 static void __smgr_sess_flags_set(struct sess_info *s)
 {
 	struct smgr_database *db = smgr_get_db();
+	u8 aqm_engine = PP_AQM_HW;
 
 	if (ptr_is_null(db) || !SESS_RX_PKT(s) || !SESS_TX_PKT(s))
 		return;
@@ -3178,7 +3306,7 @@ static void __smgr_sess_flags_set(struct sess_info *s)
 	if (__smgr_is_mac_changed(s, HDR_OUTER))
 		SESS_FLAG_SET(s->db_ent, SESS_FLAG_ROUTED);
 
-	if (SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_SYNCQ_BIT))
+	if (db->syncq_en && SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_SYNCQ_BIT))
 		SESS_FLAG_SET(s->db_ent, SESS_FLAG_SYNCQ);
 
 	/* Fragmentation should be potentially done when adding a tunnel
@@ -3203,10 +3331,22 @@ static void __smgr_sess_flags_set(struct sess_info *s)
 	if (SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_REMARK_BIT))
 		SESS_FLAG_SET(s->db_ent, SESS_FLAG_REMARK);
 
-	if (pp_misc_is_nf_en(PP_NF_IPSEC_LLD) &&
-	    (db->open_lld_sess ||
-	      SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_LLD_BIT)))
-		SESS_FLAG_SET(s->db_ent, SESS_FLAG_LLD);
+	if (pp_misc_is_nf_en(PP_NF_IPSEC_LLD)) {
+		pp_misc_get_aqm_engine(&aqm_engine);
+		if (SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_AQM_BIT)) {
+			if (aqm_engine == PP_AQM_SW)
+				SESS_FLAG_SET(s->db_ent, SESS_FLAG_AQM_SW);
+		} else if (db->open_lld_sess ||
+			   SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_LLD_BIT)) {
+			SESS_FLAG_SET(s->db_ent, SESS_FLAG_LLD);
+			if (aqm_engine == PP_AQM_SW)
+				SESS_FLAG_SET(s->db_ent, SESS_FLAG_AQM_SW);
+
+			if (SESS_ARGS_IS_FLAG_ON(s, PP_SESS_FLAG_TDOX_SUPP_BIT))
+				clear_bit(PP_SESS_FLAG_TDOX_SUPP_BIT,
+					  &s->args->flags);
+		}
+	}
 }
 
 /**
@@ -3237,6 +3377,12 @@ static inline void __smgr_nat_info_init(struct sess_info *s)
 			pr_debug("esp encap: set nat egress to inner\n");
 			s->nat.tx_lvl = HDR_INNER;
 		}
+	} else if (__smgr_is_eompls_decp_sess(s)) {
+		pr_debug("mpls decap: set nat ingress to inner\n");
+		s->nat.rx_lvl = HDR_INNER;
+	} else if (__smgr_is_eompls_encp_sess(s)) {
+		pr_debug("mpls encap: set nat egress to inner\n");
+		s->nat.tx_lvl = HDR_INNER;
 	}
 }
 
@@ -3787,6 +3933,8 @@ static void __smgr_si_newhdr_set(struct sess_info *s)
 
 	if (SESS_TX_IS_OUTER_IP(s))
 		dpu->nhdr_l3_off = pktprs_ip_hdr_off(SESS_TX_PKT(s), HDR_OUTER);
+	else if (__smgr_is_eompls_encp_sess(s))
+		dpu->nhdr_l3_off = pktprs_ip_hdr_off(SESS_TX_PKT(s), HDR_INNER);
 	else
 		dpu->nhdr_l3_off = pktprs_hdr_off(
 			SESS_TX_PKT(s), PKTPRS_PROTO_PAYLOAD, HDR_OUTER);
@@ -4063,61 +4211,73 @@ static s32 __smgr_remark_si_ud_set(struct sess_info *s)
 }
 
 /**
- * @brief Set the LLD info in SI UD
+ * @brief Set the LLD info in SI UD or AQM for AQM_SW
  * @param s the session
  */
-static s32 __smgr_lld_si_ud_set(struct sess_info *s)
+static s32 __smgr_aqm_lld_si_ud_set(struct sess_info *s)
 {
-	struct si_ud_lld_info info = { 0 };
-	s32 ret = 0;
+	struct si_ud_aqm_lld_info info = { 0 };
 	struct pp_qos_queue_info q_info;
 	struct pp_qos_dev *qdev;
+	struct pp_nf_info nf_info;
+	enum pktprs_hdr_level lvl = HDR_OUTER;
 	u8 lld_ctx;
 	u16 coupled_queue;
-	struct pp_nf_info nf_info;
 	u16 phys_q;
-	enum pktprs_hdr_level lvl = HDR_OUTER;
+	u16 sf_indx;
+	s32 ret = 0;
 
 	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
 	if (unlikely(ptr_is_null(qdev)))
 		return -EINVAL;
 
-	ret = pp_misc_get_lld_info_by_q(s->si.dst_q, &lld_ctx, &coupled_queue);
-	if (unlikely(ret)) {
-		pr_err("Failed to get lld info\n");
-		return ret;
-	}
+	/* handle ud in case packet is lld type - queues & flags */
+	if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD)) {
+		ret = pp_misc_get_lld_info_by_q(s->si.dst_q, &lld_ctx,
+						&coupled_queue);
+		if (unlikely(ret)) {
+			pr_err("Failed to get lld info\n");
+			return ret;
+		}
 
-	if (lld_ctx == PP_MAX_ASF ||
-	    coupled_queue == PP_QOS_INVALID_ID) {
-		pr_err("failure on lld_ctx %d or coupled_queue %d\n",
-			lld_ctx, coupled_queue);
+		if (lld_ctx == PP_MAX_ASF || coupled_queue == PP_QOS_INVALID_ID) {
+			pr_err("failure on lld_ctx %d or coupled_queue %d\n",
+				lld_ctx, coupled_queue);
+			return -EINVAL;
+		}
+
+		ret = pp_qos_queue_info_get(qdev, coupled_queue, &q_info);
+		if (unlikely(ret)) {
+			pr_err("Failed to get queue %u info\n", coupled_queue);
+			return ret;
+		}
+		info.dst_cq = q_info.physical_id;
+		info.lld_ctx_id = lld_ctx;
+
+		if (PKTPRS_IS_MULTI_LEVEL(SESS_TX_PKT(s)))
+			lvl = HDR_INNER;
+
+		if (!PKTPRS_IS_IP(SESS_TX_PKT(s), lvl)) {
+			pr_err("pkt is not IP\n");
+			return -EINVAL;
+		}
+
+		if (PKTPRS_IS_IPV4(SESS_TX_PKT(s), lvl))
+			info.flags |= AQM_LLD_INFO_FLAG_OUT_IPV4;
+
+		info.l3_off = pktprs_ip_hdr_off(SESS_TX_PKT(s), lvl);
+
+		info.flags |= AQM_LLD_INFO_FLAG_LLD_PKT;
+	}
+	/* set flag in case AQM enabled */
+	if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_AQM_SW))
+		info.flags |= AQM_LLD_INFO_FLAG_AQM_SW;
+
+	/* Rest are common for both lld and classic aqm packets */
+	if (pp_misc_get_sf_indx_by_q(s->args->dst_q, &sf_indx)) {
+		pr_err("Failed to get sf index\n");
 		return -EINVAL;
 	}
-
-	ret = pp_qos_queue_info_get(qdev, coupled_queue, &q_info);
-	if (unlikely(ret)) {
-		pr_err("Failed to get queue %u info\n", coupled_queue);
-		return ret;
-	}
-
-	s->si.tmpl_ud_sz = PP_TEMPLATE_UD_SZ;
-	info.dst_q  = s->si.dst_q;
-	info.dst_cq = q_info.physical_id;
-	info.ctx = lld_ctx;
-
-	if (PKTPRS_IS_MULTI_LEVEL(SESS_TX_PKT(s)))
-		lvl = HDR_INNER;
-
-	if (!PKTPRS_IS_IP(SESS_TX_PKT(s), lvl)) {
-		pr_err("pkt is not IP\n");
-		return -EINVAL;
-	}
-
-	if (PKTPRS_IS_IPV4(SESS_TX_PKT(s), lvl))
-		info.flags |= LLD_INFO_FLAG_OUT_IPV4;
-
-	info.l3_off = pktprs_ip_hdr_off(SESS_TX_PKT(s), lvl);
 
 	ret = pp_nf_get(PP_NF_IPSEC_LLD, &nf_info);
 	if (unlikely(ret)) {
@@ -4131,10 +4291,14 @@ static s32 __smgr_lld_si_ud_set(struct sess_info *s)
 		return ret;
 	}
 
-	s->si.dst_q = phys_q;
+	s->si.tmpl_ud_sz = PP_TEMPLATE_UD_SZ;
+	info.dst_q = s->si.dst_q; /* save original dest q */
+	s->si.dst_q = phys_q;     /* set nf queue */
+	info.sf_id = sf_indx;
 
-	pr_debug("q %u (%u) cq %u ctx %u l3_off %u flags %u\n", info.dst_q,
-		s->si.dst_q, info.dst_cq, info.ctx, info.l3_off, info.flags);
+	pr_debug("q %u (%u) cq %u sf_id %u lld_ctx %u l3_off %u flags %u\n",
+		 info.dst_q, s->si.dst_q, info.dst_cq, info.sf_id,
+		 info.lld_ctx_id, info.l3_off, info.flags);
 
 	memcpy(s->si.ud + PP_PS_REGION_SZ, &info, sizeof(info));
 	s->si.si_ud_sz = PP_PS_REGION_SZ + sizeof(info);
@@ -4224,19 +4388,19 @@ static s32 __smgr_si_ud_set(struct sess_info *s)
 		ret = __smgr_frag_si_ud_set(s);
 		if (unlikely(ret))
 			return ret;
+	} else if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD) ||
+		SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_AQM_SW)) {
+		pr_debug("LLD or SW AQM is enabled\n");
+		ret = __smgr_aqm_lld_si_ud_set(s);
+		if (unlikely(ret))
+			return ret;
 	} else if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_TDOX_SUPP)) {
-		if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD))
-		    pr_debug("TDOX is enabled. Ignoring LLD\n");
 		s->si.tmpl_ud_sz = PP_TEMPLATE_UD_SZ;
 	} else if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_REMARK)) {
 		/* remarking can work alone or with frag NF only */
 		if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD))
 		    pr_debug("Remark is enabled. Ignoring LLD\n");
 		ret = __smgr_remark_si_ud_set(s);
-		if (unlikely(ret))
-			return ret;
-	} else if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD)) {
-		ret = __smgr_lld_si_ud_set(s);
 		if (unlikely(ret))
 			return ret;
 	} else if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LRO)) {
@@ -4610,15 +4774,13 @@ err:
 	return ret;
 }
 
-s32 smgr_session_update(u32 sess_id, struct pp_hw_si *hw_si)
+s32 __smgr_session_update(u32 sess_id, struct pp_hw_si *hw_si)
 {
 	struct sess_db_entry *ent;
 	struct sess_db_info *info;
 	s32 ret = 0;
 
 	pr_debug("updating session %u\n", sess_id);
-
-	__smgr_lock();
 
 	if (unlikely(!__smgr_is_sess_exist(sess_id))) {
 		__smgr_stats_invalid_args();
@@ -4650,6 +4812,17 @@ done:
 		       sess_id, ret);
 		__smgr_stats_sess_update_failed();
 	}
+
+	return ret;
+}
+
+s32 smgr_session_update(u32 sess_id, struct pp_hw_si *hw_si)
+{
+	s32 ret = 0;
+
+	__smgr_lock();
+
+	ret = __smgr_session_update(sess_id, hw_si);
 
 	__smgr_unlock();
 
@@ -5706,6 +5879,18 @@ s32 pp_dual_tbm_set(u16 idx, struct pp_dual_tbm *cfg)
 EXPORT_SYMBOL(pp_dual_tbm_set);
 
 /* ========================================================================== */
+/*                                  TurboDox                                  */
+/* ========================================================================== */
+s32 pp_tdox_tout_set(u32 tout)
+{
+	if (unlikely(!pp_is_ready()))
+		return -EPERM;
+
+	return smgr_tdox_tout_set(tout);
+}
+EXPORT_SYMBOL(pp_tdox_tout_set);
+
+/* ========================================================================== */
 /*                                Module APIs                                 */
 /* ========================================================================== */
 /**
@@ -5921,6 +6106,7 @@ static s32 __smgr_db_init(struct device *dev, struct pp_dev_priv *dev_priv,
 	db->n_sessions = init_param->num_sessions;
 	/* enable by default */
 	db->state = SMGR_ENABLE;
+	db->syncq_en = true;
 	db->frag_mode = init_param->frag_mode;
 	/* disable inactive scan */
 	db->scan_state = INACT_SCAN_IDLE;

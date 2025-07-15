@@ -169,15 +169,13 @@ s32 pp_dma_init(struct platform_device *pdev)
 		return -EINVAL;
 
 	/* allocate the IOC buffer from platform r/w pool */
-	ioc_vaddr = gen_pool_alloc_algo(platform_pool, ioc_sz,
-					mxl_soc_pool_algo, &data);
+	ioc_vaddr = mxl_soc_pool_alloc(platform_pool, ioc_sz, &data);
 	if (!ioc_vaddr) {
 		pr_err("failed to allocate ioc buf from platform pool\n");
 		return -EINVAL;
 	}
 	/* map to phys address */
 	ioc_paddr = __pa(ioc_vaddr);
-
 	pr_debug("buffer virt=0x%lx phys=%pad size=%zu allocated from platform pool\n",
 		 ioc_vaddr, &ioc_paddr, ioc_sz);
 
@@ -188,12 +186,12 @@ s32 pp_dma_init(struct platform_device *pdev)
 
 	/* allocate the NIOC buffer from platform r/w pool */
 	data.opt = MXL_FW_OPT_USE_NONCOHERENT;
-	nioc_vaddr = gen_pool_alloc_algo(platform_pool, nioc_sz,
-					 mxl_soc_pool_algo, &data);
+	nioc_vaddr = mxl_soc_pool_alloc(platform_pool, nioc_sz, &data);
 	if (!nioc_vaddr) {
 		pr_err("failed to allocate nioc buf from platform pool\n");
 		goto free_ioc_pool;
 	}
+
 	/* map the buffer as NIOC */
 	nioc_paddr = dma_map_single_attrs(pp_dev_get(), (void *)nioc_vaddr,
 					  nioc_sz, DMA_TO_DEVICE,

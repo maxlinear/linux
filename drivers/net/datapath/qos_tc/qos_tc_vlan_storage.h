@@ -93,28 +93,13 @@ int qos_tc_vlan_storage_crt(struct net_device *dev,
 void qos_tc_vlan_storage_del(struct net_device *dev,
 			     struct qos_tc_vlan_storage_node *node);
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp0(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b);
-#else
 int qos_tc_cookie_cmp0(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b);
-#endif
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp1(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b);
-#else
 int qos_tc_cookie_cmp1(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b);
-#endif
 
-#if (KERNEL_VERSION(5, 13, 0) >= LINUX_VERSION_CODE)
-int qos_tc_cookie_cmp2(void *priv, struct list_head *lh_a,
-		       struct list_head *lh_b);
-#else
 int qos_tc_cookie_cmp2(void *priv, const struct list_head *lh_a,
 		       const struct list_head *lh_b);
-#endif
 
 #endif

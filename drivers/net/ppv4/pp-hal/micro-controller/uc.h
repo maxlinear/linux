@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -37,11 +37,6 @@
 #define UC_IS_ING        !UC_IS_EGR
 
 /**
- * @define maximum uc cpus in cluster
- */
-#define UC_CPUS_MAX      (4)
-
-/**
  * @struct uc_cpu_params
  */
 struct uc_cpu_params {
@@ -63,6 +58,8 @@ struct uc_egr_init_params {
 	phys_addr_t client_base;   /*! wred client base address    */
 	phys_addr_t txm_cred_base; /*! TX-MGR credit base address  */
 	phys_addr_t cls_base;      /*! classifier base address     */
+	phys_addr_t wred_cfg_base; /*! wred cfg base address       */
+	phys_addr_t qos_misc_base; /*! qos uc misc base address    */
 };
 
 /**
@@ -110,6 +107,24 @@ enum tdox_uc_state {
 };
 
 /**
+ * @struct aqm_lld_stats
+ * @brief host only - struct used to store the global lld statistics
+ *	(aggregated for all the SFs + rx and ctx error counters)
+ */
+struct aqm_lld_global_stats {
+	/*! RX packet counter */
+	u64 rx_pkt;
+	/*! Context error packet counter */
+	u64 ctx_error_pkt;
+	/*! general error packet counter */
+	u64 error_pkt;
+	/*! lld counters aggregated for all the SFs */
+	struct lld_sf_stats lld_aggr;
+	/*! aqm counters aggregated for all the SFs */
+	struct aqm_sw_sf_stats aqm_sw_aggr;
+};
+
+/**
  * @enum uc_mbox_set
  * @brief mailbox set, 2 sets of mailbox registers are supported
  */
@@ -152,52 +167,12 @@ bool uc_gpid_group_priority_is_valid(u32 prio);
 s32 uc_ccu_maxcpus_get(bool uc_is_egr, u8 *max_cpus);
 
 /**
- * @brief get the multicast packet counters per uc CPU
- * @param cid cpu index
- * @param stats multicast packet statistics
- * @return s32 0 on success, error code otherwise
- */
-s32 uc_mcast_cpu_stats_get(u32 cid, struct mcast_stats *stats);
-
-/**
- * @brief get the ipsec packet counters per uc CPU
- * @param cid cpu index
- * @param stats ipsec packet statistics
- * @return s32 0 on success, error code otherwise
- */
-s32 uc_ipsec_lld_cpu_stats_get(u32 cid, struct ipsec_lld_stats *stats);
-
-/**
  * @brief get the reassembly packet counters per uc CPU
  * @param cid cpu index
  * @param stats reassembly statistics
  * @return s32 0 on success, error code otherwise
  */
 s32 uc_reass_cpu_stats_get(u32 cid, struct reassembly_stats *stats);
-
-/**
- * @brief get the fragmentation packet counters per uc CPU
- * @param cid cpu index
- * @param stats fragmentation statistics
- * @return s32 0 on success, error code otherwise
- */
-s32 uc_frag_cpu_stats_get(u32 cid, struct frag_stats *stats);
-
-/**
- * @brief get the remrking packet counters per uc CPU
- * @param cid cpu index
- * @param stats remarking statistics
- * @return s32 0 on success, error code otherwise
- */
-s32 uc_remark_cpu_stats_get(u32 cid, struct remarking_stats *stats);
-
-/**
- * @brief get the lro packet counters per uc CPU
- * @param cid cpu index
- * @param stats remarking statistics
- * @return s32 0 on success, error code otherwise
- */
-s32 uc_lro_cpu_stats_get(u32 cid, struct lro_stats *stats);
 
 /**
  * @brief Get the total multicast statistics
@@ -207,11 +182,34 @@ s32 uc_lro_cpu_stats_get(u32 cid, struct lro_stats *stats);
 s32 uc_mcast_stats_get(struct mcast_stats *stats);
 
 /**
+ * @brief Get the total lld statistics
+ * @param stats
+ * @return s32 0 on success, error code otherwise
+ */
+s32 uc_lld_total_stats_get(struct aqm_lld_global_stats *stats);
+
+/**
+ * @brief Get the lld statistics per SF
+ * @param lld_ctx
+ * @param sf_stats
+ * @return s32 0 on success, error code otherwise
+ */
+s32 uc_lld_per_sf_stats_get(u8 lld_ctx, struct lld_sf_stats *sf_stats);
+
+/**
+ * @brief Get the sw aqm statistics per sf
+ * @param sf_indx
+ * @param sf_tats
+ * @return s32 0 on success, error code otherwise
+ */
+s32 uc_aqm_sw_per_sf_stats_get(u8 sf_indx, struct aqm_sw_sf_stats *sf_stats);
+
+/**
  * @brief Get the total ipsec statistics
  * @param stats
  * @return s32 0 on success, error code otherwise
  */
-s32 uc_ipsec_lld_stats_get(struct ipsec_lld_stats *stats);
+s32 uc_ipsec_stats_get(struct ipsec_stats *stats);
 
 /**
  * @brief Get the total reassembly statistics
@@ -270,6 +268,13 @@ s32 uc_tdox_stats_reset(void);
  */
 s32 uc_lld_ctx_set(struct lld_ctx_cfg *cfg);
 
+/**
+ * @brief set the AQM context information
+ * @param cfg AQM context configuration
+ * @return s32 0 on success, error code otherwise
+ */
+
+s32 uc_aqm_ctx_set(struct aqm_ctx_cfg *cfg);
 /**
  * @brief Get LLD Histogram
  * @param ctx LLD Context
@@ -337,13 +342,14 @@ void uc_egr_mbox_buff_free(void *virt, dma_addr_t phys, size_t sz);
  * @param subif DP subif
  * @param qos_port qos port id (phy)
  * @param tx_queue nf tx queue (phy)
+ * @param uc_q uc queue (phisical queue)
  * @param dflt_hif default host interface to use for diverting
  *        packets to the host
  * @param data optional data that relevant to the nf
  * @return s32 0 on success, error code otherwise
  */
 s32 uc_nf_set(enum pp_nf_type nf, u16 pid, u16 subif, u16 qos_port,
-	      u16 tx_queue, u16 dflt_hif, void *data);
+	      u16 tx_queue, u16 uc_q, u16 dflt_hif, void *data);
 
 /**
  * @brief check if cpu is active
@@ -564,22 +570,24 @@ void uc_stats_reset(void);
 
 /**
  * @brief hash bit table get DB
-*/
-s32 uc_ing_hash_bit_db_get(struct hash_bit_db *dst);
+ * @param dst array to copy into
+ * @param cnt number of elements to copy
+ */
+s32 uc_ing_hash_bit_db_get(struct hash_bit_db *dst, u32 cnt);
 
 /**
  * @brief enable bit in hash bit table
-*/
+ */
 s32 uc_ing_hash_bit_enable(u32 index);
 
 /**
  * @brief  disable bit in hash bit table
-*/
+ */
 s32 uc_ing_hash_bit_disable(u32 index);
 
 /**
  * @brief reset Hash bit table
-*/
+ */
 s32 uc_ing_hash_bit_reset(void);
 
 /**
@@ -604,8 +612,15 @@ s32 uc_ing_host_mbox_cmd_send(struct uc_ing_cmd *msg, bool wait_for_done);
 void uc_egr_tdox_stats_reset(u32 dccm_addr, size_t size);
 
 /**
+ * @brief Get egress uc cnt64 timers ticks configuration register
+ *        physical address
+ * @return dma_addr_t
+ */
+dma_addr_t uc_egr_cnt64_tmr_ticks_phys_get(void);
+
+/**
  * @brief Get egress uc tdox timers ticks configuration register
- *        phyisical address
+ *        physical address
  * @return dma_addr_t
  */
 dma_addr_t uc_egr_tdox_tmr_ticks_phys_get(void);

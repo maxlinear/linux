@@ -34,6 +34,7 @@ struct kernel_clone_args {
 	int io_thread;
 	struct cgroup *cgrp;
 	struct css_set *cset;
+	unsigned int kill_seq;
 };
 
 /*
@@ -140,6 +141,8 @@ static inline void put_task_struct(struct task_struct *t)
 	else
 		__put_task_struct(t);
 }
+
+DEFINE_FREE(put_task, struct task_struct *, if (_T) put_task_struct(_T))
 
 static inline void put_task_struct_many(struct task_struct *t, int nr)
 {

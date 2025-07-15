@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -5475,4 +5475,37 @@ u32 pp_qos_dfs_level_get(void)
 	u32 reg = PP_REG_RD32(PP_QOS_MISC_UC_MSC_STAT1_REG);
 
 	return PP_FIELD_GET(UC_MSC_HW_DFS_LVL_MSK, reg);
+}
+
+s32 qos_aqm_q_to_ctx(struct pp_qos_dev *qdev, enum wred_ctx_ops op,
+		u32 queue_id, u16 ctx)
+{
+	struct qos_node *node;
+	u32 phy;
+	s32 ret = 0;
+
+	if (ctx >= PP_QOS_MAX_SERVICE_FLOWS) {
+		QOS_LOG_ERR("Invalid ctx %u\n", ctx);
+		return -EINVAL;
+	}
+
+	QOS_LOCK(qdev);
+
+	phy = get_phy_from_id(qdev->mapping, queue_id);
+	node = get_node_from_phy(qdev->nodes, phy);
+	if (!node) {
+		QOS_LOG_ERR("No node for id %u\n", queue_id);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	create_aqm_q_to_ctx_cmd(qdev, op, node->data.queue.rlm, ctx);
+	update_cmd_id(&qdev->drvcmds);
+	ret = transmit_cmds(qdev);
+	if (unlikely(ret))
+		QOS_LOG_ERR("transmit_cmds failed (%d)\n", ret);
+
+out:
+	QOS_UNLOCK(qdev);
+	return ret;
 }

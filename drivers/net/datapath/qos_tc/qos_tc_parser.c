@@ -15,7 +15,6 @@
 #include <net/pkt_cls.h>
 #include <net/switch_api/lantiq_gsw_flow.h>
 #include <uapi/linux/icmpv6.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_flower.h"
 #include "qos_tc_parser.h"
 

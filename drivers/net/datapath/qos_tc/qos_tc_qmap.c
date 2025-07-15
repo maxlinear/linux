@@ -13,7 +13,6 @@
 #include <net/tc_act/tc_mirred.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/qos_tc.h>
-#include "qos_tc_compat.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_flower.h"
 
@@ -35,57 +34,6 @@ struct flower_cls_map {
 
 static LIST_HEAD(tc_class_list);
 
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-static int qos_tc_parse_flower_action(struct flow_cls_offload *f,
-				      char *tc_cookie)
-{
-	const struct tc_action *a;
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
-	int i;
-#endif
-	int act_nr = 0;
-	int act_ok_nr = 0;
-	int offset;
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (tc_no_actions(f->exts))
-#else
-	if (!tcf_exts_has_actions(f->exts))
-#endif
-		return -EINVAL;
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		if (is_tcf_gact_ok(a))
-			act_ok_nr++;
-		act_nr++;
-
-		if (a->act_cookie) {
-			/* Maximum supported value is 15, so there is not need
-			 * to store whole act_cookie->data. Copying whole
-			 * unsigned char to signed char with such low values
-			 * won't cause any conversion problem, and in addition
-			 * will reset sign bit, which later will be used to
-			 * check if cookie was set or not.
-			 */
-			offset = a->act_cookie->len - sizeof(*tc_cookie);
-			memcpy(tc_cookie, a->act_cookie->data + offset,
-			       sizeof(*tc_cookie));
-		}
-	}
-
-	if (act_nr != 1 && act_ok_nr != 1)
-		return -EINVAL;
-
-	return 0;
-}
-#else
 static int qos_tc_parse_flower_action(struct flow_cls_offload *f,
 				      char *tc_cookie)
 {
@@ -122,7 +70,6 @@ static int qos_tc_parse_flower_action(struct flow_cls_offload *f,
 
 	return 0;
 }
-#endif
 
 static int qos_tc_parse_tc_flower(struct flow_cls_offload *f,
 				  struct flower_cls_map **flt,
@@ -142,9 +89,7 @@ static int qos_tc_parse_tc_flower(struct flow_cls_offload *f,
 				BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
 				BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
 				BIT(FLOW_DISSECTOR_KEY_IP) |
-#if (KERNEL_VERSION(5, 3, 0) <= LINUX_VERSION_CODE)
 				BIT(FLOW_DISSECTOR_KEY_META) |
-#endif
 				BIT(FLOW_DISSECTOR_KEY_PORTS))) {
 		pr_debug("%s: Unsupported key used: 0x%x\n", __func__,
 			 d->used_keys);

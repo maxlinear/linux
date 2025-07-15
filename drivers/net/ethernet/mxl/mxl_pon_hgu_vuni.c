@@ -416,7 +416,7 @@ static int vuni_open(struct net_device *dev)
 		vani_dev = vuni_if[priv->id][SUBIF_VANI0_0];
 		vuni_dev = vuni_if[priv->id][SUBIF_VUNI0_0];
 		if (vuni_dev == dev) {
-			netif_carrier_on(vani_dev);
+			netif_carrier_on(vuni_dev);
 			/* Setting of IFF_UP flag is not working from vuni_init, as link
 			 * is not present yet (__LINK_STATE_PRESENT is not set).
 			 * So, for now setting the flag from vuni_open.
@@ -427,6 +427,7 @@ static int vuni_open(struct net_device *dev)
 				       __func__, vani_dev->name);
 				return ret;
 			}
+			netif_carrier_on(vani_dev);
 		}
 	}
 
@@ -798,6 +799,8 @@ static int vuni_init(struct net_device *dev)
 		pr_err("failed to open device: %s\n", dev->name);
 		return -1;
 	}
+
+	netif_carrier_off(dev);
 
 	/* get the minimum MTU and call the change mtu */
 	dp_get_mtu_size(dev, &g_soc_data.mtu_limit);

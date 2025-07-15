@@ -261,9 +261,9 @@ s32 smgr_sq_init(struct device *dev);
  * @brief this API should be called for sync queues mechanism
  *        when the lspp (Last Slow Path Packet) receive in the
  *        CPU path
- * @param session session id from the lspp
+ * @param hash_sig hash signature of session
  */
-void smgr_sq_lspp_rcv(u32 session);
+void smgr_sq_lspp_rcv(u32 hash_sig);
 
 /**
  * @brief get the sq statistics

@@ -150,6 +150,9 @@ struct smgr_tdox_db {
 	u32 supp_interval;
 	u32 prio_interval;
 	u32 cand_interval;
+
+	/*! tdox params */
+	struct smgr_tdox_conf conf;
 };
 
 /**
@@ -474,7 +477,7 @@ static s32 tdox_prio_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 				return -EINVAL;
 			}
 			/* update session with new hw si */
-			if (unlikely(smgr_session_update(ent->info.sess_id, &hw_si))) {
+			if (unlikely(__smgr_session_update(ent->info.sess_id, &hw_si))) {
 				pr_err("couldn't update hw si for session %u", ent->info.sess_id);
 				return -EINVAL;
 			}
@@ -972,36 +975,48 @@ unlock:
 	spin_unlock_bh(&db->lock);
 }
 
-s32 smgr_tdox_conf_set(struct smgr_tdox_conf conf)
+s32 smgr_tdox_conf_set(struct smgr_tdox_conf *conf)
 {
+	struct smgr_tdox_db *db = tdox_db_get();
 	s32 ret = 0;
 
-	ret = uc_egr_mbox_cmd_send(UC_CMD_TDOX_CONFIG_SET, 0, (const void *)&conf,
-				   sizeof(conf), NULL, 0);
+	if (ptr_is_null(db))
+		return -EINVAL;
 
-	if (ret) {
-		pr_err("failed to set tdox timer config\n");
-		return ret;
-	}
+	/* update egress db */
+	ret = uc_egr_mbox_cmd_send(UC_CMD_TDOX_CONFIG_SET, 0, (const void *)conf,
+				   sizeof(*conf), NULL, 0);
 
+	if (ret)
+		goto err;
+
+	/* Update local db */
+	spin_lock_bh(&db->lock);
+	memcpy(&db->conf, conf, sizeof(*conf));
+	spin_unlock_bh(&db->lock);
+
+	return 0;
+
+err:
+	pr_err("failed to set tdox timer config\n");
 	return ret;
 }
 
 s32 smgr_tdox_conf_get(struct smgr_tdox_conf *conf)
 {
-	s32 ret = 0;
+	struct smgr_tdox_db *db = tdox_db_get();
 
 	if (ptr_is_null(conf))
 		return -EINVAL;
 
-	ret = uc_egr_mbox_cmd_send(UC_CMD_TDOX_CONFIG_GET, 0, NULL, 0,
-				   conf, sizeof(*conf));
-	if (ret) {
-		pr_err("failed to get tdox timer config\n");
-		return ret;
-	}
+	if (ptr_is_null(db))
+		return -EINVAL;
 
-	return ret;
+	spin_lock_bh(&db->lock);
+	memcpy(conf, &db->conf, sizeof(*conf));
+	spin_unlock_bh(&db->lock);
+
+	return 0;
 }
 
 s32 smgr_tdox_debug_read_entry(struct seq_file *f, u32 index)
@@ -1055,12 +1070,12 @@ s32 smgr_tdox_debug_read_entry(struct seq_file *f, u32 index)
 				break;
 		}
 		seq_printf(f,
-			"ent=%u, sess_id=%u, supp_id=%u[%s], state=%s, lowQ[phy]=%u, "
-			"highQ[phy]=%u, threshold=%u, is_docsis=%u\n",
+			"ent=%-4u, sess_id=%-5u, supp_id=%-3u[%-4s], state=%-4s, lowQ[phy]=%-3u, "
+			"highQ[phy]=%-3u, threshold=%-3u, is_docsis=%u\n",
 			ent->id, ent->info.sess_id, ent->info.supp_id,
 			(ent->info.supp_id == TDOX_SUPP_MAX ?
-				"NA" : (ent->info.supp_id < TDOX_MAX_NON_AGGRESSIVE_SESSIONS ?
-				"Normal" : "Aggressive")),
+				" NA " : (ent->info.supp_id < TDOX_MAX_NON_AGGRESSIVE_SESSIONS ?
+				"Norm" : "Aggr")),
 			TDOX_STATE_STR(ent->state), ent->info.low_queue,
 			ent->info.high_queue, ent->info.threshold, ent->info.is_docsis);
 		}
@@ -1111,6 +1126,29 @@ void smgr_tdox_nf_set(u16 phyq)
 	db->nf_q = phyq;
 	db->nf_enabled = true;
 	spin_unlock_bh(&db->lock);
+}
+
+s32 smgr_tdox_tout_set(u32 tout)
+{
+	struct smgr_tdox_db *db = tdox_db_get();
+	struct smgr_tdox_conf conf;
+
+	if (ptr_is_null(db))
+		return -EINVAL;
+
+	if (smgr_tdox_conf_get(&conf)) {
+		pr_err("failed to get tdox config\n");
+		return -EINVAL;
+	}
+
+	if (tout >= TDOX_TIMER_MAX_TIMEOUT_USEC) {
+		pr_err("invalid tdox timeout %u\n", tout);
+		return -EINVAL;
+	}
+
+	conf.timeout = tout;
+
+	return smgr_tdox_conf_set(&conf);
 }
 
 s32 smgr_tdox_init(struct device *dev, struct smgr_database *smgr_db)
@@ -1167,6 +1205,11 @@ s32 smgr_tdox_init(struct device *dev, struct smgr_database *smgr_db)
 	INIT_DELAYED_WORK(&db->dwork_eval, tdox_eval_work);
 	db->wq_running = false;
 	db->enable = TDOX_DFLT_EN;
+
+	db->conf.timeout          = TDOX_TIMER_TIMEOUT_USEC;
+	db->conf.max_reach_target = TDOX_MAX_REACH_TARGET;
+	db->conf.max_supp_ratio   = TDOX_MAX_SUPP_RATIO;
+	db->conf.max_supp_bytes   = TDOX_MAX_SUPP_BYTES;
 
 	return 0;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -87,6 +87,7 @@ static s32 __pmgr_hif_dp_set(struct pp_hif_datapath*, u8*, u8);
 static bool __pmgr_hif_db_dp_is_equal(struct pp_hif_datapath *dp,
 				      u8 eg_idx, u8 dp_num);
 static u8 pmgr_hif_db_dp_find(struct pp_hif_datapath *dp, u8 eg_idx);
+static s32 __pmgr_packets_drops_get(struct pp_stats *stats);
 
 /* Module internal routines */
 static s32 __pmgr_db_init(void);
@@ -213,7 +214,7 @@ s32 pmgr_ports_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 	for_each_arr_entry_cond(it, stats, num, pp_stats_is_non_zero)
 		pr_buf_cat(buf, sz, *n, "| %-7u  | %-12llu | %-12llu |  %-12llu  |  %-12llu  |\n",
 			   arr_entry_idx(stats, it), it->packets, it->bytes,
-			    it->ing_droped_bytes, it->egr_droped_bytes);
+			    it->ing_dropped_bytes, it->egr_dropped_bytes);
 
 	pr_buf_cat(buf, sz, *n, "+----------+--------------+--------------+----------------+----------------+\n");
 
@@ -384,18 +385,19 @@ s32 pp_port_stats_get(u16 pid, struct pp_stats *stats)
 		goto unlock_out;
 	}
 
-	ret = rx_dma_egr_bytes_drops_get(pid, &stats->egr_droped_bytes);
+	ret = rx_dma_egr_bytes_drops_get(pid, &stats->egr_dropped_bytes);
 	if (unlikely(ret)) {
 		db->stats.hal_err++;
 		goto unlock_out;
 	}
 
-	ret = rx_dma_ing_bytes_drops_get(pid, &stats->ing_droped_bytes);
+	ret = rx_dma_ing_bytes_drops_get(pid, &stats->ing_dropped_bytes);
 	if (unlikely(ret)) {
 		db->stats.hal_err++;
 		goto unlock_out;
 	}
 
+	ret = __pmgr_packets_drops_get(stats);
 
 unlock_out:
 	spin_unlock_bh(&db->lock);
@@ -2005,6 +2007,28 @@ static u8 pmgr_hif_db_dp_find(struct pp_hif_datapath *dp, u8 eg_idx)
 			return i;
 	}
 	return PMGR_HIF_DP_INVALID;
+}
+
+/**
+ * @brief Get the port packets drops statistics
+ * @param stats port statistics
+ * @return s32 0 for success, non-zero otherwise
+ */
+static s32 __pmgr_packets_drops_get(struct pp_stats *stats)
+{
+	u32 avg_pkt_size;
+
+	if (!stats)
+		return -EINVAL;
+
+	avg_pkt_size = stats->packets ? stats->bytes / stats->packets : 0;
+
+	if (avg_pkt_size) {
+		stats->ing_dropped_packets = stats->ing_dropped_bytes / avg_pkt_size;
+		stats->egr_dropped_packets = stats->egr_dropped_bytes / avg_pkt_size;
+	}
+
+	return 0;
 }
 
 /**

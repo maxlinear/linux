@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -113,6 +113,16 @@ static phys_addr_t chk_base_addr;
  * @brief classifier physical base address
  */
 static phys_addr_t cls_base_addr;
+
+/**
+ * @brief wred_cfg physical base address
+ */
+static phys_addr_t wred_cfg_base_addr;
+
+/**
+ * @brief misc physical base address
+ */
+static phys_addr_t qos_misc_base_addr;
 
 /**
  * @brief uc main logger buffer, this is splitted into 2 buffers
@@ -311,41 +321,6 @@ void uc_stats_reset(void)
 	PP_REG_WR32(UC_SR(EGRESS, UC_SR_RESET_OFF), 1);
 }
 
-s32 uc_mcast_cpu_stats_get(u32 cid, struct mcast_stats *stats)
-{
-	u32 off;
-
-	if (unlikely(ptr_is_null(stats)))
-		return -EINVAL;
-
-	if (!uc_is_cpu_valid(UC_IS_EGR, cid))
-		return -EINVAL;
-
-	off = offsetof(struct egress_stats, cpu[cid].mcast);
-
-
-	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
-
-	return 0;
-}
-
-s32 uc_ipsec_lld_cpu_stats_get(u32 cid, struct ipsec_lld_stats *stats)
-{
-	u32 off;
-
-	if (unlikely(ptr_is_null(stats)))
-		return -EINVAL;
-
-	if (!uc_is_cpu_valid(UC_IS_EGR, cid))
-		return -EINVAL;
-
-	off = offsetof(struct egress_stats, cpu[cid].ipsec_lld);
-
-	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
-
-	return 0;
-}
-
 s32 uc_reass_cpu_stats_get(u32 cid, struct reassembly_stats *stats)
 {
 	u32 off;
@@ -357,57 +332,6 @@ s32 uc_reass_cpu_stats_get(u32 cid, struct reassembly_stats *stats)
 		return -EINVAL;
 
 	off = offsetof(struct egress_stats, cpu[cid].reass);
-
-	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
-
-	return 0;
-}
-
-s32 uc_frag_cpu_stats_get(u32 cid, struct frag_stats *stats)
-{
-	u32 off;
-
-	if (unlikely(ptr_is_null(stats)))
-		return -EINVAL;
-
-	if (!uc_is_cpu_valid(UC_IS_EGR, cid))
-		return -EINVAL;
-
-	off = offsetof(struct egress_stats, cpu[cid].frag);
-
-	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
-
-	return 0;
-}
-
-s32 uc_remark_cpu_stats_get(u32 cid, struct remarking_stats *stats)
-{
-	u32 off;
-
-	if (unlikely(ptr_is_null(stats)))
-		return -EINVAL;
-
-	if (!uc_is_cpu_valid(UC_IS_EGR, cid))
-		return -EINVAL;
-
-	off = offsetof(struct egress_stats, cpu[cid].remark);
-
-	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
-
-	return 0;
-}
-
-s32 uc_lro_cpu_stats_get(u32 cid, struct lro_stats *stats)
-{
-	u32 off;
-
-	if (unlikely(ptr_is_null(stats)))
-		return -EINVAL;
-
-	if (!uc_is_cpu_valid(UC_IS_EGR, cid))
-		return -EINVAL;
-
-	off = offsetof(struct egress_stats, cpu[cid].lro);
 
 	PP_REG_RD_REP(UC_SR(EGRESS, off), stats, sizeof(*stats));
 
@@ -430,25 +354,14 @@ s32 uc_egr_global_stats_get(struct egr_glb_stats *stats)
 
 s32 uc_mcast_stats_get(struct mcast_stats *stats)
 {
-	struct mcast_stats cpu_stats;
-	s32 ret;
-	u32 i;
+	u32 off;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
 
-		ret = uc_mcast_cpu_stats_get(i, &cpu_stats);
-		if (unlikely(ret)) {
-			pr_err("failed to get mcast uc cpu %u counters\n", i);
-			return ret;
-		}
-		stats->rx_pkt          += cpu_stats.rx_pkt;
-		stats->tx_pkt          += cpu_stats.tx_pkt;
-		stats->drop_pkt        += cpu_stats.drop_pkt;
-		stats->mirror_tx_pkt   += cpu_stats.mirror_tx_pkt;
-		stats->mirror_drop_pkt += cpu_stats.mirror_drop_pkt;
-	}
+	off = offsetof(struct egress_stats, mcast);
+
+	memcpy_fromio(stats, (void *)UC_SR(EGRESS, off), sizeof(*stats));
 
 	return 0;
 }
@@ -496,18 +409,32 @@ s32 uc_lld_ctx_set(struct lld_ctx_cfg *cfg)
 	return 0;
 }
 
+s32 uc_aqm_ctx_set(struct aqm_ctx_cfg *cfg)
+{
+	s32 ret = 0;
+
+	ret = uc_egr_mbox_cmd_send(UC_CMD_AQM_CTX_CFG_SET, 0, cfg,
+				   sizeof(struct aqm_ctx_cfg), NULL, 0);
+	if (unlikely(ret)) {
+		pr_err("failed to set AQM Context\n");
+		return ret;
+	}
+
+	return 0;
+}
+
 s32 uc_sf_hist_get(u8 ctx, struct pp_sf_hist_stat *hist, bool reset)
 {
 	s32 ret = 0;
-	struct lld_hist_get_out_cmd uc_hist;
-	struct lld_hist_get_in_cmd in_cmd;
+	struct aqm_lld_hist_get_out_cmd uc_hist;
+	struct aqm_lld_hist_get_in_cmd in_cmd;
 
 	in_cmd.ctx = ctx;
 	in_cmd.reset = reset;
 
-	ret = uc_egr_mbox_cmd_send(UC_CMD_LLD_HIST_GET, 0, &in_cmd,
-				sizeof(struct lld_hist_get_in_cmd), &uc_hist,
-				sizeof(struct lld_hist_get_out_cmd));
+	ret = uc_egr_mbox_cmd_send(UC_CMD_AQM_LLD_HIST_GET, 0, &in_cmd,
+							sizeof(struct aqm_lld_hist_get_in_cmd), &uc_hist,
+							sizeof(struct aqm_lld_hist_get_out_cmd));
 	if (unlikely(ret)) {
 		pr_err("failed to get LLD Histogram\n");
 		return ret;
@@ -575,32 +502,90 @@ s32 uc_ingress_stats_reset(void)
 	return 0;
 }
 
-s32 uc_ipsec_lld_stats_get(struct ipsec_lld_stats *stats)
+s32 uc_lld_total_stats_get(struct aqm_lld_global_stats *stats)
 {
-	struct ipsec_lld_stats cpu_stats;
-	s32 ret;
-	u32 i;
+	struct aqm_lld_stats aqm_lld_stats;
+	u32 lld_ctx;
+	u32 off;
+	u32 sf_indx;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
 
-		ret = uc_ipsec_lld_cpu_stats_get(i, &cpu_stats);
-		if (unlikely(ret)) {
-			pr_err("failed to get ipsec uc cpu %u counters\n", i);
-			return ret;
-		}
-		stats->ipsec.rx_pkt     += cpu_stats.ipsec.rx_pkt;
-		stats->ipsec.tx_pkt     += cpu_stats.ipsec.tx_pkt;
-		stats->ipsec.error_pkt  += cpu_stats.ipsec.error_pkt;
+	off = offsetof(struct egress_stats, aqm_lld);
+	memcpy_fromio(&aqm_lld_stats, (void *)UC_SR(EGRESS, off),
+				sizeof(aqm_lld_stats));
 
-		stats->lld.rx_pkt       += cpu_stats.lld.rx_pkt;
-		stats->lld.tx_pkt       += cpu_stats.lld.tx_pkt;
-		stats->lld.error_pkt    += cpu_stats.lld.error_pkt;
-		stats->lld.mark_pkt     += cpu_stats.lld.mark_pkt;
-		stats->lld.sanction_pkt += cpu_stats.lld.sanction_pkt;
-		stats->lld.drop_pkt     += cpu_stats.lld.drop_pkt;
+	memset(stats, 0, sizeof(struct aqm_lld_global_stats));
+	stats->rx_pkt        = aqm_lld_stats.rx_pkt;
+	stats->ctx_error_pkt = aqm_lld_stats.ctx_error_pkt;
+	stats->error_pkt = aqm_lld_stats.error_pkt;
+
+	/* LLD stats per SF */
+	for (lld_ctx= 0; lld_ctx < MAX_LLD_CONTEXT; lld_ctx++) {
+		stats->lld_aggr.rx_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].rx_pkt;
+		stats->lld_aggr.rx_ect0_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].rx_ect0_pkt;
+		stats->lld_aggr.rx_ect1_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].rx_ect1_pkt;
+		stats->lld_aggr.rx_ce_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].rx_ce_pkt;
+		stats->lld_aggr.tx_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].tx_pkt;
+		stats->lld_aggr.mark_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].mark_pkt;
+		stats->lld_aggr.sanction_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].sanction_pkt;
+		stats->lld_aggr.drop_pkt +=
+			aqm_lld_stats.lld_sf[lld_ctx].drop_pkt;
 	}
+
+	/* Buff ctrl stats per SF */
+	for (sf_indx = 0; sf_indx < MAX_AQM_CONTEXT; sf_indx++) {
+		stats->aqm_sw_aggr.rx_pkt +=
+			aqm_lld_stats.aqm_sf[sf_indx].rx_pkt;
+		stats->aqm_sw_aggr.bc_drop_pkt +=
+			aqm_lld_stats.aqm_sf[sf_indx].bc_drop_pkt;
+		stats->aqm_sw_aggr.aqm_drop_pkt +=
+			aqm_lld_stats.aqm_sf[sf_indx].aqm_drop_pkt;
+		stats->aqm_sw_aggr.tx_pkt +=
+			aqm_lld_stats.aqm_sf[sf_indx].tx_pkt;
+	}
+
+	return 0;
+}
+
+s32 uc_lld_per_sf_stats_get(u8 lld_ctx, struct lld_sf_stats *sf_stats)
+{
+	struct aqm_lld_stats stats;
+	u32 off;
+
+	if (unlikely(ptr_is_null(sf_stats)))
+		return -EINVAL;
+
+	off = offsetof(struct egress_stats, aqm_lld);
+
+	memcpy_fromio(&stats, (void *)UC_SR(EGRESS, off), sizeof(stats));
+
+	memcpy(sf_stats, &stats.lld_sf[lld_ctx], sizeof(*sf_stats));
+
+	return 0;
+}
+
+s32 uc_aqm_sw_per_sf_stats_get(u8 sf_indx, struct aqm_sw_sf_stats *sf_stats)
+{
+	struct aqm_lld_stats stats;
+	u32 off;
+
+	if (unlikely(ptr_is_null(sf_stats)))
+		return -EINVAL;
+
+	off = offsetof(struct egress_stats, aqm_lld);
+
+	memcpy_fromio(&stats, (void *)UC_SR(EGRESS, off), sizeof(stats));
+
+	memcpy(sf_stats, &stats.aqm_sf[sf_indx], sizeof(*sf_stats));
 
 	return 0;
 }
@@ -612,7 +597,7 @@ s32 uc_reass_stats_get(struct reassembly_stats *stats)
 	u32 i;
 	u64 *it1, *it2;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
+	for (i = 0; i < UC_CPUS_REASS_MAX; i++) {
 		if (!uc_is_cpu_active(UC_IS_EGR, i))
 			continue;
 
@@ -635,77 +620,56 @@ s32 uc_reass_stats_get(struct reassembly_stats *stats)
 
 s32 uc_frag_stats_get(struct frag_stats *stats)
 {
-	struct frag_stats cpu_stats;
-	s32 ret;
-	u32 i;
+	u32 off;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
 
-		ret = uc_frag_cpu_stats_get(i, &cpu_stats);
-		if (unlikely(ret)) {
-			pr_err("failed to get frag uc cpu %u counters\n", i);
-			return ret;
-		}
-		stats->rx_pkt            += cpu_stats.rx_pkt;
-		stats->tx_pkt            += cpu_stats.tx_pkt;
-		stats->total_drops       += cpu_stats.total_drops;
-		stats->bmgr_drops        += cpu_stats.bmgr_drops;
-		stats->df_drops          += cpu_stats.df_drops;
-		stats->max_frags_drops   += cpu_stats.max_frags_drops;
-	}
+	off = offsetof(struct egress_stats, frag);
+
+	memcpy_fromio(stats, (void *)UC_SR(EGRESS, off), sizeof(*stats));
 
 	return 0;
 }
 
 s32 uc_remark_stats_get(struct remarking_stats *stats)
 {
-	struct remarking_stats cpu_stats;
-	s32 ret;
-	u32 i;
+	u32 off;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
 
-		ret = uc_remark_cpu_stats_get(i, &cpu_stats);
-		if (unlikely(ret)) {
-			pr_err("failed to get remark uc cpu %u counters\n", i);
-			return ret;
-		}
-		stats->rx_pkt            += cpu_stats.rx_pkt;
-		stats->tx_pkt            += cpu_stats.tx_pkt;
-		stats->remarked_pkt      += cpu_stats.remarked_pkt;
-		stats->error_pkt         += cpu_stats.error_pkt;
-	}
+	off = offsetof(struct egress_stats, remark);
+
+	memcpy_fromio(stats, (void *)UC_SR(EGRESS, off), sizeof(*stats));
 
 	return 0;
 }
 
 s32 uc_lro_stats_get(struct lro_stats *stats)
 {
-	struct lro_stats cpu_stats;
-	s32 ret;
-	u32 i;
+	u32 off;
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
 
-		ret = uc_lro_cpu_stats_get(i, &cpu_stats);
-		if (unlikely(ret)) {
-			pr_err("failed to get remark uc cpu %u counters\n", i);
-			return ret;
-		}
+	off = offsetof(struct egress_stats, lro);
 
-		stats->rx_pkt            += cpu_stats.rx_pkt;
-		stats->tx_pkt            += cpu_stats.tx_pkt;
-		stats->agg_pkt           += cpu_stats.agg_pkt;
-		stats->exp_pkt           += cpu_stats.exp_pkt;
-		stats->drop_pkt          += cpu_stats.drop_pkt;
-		stats->error_pkt         += cpu_stats.error_pkt;
-	}
+	memcpy_fromio(stats, (void *)UC_SR(EGRESS, off), sizeof(*stats));
+
+	return 0;
+}
+
+s32 uc_ipsec_stats_get(struct ipsec_stats *stats)
+{
+	u32 off;
+
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
+
+	off = offsetof(struct egress_stats, ipsec);
+
+	memcpy_fromio(stats, (void *)UC_SR(EGRESS, off), sizeof(*stats));
 
 	return 0;
 }
@@ -1841,9 +1805,9 @@ static s32 __writer_port_enable(u32 uc_port, u16 qos_port)
 }
 
 s32 uc_nf_set(enum pp_nf_type nf, u16 pid, u16 subif, u16 qos_port,
-	      u16 tx_queue, u16 dflt_hif, void *data)
+	      u16 tx_queue, u16 uc_q, u16 dflt_hif, void *data)
 {
-	struct ipsec_info ipsec_info = { 0 };
+	struct ipsec_lld_info ipsec_lld_info = { 0 };
 	u16 vpn_gpid;
 	u32 uc_port;
 	s32 ret;
@@ -1870,13 +1834,15 @@ s32 uc_nf_set(enum pp_nf_type nf, u16 pid, u16 subif, u16 qos_port,
 		vpn_gpid = PP_PORT_INVALID;
 		if (data)
 			vpn_gpid = *(u16 *)data;
-		ipsec_info.tx_gpid  = pid;
-		ipsec_info.tx_q     = tx_queue;
-		ipsec_info.tx_subif = subif;
-		ipsec_info.vpn_gpid = vpn_gpid;
+		ipsec_lld_info.ipsec.tx_gpid  = pid;
+		ipsec_lld_info.ipsec.tx_q     = tx_queue;
+		ipsec_lld_info.ipsec.tx_subif = subif;
+		ipsec_lld_info.ipsec.vpn_gpid = vpn_gpid;
+		ipsec_lld_info.lld.nf_queue = uc_q;
 
-		ret = uc_egr_mbox_cmd_send(UC_CMD_IPSEC_INFO, 0, &ipsec_info,
-					   sizeof(ipsec_info), NULL, 0);
+		ret = uc_egr_mbox_cmd_send(UC_CMD_IPSEC_INFO, 0,
+					   &ipsec_lld_info,
+					   sizeof(ipsec_lld_info), NULL, 0);
 		if (unlikely(ret))
 			return ret;
 		break;
@@ -2006,7 +1972,8 @@ s32 __uc_egr_info_set(struct uc_init_params *cfg)
 	info.logger_buff_sz = egr_log_buf.sz;
 	info.chk_base = chk_base_addr;
 	info.cls_base = cls_base_addr;
-
+	info.wred_cfg_base = wred_cfg_base_addr;
+	info.qos_misc_base = qos_misc_base_addr;
 	rx_dma_config_get(&rxdma_cfg);
 	for (i = 0 ; i < ARRAY_SIZE(info.buffer_size) ; i++)
 		info.buffer_size[i] = rxdma_cfg.buffer_size[i];
@@ -2321,7 +2288,15 @@ static void __uc_logger_destroy(void)
 	memset(&logger_buf, 0, sizeof(logger_buf));
 }
 
-#define UC_EGR_TDOX_TMR_TICKS_OFF 0x3D0200
+#define UC_EGR_LONG_TMR_TICKS_OFF 0x3D0200
+
+dma_addr_t uc_egr_cnt64_tmr_ticks_phys_get(void)
+{
+	return pp_virt_to_phys(
+		(void *)(ulong)(uc_egr_base_addr + UC_EGR_LONG_TMR_TICKS_OFF));
+}
+
+#define UC_EGR_TDOX_TMR_TICKS_OFF 0x3D8200
 
 dma_addr_t uc_egr_tdox_tmr_ticks_phys_get(void)
 {
@@ -2436,12 +2411,14 @@ s32 uc_init(struct uc_init_params *init_param)
 #ifdef UC_DUT_ENABLE
 	uc_dut_save_egr_init(&init_param->egr);
 #endif
-	uc_egr_base_addr = init_param->egr.uc_base;
-	uc_egr_cpus_addr = init_param->egr.uc_base + UC_EGR_CPUS_OFF;
-	uc_ing_base_addr = init_param->ing.uc_base;
-	uc_ing_cpus_addr = init_param->ing.uc_base + UC_ING_CPUS_OFF;
-	chk_base_addr    = init_param->egr.chk_base;
-	cls_base_addr    = init_param->egr.cls_base;
+	uc_egr_base_addr 	= init_param->egr.uc_base;
+	uc_egr_cpus_addr 	= init_param->egr.uc_base + UC_EGR_CPUS_OFF;
+	uc_ing_base_addr 	= init_param->ing.uc_base;
+	uc_ing_cpus_addr 	= init_param->ing.uc_base + UC_ING_CPUS_OFF;
+	chk_base_addr    	= init_param->egr.chk_base;
+	cls_base_addr     	= init_param->egr.cls_base;
+	wred_cfg_base_addr	= init_param->egr.wred_cfg_base;
+	qos_misc_base_addr  = init_param->egr.qos_misc_base;
 
 	ret = uc_init_fat(init_param, &uc_fat);
 	if (unlikely(ret))

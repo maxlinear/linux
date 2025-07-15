@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -617,6 +617,7 @@ static s32 __dts_qos_cfg(struct pp_dts_cfg *dts_cfg)
 	u32 num_reserved_ports = 0;
 	struct pp_qos_init_param *p = &dts_cfg->qos_params;
 	u32 idx;
+	u32 aqm_cert_mode = 0;
 	s32 ret = 0;
 
 	if (__dts_sub_device_get("intel,ppv4-qos", &pdev, &np))
@@ -645,6 +646,15 @@ static s32 __dts_qos_cfg(struct pp_dts_cfg *dts_cfg)
 
 	if (unlikely(ret))
 		return ret;
+
+	/* aqm engine set default to HW unless cert mode active */
+	p->aqm_engine = PP_AQM_HW;
+	ret = __dts_u32_param_get(pdev, np, "mxl,cert-mode", &aqm_cert_mode);
+	if (unlikely(ret)) {
+		if (ret != -EINVAL)
+			return ret;
+	} else if (aqm_cert_mode == 1)
+		p->aqm_engine = PP_AQM_SW;
 
 	if (num_reserved_ports > PP_QOS_MAX_PORTS) {
 		dev_err(&pdev->dev,
@@ -782,6 +792,16 @@ static s32 __dts_egr_uc_cfg(struct pp_dts_cfg *dts_cfg)
 
 	/* Get classifier physical base */
 	ret = __dts_phys_addr_get(pdev, "cls-base-addr", &ucp->cls_base);
+	if (unlikely(ret))
+		goto done;
+
+	/* Get wred physical base */
+	ret = __dts_phys_addr_get(pdev, "wred-cfg-base-addr",
+				  &ucp->wred_cfg_base);
+
+	/* Get Qos misc physical base */
+	ret = __dts_phys_addr_get(pdev, "qos-misc-base-addr",
+				  &ucp->qos_misc_base);
 
 	if (!ret)
 		ucp->valid = true;
@@ -1024,6 +1044,10 @@ void pp_dts_cfg_dump(struct pp_dts_cfg *cfg)
 		cfg->uc_params.ing.cpus.cpu_prof[2]);
 	pr_debug("Ingress uC cpu3 profile %u\n",
 		cfg->uc_params.ing.cpus.cpu_prof[3]);
+	pr_debug("AQM Engine type %u (%s)\n",
+		 cfg->qos_params.aqm_engine,
+		 (cfg->qos_params.aqm_engine == PP_AQM_SW ?
+		  "PP_AQM_SW" : "PP_AQM_HW"));
 #endif /* CONFIG_SOC_LGM */
 }
 

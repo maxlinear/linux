@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -503,53 +503,283 @@ PP_DEFINE_DEBUGFS(exception_session_si,
  */
 void __smgr_dbg_frag_stats(struct seq_file *f)
 {
-	struct frag_stats stats[UC_CPUS_MAX], *it;
+	struct frag_stats stats;
 	s32 ret;
-	u32 cid, i;
-	char **str;
-	static const char * const cntrs_str[] = {
-		"rx_pkt",
-		"tx_pkt",
-		"total_drops",
-		"bmgr_drops",
-		"df_drops",
-		"max_frags_drops",
-	};
 
-	for (cid = 0; cid < UC_CPUS_MAX; cid++) {
-		ret = uc_frag_cpu_stats_get(cid, &stats[cid]);
-		if (unlikely(ret)) {
-			pr_err("failed to get frag uc cpu %u counters\n", cid);
-			return;
-		}
+	ret = uc_frag_stats_get(&stats);
+	if (unlikely(ret)) {
+		pr_err("failed to get frag uc counters\n");
+		return;
 	}
 
 	seq_puts(f, "\n");
-	seq_puts(f, "|=====================================================================|\n");
-	seq_puts(f, "|                   Fragmentation UC Statistics                       |\n");
-	seq_puts(f, "|=====================================================================|\n");
-	seq_printf(f, "| %-15s ", "Counter");
-	for (cid = 0; cid < UC_CPUS_MAX; cid++)
-		seq_printf(f, "|  CPU%u      ", cid);
-	seq_puts(f, "|\n");
-	seq_puts(f, "|-----------------+------------+------------+------------+------------|\n");
+	seq_puts(f, " +-------------------------------------+\n");
+	seq_puts(f, " |     Fragmentation UC Statistics     |\n");
+	seq_puts(f, " +-------------------------------------+\n");
+	seq_puts(f, " |   COUNTER       |       VALUE       |\n");
+	seq_puts(f, " +-----------------+-------------------+\n");
 
-	i = 0;
-	for_each_arr_entry(str, cntrs_str, ARRAY_SIZE(cntrs_str), i++) {
-		seq_printf(f, "| %-15s ", *str);
-		for_each_arr_entry(it, stats, ARRAY_SIZE(stats)) {
-			seq_printf(f, "| %10llu ", *(((u64 *)it) + i));
-		}
-		seq_puts(f, "|\n");
-	}
-	seq_puts(f, "|---------------------------------------------------------------------|\n\n");
+	seq_printf(f, " | %-15s | %-17llu |\n", "rx_pkt", 
+		stats.rx_pkt);
+	seq_printf(f, " | %-15s | %-17llu |\n", "tx_pkt", 
+		stats.tx_pkt);
+	seq_printf(f, " | %-15s | %-17llu |\n", "total_drops", 
+		stats.total_drops);
+	seq_printf(f, " | %-15s | %-17llu |\n", "bmgr_drops", 
+		stats.bmgr_drops);
+	seq_printf(f, " | %-15s | %-17llu |\n", "df_drops", 
+		stats.df_drops);
+	seq_printf(f, " | %-15s | %-17llu |\n", "df_drops", 
+		stats.df_drops);
+	seq_printf(f, " | %-15s | %-17llu |\n", "max_frags_drops", 
+		stats.max_frags_drops);
+	seq_puts(f, " +-----------------+-------------------+\n");
+
+	seq_puts(f, "\n");
 }
 
 PP_DEFINE_DEBUGFS(frag_stats, __smgr_dbg_frag_stats, NULL);
 
+s32 __smgr_aqm_sw_stats_get(void *_stats, u32 num_stats, void *data)
+{
+	struct aqm_sw_sf_stats *stats;
+	s32 ret = 0;
+	u32 sf;
 
+	stats = (struct aqm_sw_sf_stats *)_stats;
+	for (sf = 0; sf < num_stats; sf++) {
+		ret = uc_aqm_sw_per_sf_stats_get(sf, &stats[sf]);
+		if (unlikely(ret)) {
+			pr_err("failed to get buffer control sf %u counters\n",
+			       sf);
+			break;
+		}
+	}
 
+	return ret;
+}
 
+s32 __smgr_aqm_sw_stats_diff(void *pre, u32 num_pre, void *post,
+							 u32 num_post, void *delta, u32 num_delta,
+							 void *data)
+{
+	struct aqm_sw_sf_stats *__pre, *__post, *__delta;
+	u32 i;
+
+	if (unlikely(ptr_is_null(pre) || ptr_is_null(post) ||
+		     ptr_is_null(delta)))
+		return -EINVAL;
+
+	__pre   = pre;
+	__post  = post;
+	__delta = delta;
+	for (i = 0; i < num_pre; i++)
+		U64_STRUCT_DIFF(&__pre[i], &__post[i], &__delta[i]);
+
+	return 0;
+}
+
+s32 __smgr_aqm_sw_stats_show(char *buf, size_t sz, size_t *n, void *s,
+							 u32 num, void *data)
+{
+	struct aqm_sw_sf_stats *stats, *it;
+	u32 sf;
+	char **str;
+	static const char *const cntrs_str[] = {
+		"rx_pkt", "bc_drop_pkt", "aqm_drop_pkt", "tx_pkt"
+	};
+
+	pr_buf(buf, sz, *n, "\n");
+	pr_buf_cat(buf, sz, *n,
+			"|================================================================|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|                        SW AQM Statistics                       |\n");
+	pr_buf_cat(buf, sz, *n,
+			"|================================================================|\n");
+	pr_buf_cat(buf, sz, *n,
+			"| %-2s ", "SF");
+	for_each_arr_entry(str, cntrs_str, ARRAY_SIZE(cntrs_str))
+		pr_buf_cat(buf, sz, *n, "| %-12s ", *str);
+	pr_buf_cat(buf, sz, *n, "|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|----+--------------+--------------+--------------+--------------|\n");
+
+	stats = (struct aqm_sw_sf_stats *)s;
+	for (sf = 0; sf < num; sf++) {
+		it = &stats[sf];
+		pr_buf_cat(buf, sz, *n, "| %2u ", sf);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->rx_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->bc_drop_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->aqm_drop_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->tx_pkt);
+		pr_buf_cat(buf, sz, *n, "|\n");
+	}
+	pr_buf_cat(buf, sz, *n,
+			"|================================================================|\n");
+
+	return 0;
+}
+
+void __smgr_dbg_aqm_sw_stats_show(struct seq_file *f)
+{
+	pp_stats_show_seq(f, sizeof(struct aqm_sw_sf_stats),
+			  PP_QOS_MAX_SERVICE_FLOWS,
+			  __smgr_aqm_sw_stats_get,
+			  __smgr_aqm_sw_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(aqm_sw_stats, __smgr_dbg_aqm_sw_stats_show, NULL);
+
+void __smgr_dbg_aqm_sw_pps_show(struct seq_file *f)
+{
+	pp_pps_show_seq(f, sizeof(struct aqm_sw_sf_stats),
+			PP_QOS_MAX_SERVICE_FLOWS,
+			__smgr_aqm_sw_stats_get,
+			__smgr_aqm_sw_stats_diff,
+			__smgr_aqm_sw_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(aqm_sw_pps, __smgr_dbg_aqm_sw_pps_show, NULL);
+
+static struct debugfs_file debugfs_aqm_sw_files[] = {
+	{"stats", &PP_DEBUGFS_FOPS(aqm_sw_stats)},
+	{"pps",   &PP_DEBUGFS_FOPS(aqm_sw_pps)},
+};
+
+s32 __smgr_lld_stats_get(void *_stats, u32 num_stats, void *data)
+{
+	struct lld_sf_stats *stats;
+	s32 ret = 0;
+	u8 sf;
+
+	stats = (struct lld_sf_stats *)_stats;
+	for (sf = 0; sf < num_stats; sf++) {
+		ret = uc_lld_per_sf_stats_get(sf, &stats[sf]);
+		if (unlikely(ret)) {
+			pr_err("failed to get lld sf %u counters\n",
+			       sf);
+			break;
+		}
+	}
+
+	return ret;
+}
+
+s32 __smgr_lld_stats_diff(void *pre, u32 num_pre, void *post,
+						  u32 num_post, void *delta, u32 num_delta,
+						  void *data)
+{
+	struct aqm_sw_sf_stats *__pre, *__post, *__delta;
+	u32 i;
+
+	if (unlikely(ptr_is_null(pre) || ptr_is_null(post) ||
+		     ptr_is_null(delta)))
+		return -EINVAL;
+
+	__pre   = pre;
+	__post  = post;
+	__delta = delta;
+	for (i = 0; i < num_pre; i++)
+		U64_STRUCT_DIFF(&__pre[i], &__post[i], &__delta[i]);
+
+	return 0;
+}
+
+s32 __smgr_lld_stats_show(char *buf, size_t sz, size_t *n, void *s,
+						  u32 num, void *data)
+{
+	struct lld_sf_stats *stats, *it;
+	u8 ctx_to_sf[PP_QOS_MAX_LLD_SERVICE_FLOWS] = {0};
+	u8 ctx, sf;
+	char **str;
+	static const char *const cntrs_str[] = {
+		"rx_pkt", "rx_ect0_pkt", "rx_ect1_pkt", "rx_ce_pkt", "tx_pkt",
+		"mark_pkt", "sanction_pkt", "drop_pkt"
+	};
+
+	/* init araay to invalid SF value */
+	for (ctx = 0; ctx < PP_QOS_MAX_LLD_SERVICE_FLOWS; ctx++)
+		ctx_to_sf[ctx] = PP_QOS_MAX_SERVICE_FLOWS;
+	/* check each SF if it has an lld contex and place in array */
+	for (sf = 0; sf < PP_QOS_MAX_SERVICE_FLOWS; sf++) {
+		if (!pp_misc_fw_lld_ctx_get(sf, &ctx)) {
+			if (ctx < PP_QOS_MAX_LLD_SERVICE_FLOWS)
+				ctx_to_sf[ctx] = sf;
+		}
+	}
+
+	pr_buf(buf, sz, *n, "\n");
+	pr_buf_cat(buf, sz, *n,
+			"|======================================================"
+			"======================================================="
+			"=====================|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|                                                      "
+			"    LLD Statistics                                     "
+			"                     |\n");
+	pr_buf_cat(buf, sz, *n,
+			"|======================================================"
+			"======================================================="
+			"=====================|\n");
+	pr_buf_cat(buf, sz, *n, "| %-3s | %-2s ", "Ctx", "SF");
+	for_each_arr_entry(str, cntrs_str, ARRAY_SIZE(cntrs_str))
+		pr_buf_cat(buf, sz, *n, "| %-12s ", *str);
+	pr_buf_cat(buf, sz, *n, "|\n");
+	pr_buf_cat(buf, sz, *n,
+			"|-----+----+--------------+--------------+-------------"
+			"-+--------------+--------------+--------------+--------"
+			"------+--------------|\n");
+
+	stats = (struct lld_sf_stats *)s;
+	for (ctx = 0; ctx < num; ctx++) {
+		it = &stats[ctx];
+		pr_buf_cat(buf, sz, *n, "| %3u |", ctx);
+		if (ctx_to_sf[ctx] == PP_QOS_MAX_SERVICE_FLOWS)
+			pr_buf_cat(buf, sz, *n, " %-2s ", "NA");
+		else
+			pr_buf_cat(buf, sz, *n, " %-2u ", ctx_to_sf[ctx]);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->rx_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->rx_ect0_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->rx_ect1_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->rx_ce_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->tx_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->mark_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->sanction_pkt);
+		pr_buf_cat(buf, sz, *n, "| %12llu ", it->drop_pkt);
+		pr_buf_cat(buf, sz, *n, "|\n");
+	}
+	pr_buf_cat(buf, sz, *n,
+			"|======================================================"
+			"======================================================="
+			"=====================|\n");
+		return 0;
+}
+
+void __smgr_dbg_lld_stats_show(struct seq_file *f)
+{
+	pp_stats_show_seq(f, sizeof(struct lld_sf_stats),
+			  PP_QOS_MAX_LLD_SERVICE_FLOWS,
+			  __smgr_lld_stats_get,
+			  __smgr_lld_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(lld_stats, __smgr_dbg_lld_stats_show, NULL);
+
+void __smgr_dbg_lld_pps_show(struct seq_file *f)
+{
+	pp_pps_show_seq(f, sizeof(struct lld_sf_stats),
+			PP_QOS_MAX_LLD_SERVICE_FLOWS,
+			__smgr_lld_stats_get,
+			__smgr_lld_stats_diff,
+			__smgr_lld_stats_show, NULL);
+}
+
+PP_DEFINE_DEBUGFS(lld_pps, __smgr_dbg_lld_pps_show, NULL);
+
+static struct debugfs_file debugfs_lld_files[] = {
+	{"stats", &PP_DEBUGFS_FOPS(lld_stats)},
+	{"pps",   &PP_DEBUGFS_FOPS(lld_pps)},
+};
 
 /**
  * @brief Dump specific session si and dsi raw data, uses session ID
@@ -600,9 +830,11 @@ static void __smgr_pr_session_flags(struct seq_file *f, ulong flags)
 		"MTU_CHECK",
 		"MCAST_GRP",
 		"MCAST_DST",
-		"SESS_FLAG_TDOX_SUPP",
-		"SESS_FLAG_REMARK",
-		"SESS_FLAG_LLD",
+		"TDOX_SUPP",
+		"REMARK",
+		"LLD",
+		"LRO",
+		"AQM_SW",
 	};
 	u32 flag;
 
@@ -1111,6 +1343,7 @@ void __smgr_dbg_xsession_all_dump(struct seq_file *f)
 {
 	struct smgr_dbgfs_db *db = f->private;
 	unsigned long *bmap;
+	struct sess_db_info info;
 	u32 n_sessions;
 	u32 sess;
 	s32 ret;
@@ -1128,15 +1361,19 @@ void __smgr_dbg_xsession_all_dump(struct seq_file *f)
 
 	/* iterate over all open sessions */
 	for_each_set_bit(sess, bmap, n_sessions) {
-		session_counter++;
-		db->dbg_sess_id = sess;
-		__smgr_dbg_xsession_dump(f);
-		seq_puts(f,   "+---------------------------------------------------------------------------------------+\n");
-		if (db->dbg_sess_mode == dbg_xsession_mode_default &&
-			session_counter == PP_DBG_XSESSION_ALL_LIMIT) {
-				seq_printf(f, "default mode for xsession_all is %d sessions output, to allow more, write %d to this proc\n",
-					PP_DBG_XSESSION_ALL_LIMIT, dbg_xsession_mode_full);
-				break;
+		if (smgr_session_info_get(sess, &info))
+			continue;
+		if (info.rx.buf_sz || info.tx.buf_sz) { /* static session has headsize of 0 */
+			session_counter++;
+			db->dbg_sess_id = sess; /* dump uses dbg_sess_id so need to set it before */
+			__smgr_dbg_xsession_dump(f);
+			seq_puts(f,   "+---------------------------------------------------------------------------------------+\n");
+			if (db->dbg_sess_mode == dbg_xsession_mode_default &&
+				session_counter == PP_DBG_XSESSION_ALL_LIMIT) {
+					seq_printf(f, "default mode for xsession_all is %d sessions output, to allow more, write %d to this proc\n",
+						PP_DBG_XSESSION_ALL_LIMIT, dbg_xsession_mode_full);
+					break;
+			}
 		}
 	}
 	seq_printf(f, "\nprinted %d open sessions\n", session_counter);
@@ -1473,6 +1710,31 @@ static int __smgr_dbg_enable_set(void *data, u64 val)
 }
 
 PP_DEFINE_DBGFS_ATT(enable, __smgr_dbg_enable_get, __smgr_dbg_enable_set);
+
+/**
+ * @brief Enable/Disable open syncq session flag
+ * @param data not used
+ * @param val 1 to enable, 0 to disable
+ * @return 0 on success, non-zero value otherwise
+ */
+static int __smgr_dbg_syncq_set(void *data, u64 val)
+{
+	return smgr_syncq_set(val ? true : false);
+}
+
+/**
+ * @brief Get session manager enable/disable syncq state
+ * @param data unused
+ * @param val enable/disable
+ * @return 0 on success, non-zero value otherwise
+ */
+static int __smgr_dbg_syncq_get(void *data, u64 *val)
+{
+	*val = (u64)smgr_syncq_get();
+	return 0;
+}
+
+PP_DEFINE_DBGFS_ATT(syncq_en, __smgr_dbg_syncq_get, __smgr_dbg_syncq_set);
 
 /**
  * @brief Enable/Disable open frag session flag
@@ -2479,7 +2741,7 @@ s32 __smgr_reass_stats_show(char *buf, size_t sz, size_t *n, void *s, u32 num,
 void __smgr_dbg_reass_stats_show(struct seq_file *f)
 {
 	pp_stats_show_seq(f, sizeof(struct reassembly_stats),
-			  UC_CPUS_MAX, __smgr_reass_stats_get,
+			  UC_CPUS_REASS_MAX, __smgr_reass_stats_get,
 			  __smgr_reass_stats_show, NULL);
 }
 
@@ -2487,7 +2749,7 @@ PP_DEFINE_DEBUGFS(reass_stats, __smgr_dbg_reass_stats_show, NULL);
 
 void __smgr_dbg_reass_pps_show(struct seq_file *f)
 {
-	pp_pps_show_seq(f, sizeof(struct reassembly_stats), UC_CPUS_MAX,
+	pp_pps_show_seq(f, sizeof(struct reassembly_stats), UC_CPUS_REASS_MAX,
 			__smgr_reass_stats_get, __smgr_reass_stats_diff,
 			__smgr_reass_stats_show, NULL);
 }
@@ -2935,6 +3197,7 @@ static struct debugfs_file debugfs_files[] = {
 	{ "enable", &PP_DEBUGFS_FOPS(enable) },
 	{ "open_frag_sess", &PP_DEBUGFS_FOPS(open_frag_sess) },
 	{ "open_lld_sess", &PP_DEBUGFS_FOPS(open_lld_sess) },
+	{ "syncq_en", &PP_DEBUGFS_FOPS(syncq_en) },
 	{ "delete_session", &PP_DEBUGFS_FOPS(sess_del) },
 	{ "flush", &PP_DEBUGFS_FOPS(flush) },
 	{ "session_dstq_set", &PP_DEBUGFS_FOPS(sess_dst_q_set) },
@@ -3041,55 +3304,31 @@ PP_DEFINE_DEBUGFS(group, __smgr_dbg_group_help, __smgr_dbg_group_show);
  */
 static void __smgr_dbg_pkt_stats_show(struct seq_file *f)
 {
-	struct mcast_stats stats[UC_CPUS_MAX];
-	u32 i;
-	u64 total_rx  = 0;
-	u64 total_tx  = 0;
-	u64 total_drp = 0;
-	u64 total_mirror_tx  = 0;
-	u64 total_mirror_drp = 0;
+	struct mcast_stats stats;
 
 	seq_puts(f, "\n");
-	seq_puts(f, " +--------------------------------------------+\n");
-	seq_puts(f, " |                MCAST STATS                 |\n");
-	seq_puts(f, " +--------------------------------------------+\n");
-	seq_puts(f, " |  CPU ID  |  COUNTER  |        VALUE        |\n");
-	seq_puts(f, " +----------+-----------+---------------------+\n");
+	seq_puts(f, " +---------------------------------+\n");
+	seq_puts(f, " |           MCAST STATS           |\n");
+	seq_puts(f, " +---------------------------------+\n");
+	seq_puts(f, " |   COUNTER   |       VALUE       |\n");
+	seq_puts(f, " +-------------+-------------------+\n");
 
-	for (i = 0; i < UC_CPUS_MAX; i++) {
-		if (!uc_is_cpu_active(UC_IS_EGR, i))
-			continue;
-
-		if (uc_mcast_cpu_stats_get(i, &stats[i])) {
-			seq_puts(f, "failed to get mcast counters\n");
-			return;
-		}
-		seq_printf(f, " | %-8u | %-9s | %-19llu |\n", i, "RX",
-			   stats[i].rx_pkt);
-		seq_printf(f, " | %-8u | %-9s | %-19llu |\n", i, "TX",
-			   stats[i].tx_pkt);
-		seq_printf(f, " | %-8u | %-9s | %-19llu |\n", i, "DROP",
-			   stats[i].drop_pkt);
-		seq_printf(f, " | %-8u | %-9s | %-19llu |\n", i, "MIRROR TX",
-			   stats[i].mirror_tx_pkt);
-		seq_printf(f, " | %-8u | %-9s | %-19llu |\n", i, "MIRROR DROP",
-			   stats[i].mirror_drop_pkt);
-		seq_puts(f, " +----------+-----------+---------------------+\n");
-		total_rx  += stats[i].rx_pkt;
-		total_tx  += stats[i].tx_pkt;
-		total_drp += stats[i].drop_pkt;
-		total_mirror_tx  += stats[i].mirror_tx_pkt;
-		total_mirror_drp += stats[i].mirror_drop_pkt;
+	if (uc_mcast_stats_get(&stats)) {
+		seq_puts(f, "failed to get mcast counters\n");
+		return;
 	}
-	seq_printf(f, " | %-8s | %-9s | %-19llu |\n", "TOTAL", "RX", total_rx);
-	seq_printf(f, " | %-8s | %-9s | %-19llu |\n", "TOTAL", "TX", total_tx);
-	seq_printf(f, " | %-8s | %-9s | %-19llu |\n", "TOTAL", "DROP",
-		   total_drp);
-	seq_printf(f, " | %-8s | %-9s | %-19llu |\n", "TOTAL", "MIRROR TX",
-		   total_mirror_tx);
-	seq_printf(f, " | %-8s | %-9s | %-19llu |\n", "TOTAL", "MIRROR DROP",
-		   total_mirror_drp);
-	seq_puts(f, " +----------+-----------+---------------------+\n");
+	seq_printf(f, " | %-11s | %-17llu |\n", "RX", 
+		stats.rx_pkt);
+	seq_printf(f, " | %-11s | %-17llu |\n", "TX", 
+		stats.tx_pkt);
+	seq_printf(f, " | %-11s | %-17llu |\n", "DROP", 
+		stats.drop_pkt);
+	seq_printf(f, " | %-11s | %-17llu |\n", "MIRROR TX", 
+		stats.mirror_tx_pkt);
+	seq_printf(f, " | %-11s | %-17llu |\n", "MIRROR DROP", 
+		stats.mirror_drop_pkt);
+	seq_puts(f, " +-------------+-------------------+\n");
+
 	seq_puts(f, "\n");
 }
 
@@ -3112,26 +3351,26 @@ void __smgr_dbg_sq_dump_show(struct seq_file *f)
 PP_DEFINE_DEBUGFS(sq_dump, __smgr_dbg_sq_dump_show, NULL);
 
 /**
- * @brief Set the multicast destination
+ * @brief alloc synch queue
  */
 static void __smgr_dbg_sq_alloc_set(char *cmd_buf, void *data)
 {
-	u32 sess, dstq_id;
+	u32 sess, dstq_id, sig;
 
-	if (unlikely(sscanf(cmd_buf, "%u %u", &sess, &dstq_id) != 2)) {
+	if (unlikely(sscanf(cmd_buf, "%u %u %u", &sess, &dstq_id, &sig) != 3)) {
 		pr_err("sscanf error\n");
 		return;
 	}
 
-	sq_alloc(sess, dstq_id);
+	sq_alloc(sess, dstq_id, sig);
 }
 
 /**
- * @brief Dump the multicast destination command help
+ * @brief Dump the syncq alloc command help
  */
 static void __smgr_dbg_sq_alloc_help(struct seq_file *f)
 {
-	seq_puts(f, " <session-id> <dstQ-id>\n");
+	seq_puts(f, " <session-id> <dstQ-id> <hash signature>\n");
 }
 
 PP_DEFINE_DEBUGFS(sq_alloc, __smgr_dbg_sq_alloc_help, __smgr_dbg_sq_alloc_set);
@@ -3150,7 +3389,7 @@ static int __smgr_dbg_sq_lspp_set(void *data, u64 val)
 	return 0;
 }
 
-PP_DEFINE_DBGFS_ATT(sq_lspp_fops, NULL, __smgr_dbg_sq_lspp_set);
+PP_DEFINE_DBGFS_ATT(sq_lspp_rcv_fops, NULL, __smgr_dbg_sq_lspp_set);
 
 static int __smgr_dbg_sq_del_set(void *data, u64 val)
 {
@@ -3160,23 +3399,23 @@ static int __smgr_dbg_sq_del_set(void *data, u64 val)
 
 PP_DEFINE_DBGFS_ATT(sq_del_fops, NULL, __smgr_dbg_sq_del_set);
 
-static int __smgr_dbg_sq_sync_tout_set(void *data, u64 val)
+static int __smgr_dbg_sq_lspp_rcv_tout_set(void *data, u64 val)
 {
-	smgr_sq_dbg_sync_tout_set(val);
+	smgr_sq_dbg_lspp_rcv_tout_set(val);
 	return 0;
 }
 
-static int __smgr_dbg_sq_sync_tout_get(void *data, u64 *val)
+static int __smgr_dbg_sq_lspp_rcv_tout_get(void *data, u64 *val)
 {
 	u32 tout;
 
-	smgr_sq_dbg_sync_tout_get(&tout);
+	smgr_sq_dbg_lspp_rcv_tout_get(&tout);
 	*val = (u64)tout;
 	return 0;
 }
 
-PP_DEFINE_DBGFS_ATT(sq_sync_tout_fops, __smgr_dbg_sq_sync_tout_get,
-		    __smgr_dbg_sq_sync_tout_set);
+PP_DEFINE_DBGFS_ATT(sq_lspp_rcv_tout_fops, __smgr_dbg_sq_lspp_rcv_tout_get,
+		    __smgr_dbg_sq_lspp_rcv_tout_set);
 
 static int __smgr_dbg_sq_done_tout_set(void *data, u64 val)
 {
@@ -3196,23 +3435,23 @@ static int __smgr_dbg_sq_done_tout_get(void *data, u64 *val)
 PP_DEFINE_DBGFS_ATT(sq_done_tout_fops, __smgr_dbg_sq_done_tout_get,
 		     __smgr_dbg_sq_done_tout_set);
 
-static int __smgr_dbg_sq_lspp_tout_set(void *data, u64 val)
+static int __smgr_dbg_sq_lspp_sent_tout_set(void *data, u64 val)
 {
-	smgr_sq_dbg_lspp_tout_set(val);
+	smgr_sq_dbg_lspp_sent_tout_set(val);
 	return 0;
 }
 
-static int __smgr_dbg_sq_lspp_tout_get(void *data, u64 *val)
+static int __smgr_dbg_sq_lspp_sent_tout_get(void *data, u64 *val)
 {
 	u32 tout;
 
-	smgr_sq_dbg_lspp_tout_get(&tout);
+	smgr_sq_dbg_lspp_sent_tout_get(&tout);
 	*val = (u64)tout;
 	return 0;
 }
 
-PP_DEFINE_DBGFS_ATT(sq_lspp_tout_fops, __smgr_dbg_sq_lspp_tout_get,
-		    __smgr_dbg_sq_lspp_tout_set);
+PP_DEFINE_DBGFS_ATT(sq_lspp_sent_tout_fops, __smgr_dbg_sq_lspp_sent_tout_get,
+		    __smgr_dbg_sq_lspp_sent_tout_set);
 
 static int __smgr_dbg_sq_qlen_set(void *data, u64 val)
 {
@@ -3253,7 +3492,7 @@ static void __smgr_dbg_sq_stats_show(struct seq_file *f)
 		   stats.allocated);
 	seq_printf(f, " | %-24s | %-14u |\n", "sq freed",
 		   stats.freed);
-	seq_printf(f, " | %-24s | %-14u |\n", "lspp timeout events",
+	seq_printf(f, " | %-24s | %-14u |\n", "lspp rcv timeout events",
 		   stats.lspp_timeout_events);
 	seq_printf(f, " | %-24s | %-14u |\n", "invalid sq state error",
 		   stats.err_invalid_state);
@@ -3275,17 +3514,17 @@ static void __smgr_dbg_sq_reset_stats(struct seq_file *f)
 PP_DEFINE_DEBUGFS(sq_reset_stats, __smgr_dbg_sq_reset_stats, NULL);
 
 static struct debugfs_file debugfs_syncq_files[] = {
-	{"alloc",       &PP_DEBUGFS_FOPS(sq_alloc)},
-	{"start",       &PP_DEBUGFS_FOPS(sq_start_fops)},
-	{"lspp",        &PP_DEBUGFS_FOPS(sq_lspp_fops)},
-	{"del",         &PP_DEBUGFS_FOPS(sq_del_fops)},
-	{"tout_sync",   &PP_DEBUGFS_FOPS(sq_sync_tout_fops)},
-	{"tout_done",   &PP_DEBUGFS_FOPS(sq_done_tout_fops)},
-	{"tout_lspp",   &PP_DEBUGFS_FOPS(sq_lspp_tout_fops)},
-	{"qlen",        &PP_DEBUGFS_FOPS(sq_qlen_fops)},
-	{"show",        &PP_DEBUGFS_FOPS(sq_dump)},
-	{"stats",       &PP_DEBUGFS_FOPS(sq_stats)},
-	{"reset_stats", &PP_DEBUGFS_FOPS(sq_reset_stats)},
+	{"alloc",          &PP_DEBUGFS_FOPS(sq_alloc)},
+	{"start",          &PP_DEBUGFS_FOPS(sq_start_fops)},
+	{"lspp_rcv",       &PP_DEBUGFS_FOPS(sq_lspp_rcv_fops)},
+	{"del",            &PP_DEBUGFS_FOPS(sq_del_fops)},
+	{"tout_lspp_rcv",  &PP_DEBUGFS_FOPS(sq_lspp_rcv_tout_fops)},
+	{"tout_done",      &PP_DEBUGFS_FOPS(sq_done_tout_fops)},
+	{"tout_lspp_sent", &PP_DEBUGFS_FOPS(sq_lspp_sent_tout_fops)},
+	{"qlen",           &PP_DEBUGFS_FOPS(sq_qlen_fops)},
+	{"show",           &PP_DEBUGFS_FOPS(sq_dump)},
+	{"stats",          &PP_DEBUGFS_FOPS(sq_stats)},
+	{"reset_stats",    &PP_DEBUGFS_FOPS(sq_reset_stats)},
 };
 
 s32 smgr_dbg_init(struct device *dev, struct dentry *parent)
@@ -3328,6 +3567,16 @@ s32 smgr_dbg_init(struct device *dev, struct dentry *parent)
 
 	ret = pp_debugfs_create(dbgfs, "syncq", NULL, debugfs_syncq_files,
 				ARRAY_SIZE(debugfs_syncq_files), db);
+	if (unlikely(ret))
+		goto done;
+
+	ret = pp_debugfs_create(dbgfs, "aqm_sw", NULL, debugfs_aqm_sw_files,
+				ARRAY_SIZE(debugfs_aqm_sw_files), db);
+	if (unlikely(ret))
+		goto done;
+
+	ret = pp_debugfs_create(dbgfs, "lld", NULL, debugfs_lld_files,
+				ARRAY_SIZE(debugfs_lld_files), db);
 	if (unlikely(ret))
 		goto done;
 

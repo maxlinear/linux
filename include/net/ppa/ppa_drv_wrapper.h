@@ -10,7 +10,7 @@
 ** DATE         : 14 Mar 2011
 ** AUTHOR       : Shao Guohua
 ** DESCRIPTION  : PPA Wrapper for PPE Driver API
-** Copyright (c) 2020 - 2024 MaxLinear, Inc.
+** Copyright (c) 2020 - 2025 MaxLinear, Inc.
 ** COPYRIGHT    : Copyright (c) 2017 Intel Corporation
 ** Copyright (c) 2011 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
 ** HISTORY
@@ -19,7 +19,6 @@
 ** 05 JUL 2017  Kamal eradath    merged ppe_drv_wrapper.h and ppa_datapath_wrapper.h
 *******************************************************************************/
 extern uint32_t ppa_drv_dp_sb_addr_to_fpi_addr_convert(PPA_FPI_ADDR *a, uint32_t flag);
-extern uint32_t ppa_drv_get_firmware_id(PPA_VERSION *v, uint32_t flag);
 extern uint32_t ppa_drv_get_number_of_phys_port(PPA_COUNT_CFG *count, uint32_t flag);
 extern uint32_t ppa_drv_get_phys_port_info(PPE_IFINFO *info, uint32_t flag);
 extern uint32_t ppa_drv_get_max_entries(PPA_MAX_ENTRY_INFO *entry, uint32_t flag);

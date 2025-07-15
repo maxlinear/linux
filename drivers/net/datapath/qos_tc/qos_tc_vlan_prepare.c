@@ -15,7 +15,7 @@
 #include <asm/unaligned.h>
 #include <linux/version.h>
 #include <uapi/linux/tc_act/tc_vlan.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_vlan_storage.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_qos.h"
@@ -80,6 +80,9 @@ qos_tc_vlan_tag_get(struct net_device *dev,
 	if (ntohs(f->common.protocol) == ETH_P_ALL)
 		return TC_VLAN_UNTAGGED;
 
+	if (ntohs(f->common.protocol == ETH_P_PPP_SES))
+		return TC_VLAN_UNTAGGED;
+
 	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_BASIC)) {
 		key = skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_BASIC,
 						qos_tc_get_key(f));
@@ -94,6 +97,23 @@ qos_tc_vlan_tag_get(struct net_device *dev,
 
 	netdev_dbg(dev, "%s: unknown tag\n", __func__);
 	return TC_VLAN_UNKNOWN;
+}
+
+static int get_pppoe(struct net_device *dev, struct flow_cls_offload *f)
+{
+	struct flow_dissector *d = qos_tc_get_dissector(f);
+	struct flow_dissector_key_pppoe *key = NULL;
+
+	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_PPPOE)) {
+		key = skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_PPPOE,
+						qos_tc_get_key(f));
+
+		netdev_dbg(dev, "%s:etype %#x\n",
+			   __func__, ntohs(key->type));
+		return ntohs(key->type);
+	}
+
+	return DP_VLAN_PATTERN_NOT_CARE;
 }
 
 static int qos_tc_get_ethtype(struct net_device *dev,
@@ -152,47 +172,6 @@ static void flt_set_dei(const u8 *cookie, u32 cookie_len, int *dei)
 	}
 }
 
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-static bool fwd_drop_action_parse(struct net_device *dev,
-				  struct flow_cls_offload *f,
-				  struct dp_act_vlan *act,
-				  int *dei)
-{
-	const struct tc_action *a;
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
-	int i;
-#endif
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		if (dei && a->act_cookie)
-			flt_set_dei(a->act_cookie->data, a->act_cookie->len,
-				    dei);
-
-		/* DROP and PASS make no sense together */
-		if (is_tcf_gact_shot(a)) {
-			act->act = DP_VLAN_ACT_DROP;
-			netdev_dbg(dev, "DROP action detected, act: %x\n",
-				   act->act);
-			return true;
-		}
-		if (is_tcf_gact_ok(a)) {
-			act->act = DP_VLAN_ACT_FWD;
-			netdev_dbg(dev, "PASS action detected, act: %x\n",
-				   act->act);
-			return true;
-		}
-	}
-
-	return false;
-}
-#else
 static bool fwd_drop_action_parse(struct net_device *dev,
 				  struct flow_cls_offload *f,
 				  struct dp_act_vlan *act,
@@ -223,7 +202,6 @@ static bool fwd_drop_action_parse(struct net_device *dev,
 
 	return false;
 }
-#endif
 
 static void qos_tc_vlan_bp_reassign(struct net_device *dev,
 				    struct dp_act_vlan *act,
@@ -284,34 +262,13 @@ static void cookie_parse(struct net_device *dev,
 			 struct flow_cls_offload *f,
 			 struct dp_act_vlan *act)
 {
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-	const struct tc_action *a;
-#else
 	const struct flow_action_entry *a;
-#endif
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
 	int i;
-#endif
 
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-		if (a->act_cookie) {
-			u8 *p = a->act_cookie->data;
-			u32 len = a->act_cookie->len;
-#elif (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-	tcf_exts_for_each_action(i, a, f->exts) {
-		if (a->act_cookie) {
-			u8 *p = a->act_cookie->data;
-			u32 len = a->act_cookie->len;
-#else
 	flow_action_for_each(i, a, &f->rule->action) {
 		if (a->cookie) {
 			u8 *p = a->cookie->cookie;
 			u32 len = a->cookie->cookie_len;
-#endif
 			u64 hi = 0;
 			u64 lo = 0;
 
@@ -367,100 +324,6 @@ static int vlan_action_source(enum tc_flower_vlan_tag tag)
 	return 0;
 }
 
-#if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
-int vlan_action_parse(struct net_device *dev,
-		      struct flow_cls_offload *f,
-		      struct dp_act_vlan *act,
-		      enum tc_flower_vlan_tag tag)
-{
-	const struct tc_action *a;
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	LIST_HEAD(actions);
-#else
-	int i;
-#endif
-
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	if (tc_no_actions(f->exts)) {
-#else
-	if (!tcf_exts_has_actions(f->exts)) {
-#endif
-		netdev_dbg(dev, "TC no actions!\n");
-		return -EIO;
-	}
-	netdev_dbg(dev, "TC actions count: %d\n",
-		   (f->exts)->nr_actions);
-
-#if (KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE)
-	tcf_exts_to_list(f->exts, &actions);
-	list_for_each_entry(a, &actions, list) {
-#else
-	tcf_exts_for_each_action(i, a, f->exts) {
-#endif
-		u8 flags;
-
-		if (!is_tcf_vlan(a))
-			continue;
-
-		flags = tcf_vlan_push_flags(a);
-
-		if (tcf_vlan_action(a) == TCA_VLAN_ACT_POP) {
-			act->act |= DP_VLAN_ACT_POP;
-			act->pop_n++;
-			netdev_dbg(dev, "POP action detected, pop_n: %d, act: %x\n",
-				   act->pop_n, act->act);
-			continue;
-		}
-
-		if (act->push_n >= DP_VLAN_NUM) {
-			netdev_warn(dev, "%s: push action overlod\n", __func__);
-			continue;
-		}
-
-		if (tcf_vlan_action(a) == TCA_VLAN_ACT_PUSH) {
-			act->act |= DP_VLAN_ACT_PUSH;
-
-			act->prio[act->push_n] = tcf_vlan_push_prio(a);
-			act->tpid[act->push_n] = ntohs(tcf_vlan_push_proto(a));
-			netdev_dbg(dev, "PUSH action detected, push_n: %d, act: %x\n",
-				   act->push_n + 1, act->act);
-		} else if (tcf_vlan_action(a) == TCA_VLAN_ACT_MODIFY) {
-			act->act = DP_VLAN_ACT_POP | DP_VLAN_ACT_PUSH;
-			act->pop_n++;
-
-			if (flags & ACTVLAN_PUSH_F_PRIO)
-				act->prio[act->push_n] = tcf_vlan_push_prio(a);
-			else
-				act->prio[act->push_n] = vlan_action_source(tag);
-
-			if (flags & ACTVLAN_PUSH_F_PROTO)
-				act->tpid[act->push_n] = ntohs(tcf_vlan_push_proto(a));
-			else
-				act->tpid[act->push_n] = vlan_action_source(tag);
-			netdev_dbg(dev, "MODIFY action detected, push_n: %d, pop_n: %d, act: %x\n",
-				   act->push_n + 1, act->pop_n, act->act);
-		}
-
-		if (flags & ACTVLAN_PUSH_F_ID)
-			act->vid[act->push_n] = tcf_vlan_push_vid(a);
-		else
-			act->vid[act->push_n] = vlan_action_source(tag);
-		act->dei[act->push_n] = 0;
-
-		netdev_dbg(dev, "PUSH action parsed, vid: %d, tpid: %x, prio: %d, dei: %d\n",
-			   act->vid[act->push_n],
-			   act->tpid[act->push_n],
-			   act->prio[act->push_n],
-			   act->dei[act->push_n]);
-
-		dscp_parse(dev, f, act, tcf_vlan_push_prio(a));
-
-		act->push_n++;
-	}
-
-	return 0;
-}
-#else
 int vlan_action_parse(struct net_device *dev,
 		      struct flow_cls_offload *f,
 		      struct dp_act_vlan *act,
@@ -542,17 +405,12 @@ int vlan_action_parse(struct net_device *dev,
 
 	return 0;
 }
-#endif
 
 static void default_prio_parse(struct net_device *dev,
 			       struct flow_cls_offload *f,
 			       int *prio)
 {
-#if (KERNEL_VERSION(5, 3, 0) > LINUX_VERSION_CODE)
-	*prio = f->common.prio >> 16;
-#else
 	*prio = f->common.prio;
-#endif
 	netdev_dbg(dev, "Default prio: %d\n", *prio);
 }
 
@@ -634,7 +492,9 @@ int qos_tc_vlan_single_tagged_prepare(struct net_device *dev,
 	if (err)
 		return err;
 
-	rule->outer.proto = qos_tc_get_ethtype(dev, f);
+	rule->outer.proto = get_pppoe(dev, f);
+	if (rule->outer.proto == DP_VLAN_PATTERN_NOT_CARE)
+		rule->outer.proto = qos_tc_get_ethtype(dev, f);
 
 	cookie_parse(dev, f, &rule->act);
 	default_prio_parse(dev, f, &rule->prio);
@@ -694,7 +554,9 @@ int qos_tc_vlan_double_tagged_prepare(struct net_device *dev,
 	if (err)
 		return err;
 
-	rule->outer.proto = qos_tc_get_ethtype(dev, f);
+	rule->outer.proto = get_pppoe(dev, f);
+	if (rule->outer.proto == DP_VLAN_PATTERN_NOT_CARE)
+		rule->outer.proto = qos_tc_get_ethtype(dev, f);
 
 	cookie_parse(dev, f, &rule->act);
 	default_prio_parse(dev, f, &rule->prio);

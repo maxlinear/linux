@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2017-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -21,7 +21,7 @@
 
 /* UC version */
 #define UC_VERSION_MAJOR (1)
-#define UC_VERSION_MINOR (25)
+#define UC_VERSION_MINOR (31)
 
 #define QOS_MAX_PREDECESSORS            (6)
 #define QOS_AQM_CONTEXT_MAX_QUEUES      (8)
@@ -358,6 +358,22 @@ enum port_conf {
 	PORT_CONF_ALL               = 0xFFFF
 };
 
+/**************************************************************************
+ *! \enum WRED_CTX_OPS
+ **************************************************************************
+ *
+ * \brief wred AQM queue to context operations
+ *
+ **************************************************************************/
+enum wred_ctx_ops {
+	//!< None
+	WRED_CTX_NONE,
+	//!< Add queue to context
+	WRED_CTX_ADD_QUEUE,
+	//!< Remove queue from context
+	WRED_CTX_REM_QUEUE,
+};
+
 #define WRED_AQM_NUM_CONTEXTS                    	(16)
 
 /**************************************************************************
@@ -372,7 +388,6 @@ typedef struct wred_aqm_conf_s {
 	u32	peak_rate;
 	u32	msr;
 	u32	buffer_size;
-	u32	msrtokens_addr;
 	u32	num_queues;
 	u32	queue_id[8];
 	double	latency_target;
@@ -384,7 +399,7 @@ typedef struct wred_aqm_conf_s {
 	u32	weight; /*Scheduling Weight / 256 */
 	u32	num_hist_bins;
 	u32	bin_edges[QOS_AQM_MAX_BINS - 1];
-} wred_aqm_conf_t;
+} __attribute__((packed)) wred_aqm_conf_t;
 
 typedef struct wred_aqm_dbg_s {
 	u32 prev_queue_length;
@@ -396,10 +411,11 @@ typedef struct wred_aqm_dbg_s {
 	u8 prev_ctrl_path_cond;
 	u8 prev_qdelay_status;
 	u8 prev_burst_state;
-	u32 prev_drop_cnt;
+	u32 prev_drop_pkt_cnt;
+	u32 prev_drop_byte_cnt;
 	u32 prev_burst_allow_val;
 	u32 interrupt_count;
-} wred_aqm_dbg_t;
+} __attribute__((packed)) wred_aqm_dbg_t;
 
 typedef struct wred_aqm_ctx_s {
 	wred_aqm_conf_t aqm_conf;
@@ -407,19 +423,22 @@ typedef struct wred_aqm_ctx_s {
 	double qdelay_old_;
 	wred_aqm_dbg_t aqm_dbg;
 	u32 old_coupled_queue_length;
+	u32 burst_reset_;
 
 	/* Histogram */
 	u32    hist_counter[QOS_AQM_MAX_BINS];
 	u32    hist_updates;
 	u32    max_latency;
-} wred_aqm_ctx_t;
+	u32    last_total_accepts;
+} __attribute__((packed)) wred_aqm_ctx_t;
 
 typedef struct wred_aqm_db_s {
 	wred_aqm_ctx_t aqm_ctx[WRED_AQM_NUM_CONTEXTS];
 	u32 aqm_timer;
 	u32 wred_aqm_enable_bitmap;
 	u32 timer_activation;
-} wred_aqm_db_t;
+	u32 aqm_engine;
+} __attribute__((packed)) wred_aqm_db_t;
 
 /**************************************************************************
  *! \struct port_stats_s
@@ -854,6 +873,9 @@ enum uc_qos_command {
 	UC_QOS_CMD_MOD_REG_BMAP_SET,
 	UC_QOS_CMD_MOD_REG_BMAP_GET,
 	UC_QOS_CMD_GET_HIST_STATS,
+	UC_QOS_CMD_AQM_Q_TO_CTX,
+	UC_QOS_CMD_SET_PCI_ADDR,
+	UC_QOS_CMD_SET_AQM_ENGINE,
 };
 
 /**************************************************************************
@@ -939,9 +961,11 @@ struct fw_cmd_init_qos {
 	u32 tbm_prescale_addr; /*! TBM prescale register address */
 	u32 chk_crawler_prescale_addr; /*! checker crawler prescale register address */
 	u32 egress_uc_prescale_addr; /*! egress uc prescale register address */
+	u32 egress_uc_tdox_timer_addr; /*! egress uc tdox timer address */
 	u32 codel_interval; /*! codel interval time [mSec] */
 	u32 codel_target; /*! codel target delay [mSec] */
 	u32 egress_uc_aqm_info_addr; /*! egress uc AQM info address */
+	u32 aqm_engine; /*! AQM engine (0 - SW, 1 - HW) */
 } __attribute__((packed));
 
 struct fw_cmd_port_params {
@@ -1119,7 +1143,6 @@ struct fw_cmd_set_aqm_sf {
 	u32 peak_rate; /*! Peak Rate (Bytes/seconds) */
 	u32 msr; /*! MSR (Bytes/seconds) */
 	u32 buffer_size; /*! Buffer Size */
-	u32 msrtokens_addr_offset; /*! msrtokens dccm reg addr */
 	u32 num_rlms; /*! Number of queues */
 	u32 rlms[QOS_AQM_CONTEXT_MAX_QUEUES]; /*! queue_id's */
 	u32 llsf; /*! [LLD] is LL SF */
@@ -1279,6 +1302,27 @@ struct fw_cmd_mcdma_copy {
 	u32 size; /*! Size in bytes */
 } __attribute__((packed));
 
+struct fw_cmd_aqm_q_to_ctx {
+	struct uc_qos_cmd_base base;
+	u32 op; /*! Add/Remove Q from AQM context */
+	u32 qid; /*! Queue ID */
+	u32 ctx; /*! AQM context */
+} __attribute__((packed));
+
+struct set_pci_addr {
+	u32 msrtoken_addr; /*! msrtoekn register address */
+} __attribute__((packed));
+
+struct fw_cmd_set_pci_addr {
+	struct uc_qos_cmd_base base;
+	struct set_pci_addr pci_addr; /*! holds pci addresses */
+} __attribute__((packed));
+
+struct fw_cmd_set_aqm_engine {
+	struct uc_qos_cmd_base base;
+	u32 aqm_engine; /*! holds aqm engine type */
+} __attribute__((packed));
+
 struct wsp_helper_cfg {
 	/* ! for LGM delay between 2 enabled cycles,
 	for prx timeout_microseconds */
@@ -1339,6 +1383,8 @@ union uc_qos_cmd_s {
 	struct fw_cmd_wsp_helper_stats   get_wsp_helper_stats;
 	struct fw_cmd_mod_log_bmap       mod_log_bmap;
 	struct fw_cmd_get_hist_stats     get_hist_stats;
+	struct fw_cmd_aqm_q_to_ctx       aqm_q_to_ctx;
+	struct fw_cmd_set_pci_addr       pci_addr;
 } __attribute__((packed));
 
 typedef struct {

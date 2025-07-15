@@ -25,6 +25,7 @@
 #include <linux/fs.h>
 #include <linux/acpi.h>
 #include <linux/vmalloc.h>
+#include <linux/platform_data/lgm_epu.h>
 #include <linux/pm_qos.h>
 #include <trace/events/power.h>
 
@@ -2309,8 +2310,6 @@ static void intel_pstate_update_pstate(struct cpudata *cpu, int pstate)
 		pstate_funcs.cpuidle_sync(cpu, pstate);
 }
 
-extern raw_spinlock_t epu_cpum_lock;
-
 static void intel_pstate_adjust_pstate(struct cpudata *cpu)
 {
 	int from = cpu->pstate.current_pstate;
@@ -2322,10 +2321,10 @@ static void intel_pstate_adjust_pstate(struct cpudata *cpu)
 	target_pstate = get_target_pstate(cpu);
 	target_pstate = intel_pstate_prepare_request(cpu, target_pstate);
 	trace_cpu_frequency(target_pstate * cpu->pstate.scaling, cpu->cpu);
-	if (!raw_spin_trylock(&epu_cpum_lock))
-		return;
+
+	raw_spin_lock(epu_i2c_raw_spinlock());
 	intel_pstate_update_pstate(cpu, target_pstate);
-	raw_spin_unlock(&epu_cpum_lock);
+	raw_spin_unlock(epu_i2c_raw_spinlock());
 
 	sample = &cpu->sample;
 	trace_pstate_sample(mul_ext_fp(100, sample->core_avg_perf),
@@ -3074,9 +3073,9 @@ static int intel_cpufreq_target(struct cpufreq_policy *policy,
 		break;
 	}
 
-	raw_spin_lock(&epu_cpum_lock);
+	raw_spin_lock(epu_i2c_raw_spinlock());
 	target_pstate = intel_cpufreq_update_pstate(policy, target_pstate, false);
-	raw_spin_unlock(&epu_cpum_lock);
+	raw_spin_unlock(epu_i2c_raw_spinlock());
 
 	freqs.new = target_pstate * cpu->pstate.scaling;
 

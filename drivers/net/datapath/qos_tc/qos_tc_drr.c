@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2021 - 2023 MaxLinear, Inc.
+ * Copyright (c) 2021 - 2025 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -10,8 +10,9 @@
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
 #include <linux/version.h>
-#include "qos_tc_compat.h"
+#include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
+#include "qos_tc_tbf.h"
 #include "qos_tc_trace.h"
 
 #define MAX_QUANTUM (255 * 4096)
@@ -56,6 +57,8 @@ static int qos_tc_drr_sched_update(struct net_device *dev,
 				   struct tc_drr_qopt_offload *parms,
 				   const struct qos_tc_params *tc_params)
 {
+	enum qos_tc_qdisc_type type = QOS_TC_QDISC_DRR;
+	struct qos_tc_qdata_params *qp = NULL;
 	int ret;
 
 	if (!dev || !port || !parms)
@@ -63,6 +66,25 @@ static int qos_tc_drr_sched_update(struct net_device *dev,
 
 	if (port->root_qdisc.use_cnt && parms->parent == TC_H_ROOT)
 		return 0;
+
+	if (qos_tc_get_qp(port, QOS_TC_QDATA_GREEN, parms->parent) ||
+	    qos_tc_get_qp(port, QOS_TC_QDATA_YELLOW, parms->parent) ||
+	    qos_tc_get_qp(port, QOS_TC_QDATA_CODEL, parms->parent)) {
+		netdev_err(dev, "%s: offload not supported\n", __func__);
+		return -EOPNOTSUPP;
+	}
+
+	qp = qos_tc_get_qp(port, QOS_TC_QDATA_TBF, parms->parent);
+	if (IS_ERR(qp))
+		return PTR_ERR(qp);
+
+	/* Queue has tbf shaper configured */
+	if (qp)
+		return qos_tc_q_tbf_sch(port, type, qp->parent, parms->handle);
+
+	if (qos_tc_tbf_port_sch_on(port, parms->parent))
+		return qos_tc_add_sch_to_tbf_port(port, type, parms->parent,
+						  parms->handle);
 
 	ret = qos_tc_drr_add_child_qdisc(dev, port, parms, tc_params);
 	if (ret < 0) {
@@ -81,7 +103,7 @@ static int qos_tc_drr_queue_update(struct net_device *dev,
 				   const struct qos_tc_params *tc_params)
 {
 	u32 handle = parms->handle;
-	int ret, idx = TC_H_MIN(handle) - 1;
+	int idx = TC_H_MIN(handle) - 1;
 	int weight, quantum;
 
 	if (idx < 0 || idx > QOS_TC_MAX_Q - 1) {
@@ -113,9 +135,7 @@ static int qos_tc_drr_queue_update(struct net_device *dev,
 	 */
 	weight = (125 * weight + 254) / 255;
 
-	ret = qos_tc_queue_add(sch, QOS_TC_QDISC_DRR, weight, idx, tc_params);
-
-	return ret;
+	return qos_tc_queue_add(sch, QOS_TC_QDISC_DRR, weight, idx, tc_params);
 }
 
 static int qos_tc_drr_replace(struct net_device *dev,
@@ -174,6 +194,8 @@ static int qos_tc_drr_replace(struct net_device *dev,
 		netdev_err(dev, "%s: drr class without port\n", __func__);
 		goto err_free_port;
 	}
+
+	qos_tc_sched_status(port, &port->root_qdisc);
 
 	return 0;
 
@@ -284,7 +306,7 @@ static int qos_tc_drr_destroy(struct net_device *dev,
 	if (ret == 1)
 		return 0;
 
-	/*qos_tc_sched_status(port, &port->root_qdisc);*/
+	qos_tc_sched_status(port, &port->root_qdisc);
 
 	ret = qos_tc_drr_qdisc_del(port, sch, tc_params);
 	if (ret < 0) {
@@ -301,12 +323,7 @@ int qos_tc_drr_offload(struct net_device *dev,
 		       const struct qos_tc_params *tc_params)
 {
 	int err = 0;
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-	struct tc_to_netdev *tc_to_netdev = type_data;
-	struct tc_drr_qopt_offload *opt = tc_to_netdev->sch_drr;
-#else
 	struct tc_drr_qopt_offload *opt = type_data;
-#endif
 
 	ASSERT_RTNL();
 	netdev_dbg(dev, "DRR: offload starting\n");

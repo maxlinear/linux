@@ -11,7 +11,7 @@
  ** DESCRIPTION	: PPA Protocol Stack Hook API Header File
  ** COPYRIGHT	: Copyright (c) 2017 Intel Corporation
  ** Copyright (c) 2010 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
- ** Copyright (c) 2020 - 2024 MaxLinear Inc.
+ ** Copyright (c) 2020 - 2025 MaxLinear Inc.
  **
  ** HISTORY
  ** $Date $Author			$Comment
@@ -497,6 +497,8 @@
 #define SESSION_FLAG2_VXLAN			0x00200000 /* Flag for VxLAN session*/
 #define SESSION_FLAG2_FRAG			0x00800000 /* Ingress frag pkt */
 #define SESSION_FLAG2_ACK_SUPP_ALLOWED		0x01000000 /* Ack suppression allowed for txif */
+#define SESSION_FLAG2_IPIP 		0x02000000 /* 4in4 tunnel */
+#define SESSION_FLAG2_IP6IP6 		0x04000000 /* 6in6 tunnel  */
 
 /* Other flags */
 #define FLG_PPA_PROCESSED		0x100	/* this used to mark ecah packets which are processed by ppa datapath driver*/
@@ -504,6 +506,7 @@
 #define SESSION_FLAG_DSCP_REMARK	0x00000010 /*Flag to enable DSCP remark in Stack when packet is not classified using PAE Flow Rule*/
 #define SESSION_FLAG2_UPDATE_INFO_PROCESSED	0x10000000 /*Flag to specify ppa_update_session_info is complete*/
 #define SESSION_FLAG2_XLAT 		0x20000000 /* XLAT pkt e.g. 464XLAT/MAP-T etc. */
+#define SESSION_FLAG2_HIGH_Q    0x80000000 /* Flag to specify this session should pass to high q (applicable for non accelable only)*/
 
 #define MAX_DATA_FLOW_ENGINES 3 /* will be changed to runtime value*/
 
@@ -1056,49 +1059,19 @@ typedef struct {
 	uint32_t mtu; /*!< mtu */
 } PPA_CMD_SESSIONS_DETAIL_INFO;
 /*!
-	\brief This is the data structure for basic ppa Versions
+	\brief This is the data structure for basic ppa Version
  */
 typedef struct {
-	uint32_t index; /*!< index for PP32 */
-	uint32_t family; /*!< ppa version hardware family */
-	uint32_t type; /*!< ppa version hardware type */
-	uint32_t itf;/*!< ppa version itf */
-	uint32_t mode; /*!< ppa version mode */
 	uint32_t major; /*!< ppa version major version number */
 	uint32_t mid; /*!< ppa version mid version number */
 	uint32_t minor; /*!< ppa version minor version number */
-	uint32_t tag; /*!< ppa version tag number. Normally for internal usage */
-	uint32_t	id;
-	char	name[PPA_VERSION_LEN];
-	char	version[PPA_VERSION_LEN];
+	char	tag[PPA_VERSION_LEN]; /*!< ppa version tag number. Normally for internal usage */
 } PPA_VERSION;
 /*!
-	\brief This is the data structure for ppa wan mode information
+	\brief This is the data structure for PPA Version
  */
 typedef struct {
-	uint32_t wan_port_map; /*!< wan port map information*/
-	uint32_t mixed; /*!< mixed flag */
-} PPA_WAN_INFO;
-/*!
-	\brief This is the data structure for ppa supported feature list information
- */
-typedef struct {
-	uint8_t ipv6_en; /*!< ipv6 enable/disable status */
-	uint8_t qos_en; /*!< qos enable/disable status */
-} PPA_FEATURE_INFO;
-/*!
-	\brief This is the data structure for PPA subsystem Versions, like ppa subsystem, ppe fw, ppe driver and so on
- */
-typedef struct {
-	PPA_VERSION ppa_api_ver; /*!< PPA API verion */
-	PPA_VERSION ppa_stack_al_ver; /*!< PPA stack verion */
-	PPA_VERSION ppe_hal_ver; /*!< PPA HAL verion */
-	PPA_VERSION mpe_hal_ver; /*!< PPA HAL verion */
-	PPA_VERSION ppe_fw_ver[2]; /*!< PPA FW verion */
-	PPA_VERSION ppa_subsys_ver; /*!< PPA Subsystem verion */
-	PPA_WAN_INFO ppa_wan_info; /*!< PPA WAN INFO */
-	PPA_FEATURE_INFO ppe_fw_feature; /*!< PPE FW feature lists */
-	PPA_FEATURE_INFO ppa_feature; /*!< PPA Level feature lists */
+	PPA_VERSION ppa_ver; /*!< PPA-DRV version */
 } PPA_CMD_VERSION_INFO;
 /*!
 	\brief This is the data structure for basic vlan range

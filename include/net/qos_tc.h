@@ -76,29 +76,6 @@ struct qos_tc_params {
 int qos_tc_event_register(struct notifier_block *nb);
 void qos_tc_event_deregister(struct notifier_block *nb);
 
-#if (KERNEL_VERSION(4, 14, 0) > LINUX_VERSION_CODE)
-int qos_tc_setup(struct net_device *dev,
-		 u32 handle,
-		 __be16 protocol,
-		 struct tc_to_netdev *tc,
-		 int port_id,
-		 int deq_idx);
-
-int qos_tc_setup_gen(struct net_device *dev,
-		     u32 handle,
-		     __be16 protocol,
-		     struct tc_to_netdev *tc);
-
-extern int (*qos_tc_setup_fn)(struct net_device *dev,
-			      u32 handle,
-			      __be16 protocol,
-			      struct tc_to_netdev *tc,
-			      int port_id,
-			      int deq_idx);
-
-int qos_tc_setup_ext(struct net_device *dev, u32 handle, __be16 protocol,
-		struct tc_to_netdev *tc, const struct qos_tc_params *tc_params);
-#else
 int qos_tc_setup(struct net_device *dev,
 		 enum tc_setup_type type,
 		 void *type_data,
@@ -117,5 +94,4 @@ extern int (*qos_tc_setup_fn)(struct net_device *dev,
 
 int qos_tc_setup_ext(struct net_device *dev, enum tc_setup_type type,
 		void *type_data, const struct qos_tc_params *tc_params);
-#endif
 #endif

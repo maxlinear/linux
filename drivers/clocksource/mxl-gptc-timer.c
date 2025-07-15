@@ -47,6 +47,8 @@
 #define BLOCKA		0
 #define BLOCKB		1
 
+#define MHZ(n)		((n) * 1000 * 1000)
+
 static bool g_mxl_gptc_timer_loaded = false;
 
 enum gptc_cnt_dir {
@@ -673,7 +675,6 @@ static irqreturn_t gptc_heartbeat_timer_interrupt(int irq, void *data)
 }
 
 static void gptc_global_init(struct gptc_struct *gptc)
-
 {
 	gptc_clc_enable(gptc);
 	gptc_irq_mask_all(gptc, gptc->soc_data->reg_type);
@@ -689,7 +690,14 @@ static void gptc_per_timer_init(struct gptc_timer *timer)
 		gptc_reload_counter(timer, (timer->frequency / CLC_RMC) * 20);
 		gptc_reload_and_run(timer);
 	} else if (timer->type == TIMER_TYPE_SSO) {
-		gptc_reload_counter(timer, 20);
+		u32 cnt = timer->gptc->fpifreq;
+
+		do_div(cnt, CLC_RMC * timer->frequency);
+		if (cnt <= 1)
+			cnt = 1;
+		else
+			cnt -= 1;
+		gptc_reload_counter(timer, cnt);
 		gptc_reload_and_run(timer);
 	}
 	else {
@@ -732,6 +740,36 @@ static int gptc_clock_init(struct gptc_struct *gptc)
 	gptc->fpifreq = clk_get_rate(gptc->freqclk);
 
 	return 0;
+}
+
+static void gptc_of_parse_sso_freq(struct gptc_timer *timer)
+{
+	struct gptc_struct *gptc = timer->gptc;
+	struct device_node *np;
+	const __be32 *prop;
+
+	prop = of_get_property(gptc->np, "mxl,sso", NULL);
+	if (!prop) {
+		dev_info(gptc->dev, "no sso phandle, use default frequency!\n");
+		goto __sso_node_err;
+	}
+
+	np = of_find_node_by_phandle(be32_to_cpup(prop));
+	if (!np) {
+		dev_err(gptc->dev, "Can't find ssoled node\n");
+		goto __sso_node_err;
+	}
+
+	if (of_property_read_u32(np, "mxl,gptc-clkrate", &timer->frequency)) {
+		dev_err(gptc->dev, "Cannot find mxl,gptc-clkrate in phandle\n");
+		goto __sso_node_err;
+	}
+
+	return;
+
+__sso_node_err:
+	timer->frequency = MHZ(10);
+	return;
 }
 
 static int gptc_of_parse_timer(struct gptc_struct *gptc)
@@ -893,6 +931,8 @@ static int gptc_of_parse_timer(struct gptc_struct *gptc)
 			WARN_ON(timer->irq <= 0);
 			timer->dir = GPTC_COUNT_DOWN;
 			list_add_tail(&timer->heartbeat, &gptc_heartbeat_list);
+			if (type == TIMER_TYPE_SSO)
+				gptc_of_parse_sso_freq(timer);
 			break;
 		default:
 			break;

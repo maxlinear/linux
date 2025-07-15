@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -53,6 +53,11 @@
 #define LLD_MAX_QLSCORE       (5 * BILLION)
 
 /**
+ * @define LLD default QL score in usec (from MULPI C.2.2.9.17.9)
+ */
+#define LLD_DEFAULT_QLSCORE         (4000)
+
+/**
  * @define LLD_MAX_FRAME_SZ
  */
 #define LLD_MAX_FRAME_SZ      2000
@@ -63,9 +68,14 @@
 #define US_2_NS(_us_)         (1000 * _us_)
 
 /**
- * @define LLD_MAX_FLOOR
+ * @define LLD_MAX_FLOOR (from MULPI Annex O)
  */
 #define LLD_MAX_FLOOR         (65535000)
+
+/**
+ * @define LLD_SCALE_DOWN_FACTOR for QL calculation
+ */
+#define LLD_SCALE_DOWN_FACTOR     (1024)
 
 struct pp_sf_entry {
 	struct pp_qos_aqm_lld_sf_config sf_cfg;
@@ -109,6 +119,9 @@ struct pp_misc_db {
 
 	/* Used LLD contexts */
 	ulong              used_fw_lld_ctx[BITS_TO_LONGS(PP_MAX_ASF)];
+
+	/* AQM engine type */
+	u8	aqm_engine;
 };
 
 /**
@@ -271,7 +284,7 @@ s32 pp_nf_set(enum pp_nf_type type, struct pp_nf_info *nf, void *data)
 	}
 
 	ret = uc_nf_set(type, nf->pid, nf->subif, uc_qos_port,
-			cycl2_q, dflt_excp, data);
+			cycl2_q, uc_q, dflt_excp, data);
 	if (unlikely(ret)) {
 		pr_err("Failed Setting NF %d in uc\n", type);
 		goto out;
@@ -433,19 +446,21 @@ void pp_tx_pkt_hook(struct sk_buff *skb, u16 pid)
 	 * signal the sync queue mechanism
 	 */
 	if (desc->lsp_pkt)
-		smgr_sq_lspp_rcv(desc->ud.sess_id);
+		smgr_sq_lspp_rcv(desc->ud.hash_sig);
 }
 EXPORT_SYMBOL(pp_tx_pkt_hook);
 
 s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 {
-	struct lld_ctx_cfg uc_cfg = { 0 };
+	struct lld_ctx_cfg uc_lld_cfg = { 0 };
+	struct aqm_ctx_cfg uc_aqm_cfg = { 0 };
 	struct pp_qos_dev  *qdev;
 	struct pp_misc_db *db = get_misc_db();
 	s32 ret = 0;
 	u8  lld_ctx = PP_MAX_ASF;
 	u8  hist_idx;
-	u32 floor = 0;
+	u32 floor;
+	u32 critical_ql_score_ns;
 
 	if (sf_id >= PP_QOS_MAX_SERVICE_FLOWS) {
 		pr_err("sf_id %u is invalid\n", sf_id);
@@ -462,68 +477,124 @@ s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 		return ret;
 	}
 
-	if (!sf_cfg->llsf || sf_cfg->aqm_mode == PP_QOS_AQM_MODE_NO_DROP)
+	/* In case of aqm_sw, uc also needs aqm parameters */
+	if (db->aqm_engine == PP_AQM_SW) {
+		uc_aqm_cfg.aqm_cfg.valid = 1;
+		uc_aqm_cfg.aqm_cfg.sf_id = sf_id;
+		uc_aqm_cfg.aqm_cfg.peak_rate = sf_cfg->cfg.aqm_cfg.peak_rate;
+		uc_aqm_cfg.aqm_cfg.msr = sf_cfg->cfg.aqm_cfg.msr;
+		uc_aqm_cfg.aqm_cfg.latency_target_ms =
+			sf_cfg->cfg.aqm_cfg.latency_target_ms;
+		uc_aqm_cfg.aqm_cfg.buffer_size = sf_cfg->buffer_size;
+
+		uc_aqm_cfg.hist_cfg.num_hist_bins = sf_cfg->num_hist_bins;
+		for (hist_idx = 0; hist_idx < sf_cfg->num_hist_bins;
+			 hist_idx++) {
+			uc_aqm_cfg.hist_cfg.bin_edges[hist_idx] =
+				sf_cfg->bin_edges[hist_idx];
+		}
+
+		ret = uc_aqm_ctx_set(&uc_aqm_cfg);
+		if (unlikely(ret)) {
+			pr_err("uc_aqm_ctx_set failed\n");
+			pp_qos_aqm_lld_sf_remove(qdev, sf_id,
+						 &db->sf_entry[sf_id].sf_cfg);
+			return ret;
+		}
+	}
+
+	if (!sf_cfg->llsf)
 		goto done;
 
 	/* LL SF */
+	if (db->sf_entry[sf_id].enabled &&
+	    db->sf_entry[sf_id].fw_lld_ctx != PP_MAX_ASF) {
+	    /* SF exists, use the same context and update the rest */
+	    lld_ctx = db->sf_entry[sf_id].fw_lld_ctx;
+	    pr_debug("LLD SF %u exists, reusing context %u\n", sf_id, lld_ctx);
+	} else {
+	    if (db->sf_entry[sf_id].enabled &&
+			db->sf_entry[sf_id].fw_lld_ctx == PP_MAX_ASF) {
+			pr_err("LLD SF %u exist but fw context is not set, "
+				   "assign new context\n", sf_id);
+	    }
 
-	lld_ctx = find_first_zero_bit(db->used_fw_lld_ctx, PP_MAX_ASF);
-	if (lld_ctx >= PP_MAX_ASF) {
-		pr_err("No space for new LLD context\n");
-		/* no free entries available */
-		pp_qos_aqm_lld_sf_remove(qdev, sf_id,
-			&db->sf_entry[sf_id].sf_cfg);
-		return -ENOSPC;
+		lld_ctx = find_first_zero_bit(db->used_fw_lld_ctx, PP_MAX_ASF);
+		if (lld_ctx >= PP_MAX_ASF) {
+			pr_err("No space for new LLD context\n");
+			/* no free entries available */
+			pp_qos_aqm_lld_sf_remove(qdev, sf_id,
+						&db->sf_entry[sf_id].sf_cfg);
+			return -ENOSPC;
+		}
 	}
 
-	uc_cfg.valid = 1;
-	uc_cfg.ctx = lld_ctx;
-	uc_cfg.buffer_size = sf_cfg->buffer_size;
-	uc_cfg.coupled_sf = sf_cfg->coupled_sf;
-	uc_cfg.iaqm_en = sf_cfg->cfg.lld_cfg.iaqm_en;
-	uc_cfg.qp_en = sf_cfg->cfg.lld_cfg.qp_en;
+	uc_lld_cfg.lld_cfg.valid = 1;
+	uc_lld_cfg.lld_cfg.lld_ctx_id = lld_ctx;
+	uc_lld_cfg.lld_cfg.sf_id = sf_id;
+	uc_lld_cfg.lld_cfg.buffer_size = sf_cfg->buffer_size;
+	uc_lld_cfg.lld_cfg.coupled_sf = sf_cfg->coupled_sf;
+	uc_lld_cfg.lld_cfg.iaqm_en = sf_cfg->cfg.lld_cfg.iaqm_en;
+	uc_lld_cfg.lld_cfg.qp_en = sf_cfg->cfg.lld_cfg.qp_en;
 
+	/* According to Annex O */
 	if (sf_cfg->amsr == 0 && sf_cfg->msr_l == 0)
-		uc_cfg.max_rate = 0;
+		uc_lld_cfg.lld_cfg.max_rate = 0;
 	else if (sf_cfg->amsr == 0 && sf_cfg->msr_l != 0)
-		uc_cfg.max_rate = sf_cfg->msr_l;
+		uc_lld_cfg.lld_cfg.max_rate = sf_cfg->msr_l;
 	else if (sf_cfg->amsr != 0 && sf_cfg->msr_l == 0)
-		uc_cfg.max_rate = sf_cfg->amsr;
+		uc_lld_cfg.lld_cfg.max_rate = sf_cfg->amsr;
 	else if (sf_cfg->amsr != 0 && sf_cfg->msr_l != 0)
-		uc_cfg.max_rate = min(sf_cfg->amsr, sf_cfg->msr_l);
+		uc_lld_cfg.lld_cfg.max_rate = min(sf_cfg->amsr, sf_cfg->msr_l);
 
-	if (uc_cfg.max_rate) {
+	if (uc_lld_cfg.lld_cfg.max_rate) {
 		floor = (u32)((u64)(2 * 8 * LLD_MAX_FRAME_SZ * (u64)BILLION) /
-			uc_cfg.max_rate);
+			uc_lld_cfg.lld_cfg.max_rate);
 		floor = (LLD_MAX_FLOOR < floor) ? LLD_MAX_FLOOR : floor;
+	} else {
+		floor = 0;
 	}
+	uc_lld_cfg.lld_cfg.maxth_ns = US_2_NS(sf_cfg->cfg.lld_cfg.maxth_us);
+	uc_lld_cfg.lld_cfg.lg_aging = sf_cfg->cfg.lld_cfg.lg_aging;
+	uc_lld_cfg.lld_cfg.range_ns = 1 << sf_cfg->cfg.lld_cfg.lg_range;
+	uc_lld_cfg.lld_cfg.minth_ns = (uc_lld_cfg.lld_cfg.maxth_ns - uc_lld_cfg.lld_cfg.range_ns) >
+		floor ? (uc_lld_cfg.lld_cfg.maxth_ns - uc_lld_cfg.lld_cfg.range_ns) : floor;
 
-	uc_cfg.maxth_ns = US_2_NS(sf_cfg->cfg.lld_cfg.maxth_us);
-	uc_cfg.lg_aging = sf_cfg->cfg.lld_cfg.lg_aging;
-	uc_cfg.range = 1 << sf_cfg->cfg.lld_cfg.lg_range;
-	uc_cfg.minth_ns = (uc_cfg.maxth_ns - uc_cfg.range) > floor ?
-		(uc_cfg.maxth_ns - uc_cfg.range) : floor;
-	uc_cfg.critical_ql_us = sf_cfg->cfg.lld_cfg.critical_ql_us;
-	// Change 600 to clock + Handle clock change in FW
-	uc_cfg.critical_qL_product = 
-		600 * US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_score_us) *
-		US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_us) / 1000;
-	uc_cfg.vq_interval = sf_cfg->cfg.lld_cfg.vq_interval;
-	uc_cfg.vq_ewma_alpha = sf_cfg->cfg.lld_cfg.vq_ewma_alpha;
+	uc_lld_cfg.lld_cfg.maxth_ns = uc_lld_cfg.lld_cfg.minth_ns + uc_lld_cfg.lld_cfg.range_ns;
+	uc_lld_cfg.lld_cfg.maxth_ns = min(uc_lld_cfg.lld_cfg.maxth_ns, LLD_MAX_FLOOR);
 
-	uc_cfg.num_hist_bins = sf_cfg->num_hist_bins;
+	/* critical_ql taken from configuration if exist, otherwise according to
+	 * maxth
+	 */
+	uc_lld_cfg.lld_cfg.critical_ql_ns = sf_cfg->cfg.lld_cfg.critical_ql_us
+		? US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_us)
+		: uc_lld_cfg.lld_cfg.maxth_ns / LLD_SCALE_DOWN_FACTOR;
+
+	/* critical_ql_score taken from configuration if exist, otherwise set to
+	 * default
+	 */
+	critical_ql_score_ns = sf_cfg->cfg.lld_cfg.critical_ql_score_us
+		? US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_score_us)
+		: US_2_NS(LLD_DEFAULT_QLSCORE) / LLD_SCALE_DOWN_FACTOR;
+
+	uc_lld_cfg.lld_cfg.critical_qL_product = critical_ql_score_ns *
+					  uc_lld_cfg.lld_cfg.critical_ql_ns;
+
+	uc_lld_cfg.lld_cfg.vq_interval = sf_cfg->cfg.lld_cfg.vq_interval;
+	uc_lld_cfg.lld_cfg.vq_ewma_alpha = sf_cfg->cfg.lld_cfg.vq_ewma_alpha;
+
+	uc_lld_cfg.hist_cfg.num_hist_bins = sf_cfg->num_hist_bins;
 
 	for (hist_idx = 0; hist_idx < sf_cfg->num_hist_bins; hist_idx++)
-		uc_cfg.bin_edges[hist_idx] = sf_cfg->bin_edges[hist_idx];
+		uc_lld_cfg.hist_cfg.bin_edges[hist_idx] = sf_cfg->bin_edges[hist_idx];
 
-	ret = uc_lld_ctx_set(&uc_cfg);
+	ret = uc_lld_ctx_set(&uc_lld_cfg);
 	if (unlikely(ret)) {
 		pr_err("uc_lld_ctx_set failed\n");
 		pp_qos_aqm_lld_sf_remove(qdev, sf_id,
-			&db->sf_entry[sf_id].sf_cfg);
+					 &db->sf_entry[sf_id].sf_cfg);
 		return ret;
 	}
-
 	set_bit(lld_ctx, db->used_fw_lld_ctx);
 
 done:
@@ -560,10 +631,50 @@ s32 pp_lld_allowed_aq_set(u8 sf_id, u32 allowed_aq)
 }
 EXPORT_SYMBOL(pp_lld_allowed_aq_set);
 
+s32 pp_misc_check_queue_lld_sf(u16 dst_q, bool *lld_sf)
+{
+	struct pp_qos_queue_info q_info;
+	struct pp_qos_dev *qdev;
+	u8 lld_ctx = PP_MAX_ASF;
+	u16 coupled_queue = PP_QOS_INVALID_ID;
+	s32 ret;
+
+	if (unlikely(ptr_is_null(lld_sf)))
+		return -EINVAL;
+
+	*lld_sf = false;
+
+	if (unlikely(!pp_is_ready()))
+		return -EPERM;
+
+	/* get the nf physical queue */
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return -EINVAL;
+
+	ret = pp_qos_queue_info_get(qdev, dst_q, &q_info);
+	if (unlikely(ret)) {
+		pr_err("Failed getting queue %u info\n", dst_q);
+		return ret;
+	}
+	ret = pp_misc_get_lld_info_by_q((u16)q_info.physical_id, &lld_ctx, &coupled_queue);
+	if (unlikely(ret)) {
+		pr_err("Failed to get lld queue info\n");
+		return ret;
+	}
+
+	if (lld_ctx != PP_MAX_ASF && coupled_queue != PP_QOS_INVALID_ID)
+		*lld_sf = true;
+
+	return 0;
+}
+EXPORT_SYMBOL(pp_misc_check_queue_lld_sf);
+
 s32 pp_misc_sf_remove(u8 sf_id)
 {
 	struct pp_misc_db *db = get_misc_db();
-	struct lld_ctx_cfg uc_cfg;
+	struct lld_ctx_cfg uc_lld_cfg = { 0 };
+	struct aqm_ctx_cfg uc_aqm_cfg = { 0 };
 	struct pp_qos_dev  *qdev;
 	s32 ret;
 
@@ -584,24 +695,32 @@ s32 pp_misc_sf_remove(u8 sf_id)
 		return ret;
 	}
 
+	/* In case of aqm_sw, reset aqm parameters in uc */
+	if (db->aqm_engine == PP_AQM_SW) {
+		memset(&uc_aqm_cfg, 0, sizeof(uc_aqm_cfg));
+		ret = uc_aqm_ctx_set(&uc_aqm_cfg);
+		if (unlikely(ret)) {
+			pr_err("uc_aqm_ctx_set failed\n");
+			return ret;
+		}
+	}
+
 	if (db->sf_entry[sf_id].sf_cfg.llsf) {
 		if (!test_bit(db->sf_entry[sf_id].fw_lld_ctx,
 		    db->used_fw_lld_ctx)) {
 			pr_err("bit %u is not set\n",
 				db->sf_entry[sf_id].fw_lld_ctx);
 			return -EINVAL;
-		    }
+		}
 
-		uc_cfg.valid = 0;
-		uc_cfg.ctx = db->sf_entry[sf_id].fw_lld_ctx;
-
-		ret = uc_lld_ctx_set(&uc_cfg);
+		uc_lld_cfg.lld_cfg.valid = 0;
+		uc_lld_cfg.lld_cfg.lld_ctx_id = db->sf_entry[sf_id].fw_lld_ctx;
+		ret = uc_lld_ctx_set(&uc_lld_cfg);
 		if (unlikely(ret)) {
 			pr_err("uc_lld_ctx_set failed\n");
 			return ret;
 		}
-
-		clear_bit(uc_cfg.ctx, db->used_fw_lld_ctx);
+		clear_bit(uc_lld_cfg.lld_cfg.lld_ctx_id, db->used_fw_lld_ctx);
 	}
 
 	/* reset SF config in db */
@@ -643,30 +762,101 @@ s32 pp_misc_sf_hist_get(u8 sf_id, struct pp_sf_hist_stat *hist, bool reset)
 		return -EINVAL;
 	}
 
-	if (!db->sf_entry[sf_id].enabled ||
-	    !db->sf_entry[sf_id].sf_cfg.num_hist_bins) {
-		pr_err("Hist is disabled. sf_id %u\n", sf_id);
+	if (!db->sf_entry[sf_id].enabled) {
+		pr_err("SF is disabled. sf_id %u\n", sf_id);
 		return -EINVAL;
 	}
 
-	if (db->sf_entry[sf_id].sf_cfg.llsf) {
-		ret = uc_sf_hist_get(db->sf_entry[sf_id].fw_lld_ctx,
-			hist, reset);
-		if (unlikely(ret))
-			return ret;
-	} else {
-		qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
-		if (ptr_is_null(qdev))
-			return -ENODEV;
-
-		ret = pp_qos_sf_hist_get(qdev, sf_id, hist, reset);
-		if (unlikely(ret))
-			return ret;
+	if (db->sf_entry[sf_id].sf_cfg.num_hist_bins == 0) {
+		/* histogram not enabled for SF */
+		return -ENOENT;
 	}
 
+	if (db->sf_entry[sf_id].sf_cfg.llsf) {
+		ret = uc_sf_hist_get(sf_id, hist, reset);
+		if (unlikely(ret))
+			return ret;
+	} else { /* In AQM SW mode, classic histogram is taken from UC */
+		if (db->aqm_engine == PP_AQM_SW) {
+			ret = uc_sf_hist_get(sf_id, hist, reset);
+			if (unlikely(ret))
+				return ret;
+		} else {  /* In AQM HW histogram is from qos fw */
+			qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+			if (ptr_is_null(qdev))
+				return -ENODEV;
+
+			ret = pp_qos_sf_hist_get(qdev, sf_id, hist, reset);
+			if (unlikely(ret))
+				return ret;
+		}
+	}
 	return 0;
 }
 EXPORT_SYMBOL(pp_misc_sf_hist_get);
+
+s32 pp_misc_sf_lld_counters_get(u8 sf_id, struct pp_lld_stats *stats)
+{
+	struct pp_misc_db *db = get_misc_db();
+	struct lld_sf_stats sf_lld_stats;
+	s32 ret;
+
+	if (sf_id >= PP_QOS_MAX_SERVICE_FLOWS) {
+		pr_err("sf_id %u is invalid\n", sf_id);
+		return -EINVAL;
+	}
+
+	if (!db->sf_entry[sf_id].enabled ||
+	    !db->sf_entry[sf_id].sf_cfg.llsf) {
+		pr_err("sf_id %u is disabled or not lld type\n", sf_id);
+		return -EINVAL;
+	}
+
+	if (unlikely(ptr_is_null(stats)))
+		return -EINVAL;
+
+	memset(&sf_lld_stats, 0, sizeof(struct lld_sf_stats));
+
+	ret = uc_lld_per_sf_stats_get(db->sf_entry[sf_id].fw_lld_ctx, &sf_lld_stats);
+	if (unlikely(ret))
+		pr_err("uc_lld_per_sf_stats_get failed\n");
+
+	memcpy(stats, &sf_lld_stats, sizeof(struct lld_sf_stats));
+
+	return 0;
+}
+EXPORT_SYMBOL(pp_misc_sf_lld_counters_get);
+
+s32 pp_misc_aqm_sw_sf_counters_get(u8 sf_id, struct PP_AQM_SW_stats *stats)
+{
+	struct pp_misc_db *db = get_misc_db();
+	struct aqm_sw_sf_stats uc_stats;
+	s32 ret;
+
+	if (!db || !stats)
+		return -EINVAL;
+
+	if (sf_id >= PP_QOS_MAX_SERVICE_FLOWS) {
+		pr_err("sf_id %u is invalid\n", sf_id);
+		return -EINVAL;
+	}
+
+	if (!db->sf_entry[sf_id].enabled) {
+		pr_err("sf_id %u is disabled\n", sf_id);
+		return -EINVAL;
+	}
+
+	memset(&uc_stats, 0, sizeof(struct aqm_sw_sf_stats));
+
+	ret = uc_aqm_sw_per_sf_stats_get(sf_id, &uc_stats);
+	if (unlikely(ret))
+		pr_err("pp_misc_aqm_sw_sf_counters_get failed\n");
+
+	memcpy(stats, &uc_stats, sizeof(struct aqm_sw_sf_stats));
+
+	return 0;
+}
+EXPORT_SYMBOL(pp_misc_aqm_sw_sf_counters_get);
 
 s32 pp_misc_fw_lld_ctx_get(u8 sf_id, u8* ctx)
 {
@@ -684,6 +874,43 @@ s32 pp_misc_fw_lld_ctx_get(u8 sf_id, u8* ctx)
 
 	return 0;
 }
+EXPORT_SYMBOL(pp_misc_fw_lld_ctx_get);
+
+s32 pp_misc_get_sf_indx_by_q(u16 queue, u16 *sf_indx)
+{
+	struct pp_misc_db *db = get_misc_db();
+	struct pp_qos_dev *qdev;
+	struct pp_qos_aqm_lld_sf_config *cfg;
+	u16 sf_ind;
+	u16 q_ind;
+
+	if (!sf_indx || !db)
+		return -EINVAL;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (ptr_is_null(qdev))
+		return -ENODEV;
+
+	/* Find the SF which contains the queue */
+	for (sf_ind = 0; sf_ind < PP_QOS_MAX_SERVICE_FLOWS; sf_ind++) {
+		if (!db->sf_entry[sf_ind].enabled)
+			continue;
+
+		cfg = &db->sf_entry[sf_ind].sf_cfg;
+		for (q_ind = 0; q_ind < cfg->num_queues; q_ind++) {
+			if (cfg->queue[q_ind].id == queue)
+				goto found;
+		}
+	}
+
+	*sf_indx = PP_QOS_MAX_SERVICE_FLOWS;
+	return 0;
+
+found:
+	*sf_indx = sf_ind;
+	return 0;
+}
+EXPORT_SYMBOL(pp_misc_get_sf_indx_by_q);
 
 s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue)
 {
@@ -701,6 +928,10 @@ s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue)
 		goto out;
 	}
 
+	/* if no LLD configured, no need to search */
+	if (bitmap_empty(db->used_fw_lld_ctx, PP_MAX_ASF))
+		goto not_found;
+
 	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
 	if (ptr_is_null(qdev))
 		return -ENODEV;
@@ -708,17 +939,17 @@ s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue)
 	id = pp_qos_queue_id_get(qdev, queue);
 	/* Find the SF which contains the queue */
 	for (sf_ind = 0; sf_ind < PP_QOS_MAX_SERVICE_FLOWS; sf_ind++) {
-		if (!db->sf_entry[sf_ind].enabled)
+		if (!db->sf_entry[sf_ind].enabled || !db->sf_entry[sf_ind].sf_cfg.llsf)
 			continue;
 
 		cfg = &db->sf_entry[sf_ind].sf_cfg;
 		for (q_ind = 0; q_ind < cfg->num_queues; q_ind++) {
-			if (cfg->queue_id[q_ind] == id)
+			if (cfg->queue[q_ind].id == id)
 				goto found;
 		}
 	}
 
-	/* Not found */
+not_found:
 	*lld_ctx = PP_MAX_ASF;
 	*coupled_queue = PP_QOS_INVALID_ID;
 	goto out;
@@ -728,11 +959,76 @@ found:
 	if (cfg->coupled_sf < PP_QOS_MAX_SERVICE_FLOWS &&
 	    db->sf_entry[cfg->coupled_sf].enabled)
 		*coupled_queue =
-			db->sf_entry[cfg->coupled_sf].sf_cfg.queue_id[q_ind];
+			db->sf_entry[cfg->coupled_sf].sf_cfg.queue[q_ind].id;
 out:
 	return rc;
 }
 EXPORT_SYMBOL(pp_misc_get_lld_info_by_q);
+
+s32 pp_misc_pci_ready_set(bool state, u32 bar_addr)
+{
+	struct pp_qos_dev *qdev;
+	struct pp_qos_pci_addr pci_addr = {0};
+	s32 ret = 0;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (ptr_is_null(qdev))
+		return -ENODEV;
+
+	/* Actual PCI address is set only in case function
+	   is called with state true - when pci device is ready
+	   otherwise passed address to fw is zero */
+	if (state)
+		/* msrtoken in argus is taken from rate limit token bucket reg
+		DMAC_US_INGR_SFM_RL1_BUCKET_LEVEL_REG - address 0x2B0_8274 */
+		pci_addr.msrtoken_addr = 0x02B08274 + bar_addr;
+
+	ret = pp_qos_pci_addr_set(qdev, &pci_addr);
+	if (unlikely(ret)) {
+		pr_err("pp_qos_pci_addr_set failed\n");
+		return ret;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(pp_misc_pci_ready_set);
+
+s32 pp_misc_set_aqm_engine(u8 aqm_engine)
+{
+	struct pp_qos_dev *qdev;
+	struct pp_misc_db *db = get_misc_db();
+	s32 ret = 0;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (ptr_is_null(qdev))
+		return -ENODEV;
+
+	ret = pp_qos_set_aqm_engine(qdev, aqm_engine);
+	if (unlikely(ret)) {
+		pr_err("pp_qos_set_aqm_engine failed\n");
+		return ret;
+	}
+
+	qdev->init_params.aqm_engine = aqm_engine;
+	db->aqm_engine = aqm_engine;
+
+	return ret;
+}
+EXPORT_SYMBOL(pp_misc_set_aqm_engine);
+
+s32 pp_misc_get_aqm_engine(u8 *aqm_engine)
+{
+	struct pp_misc_db *db = get_misc_db();
+	s32 ret = 0;
+
+	if (unlikely(ptr_is_null(aqm_engine)))
+		return -EINVAL;
+
+	*aqm_engine = db->aqm_engine;
+
+	return ret;
+}
+EXPORT_SYMBOL(pp_misc_get_aqm_engine);
 
 s32 pp_resource_stats_show(char *buf, size_t sz, size_t *n)
 {
@@ -920,8 +1216,10 @@ s32 pp_global_stats_diff(void *pre, u32 num_pre, void *post, u32 num_post,
 			&__delta->frag_stats);
 	U64_STRUCT_DIFF(&__pre->remark_stats, &__post->remark_stats,
 			&__delta->remark_stats);
-	U64_STRUCT_DIFF(&__pre->ipsec_lld_stats, &__post->ipsec_lld_stats,
-			&__delta->ipsec_lld_stats);
+	U64_STRUCT_DIFF(&__pre->ipsec_stats, &__post->ipsec_stats,
+			&__delta->ipsec_stats);
+	U64_STRUCT_DIFF(&__pre->aqm_lld_stats, &__post->aqm_lld_stats,
+			&__delta->aqm_lld_stats);
 	U64_STRUCT_DIFF(&__pre->lro_stats, &__post->lro_stats,
 			&__delta->lro_stats);
 	U64_STRUCT_DIFF(&__pre->egr_stats, &__post->egr_stats,
@@ -992,11 +1290,15 @@ s32 pp_global_stats_get(void *stats, u32 num_stats, void *data)
 
 	ret = uc_reass_stats_get(&__stats->reass_stats);
 	if (unlikely(ret))
-		pr_err("uc_reassembly_stats_get failed\n");
+		pr_err("uc_reass_stats_get failed\n");
 
-	ret = uc_ipsec_lld_stats_get(&__stats->ipsec_lld_stats);
+	ret = uc_ipsec_stats_get(&__stats->ipsec_stats);
 	if (unlikely(ret))
-		pr_err("uc_ipsec_lld_stats_get failed\n");
+		pr_err("uc_ipsec_stats_get failed\n");
+
+	ret = uc_lld_total_stats_get(&__stats->aqm_lld_stats);
+	if (unlikely(ret))
+		pr_err("uc_lld_total_stats_get failed\n");
 
 	ret = uc_tdox_stats_get(&__stats->tdox_stats);
 	if (unlikely(ret))
@@ -1379,24 +1681,25 @@ s32 pp_driver_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 s32 pp_hal_global_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 			     u32 num_stats, void *data)
 {
-	struct pp_global_stats  *st = stats;
-	struct pp_stats         *port_dist;
-	struct rpb_stats        *rpb;
-	struct prsr_stats       *parser;
-	struct cls_stats        *cls;
-	struct chk_stats        *chk;
-	struct mod_stats        *mod;
-	struct rx_dma_stats     *rx_dma;
-	struct pp_qos_stats     *qos;
-	struct mcast_stats      *mcast;
-	struct reassembly_stats *reass;
-	struct frag_stats       *frag;
-	struct ipsec_lld_stats  *ipsec_lld;
-	struct tdox_uc_stats    *tdox;
-	struct remarking_stats  *remark;
-	struct lro_stats        *lro;
-	struct ing_stats        *ing;
-	struct egr_glb_stats    *egr;
+	struct pp_global_stats      *st = stats;
+	struct pp_stats             *port_dist;
+	struct rpb_stats            *rpb;
+	struct prsr_stats           *parser;
+	struct cls_stats            *cls;
+	struct chk_stats            *chk;
+	struct mod_stats            *mod;
+	struct rx_dma_stats         *rx_dma;
+	struct pp_qos_stats         *qos;
+	struct mcast_stats          *mcast;
+	struct reassembly_stats     *reass;
+	struct frag_stats           *frag;
+	struct ipsec_stats          *ipsec;
+	struct aqm_lld_global_stats *lld;
+	struct tdox_uc_stats        *tdox;
+	struct remarking_stats      *remark;
+	struct lro_stats            *lro;
+	struct ing_stats            *ing;
+	struct egr_glb_stats        *egr;
 	u64 reass_err = 0, *u64_it;
 	u32 parser_err = 0, *u32_it;
 
@@ -1414,7 +1717,8 @@ s32 pp_hal_global_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 	mcast     = &st->mcast_stats;
 	reass     = &st->reass_stats;
 	frag      = &st->frag_stats;
-	ipsec_lld = &st->ipsec_lld_stats;
+	ipsec     = &st->ipsec_stats;
+	lld       = &st->aqm_lld_stats;
 	remark    = &st->remark_stats;
 	lro       = &st->lro_stats;
 	tdox      = &st->tdox_stats;
@@ -1489,14 +1793,14 @@ s32 pp_hal_global_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 		   "+---------------------------+-------------------------+-------------------------+------------------------+\n");
 	pr_buf_cat(buf, sz, *n,
 		   "| Rx            %10llu  | Rx          %10llu  | Rx          %10llu  | Rx         %10llu  |\n",
-		   mcast->rx_pkt, reass->rx_pkts, frag->rx_pkt, ipsec_lld->ipsec.rx_pkt);
+		   mcast->rx_pkt, reass->rx_pkts, frag->rx_pkt, ipsec->rx_pkt);
 	pr_buf_cat(buf, sz, *n,
 		   "| Tx            %10llu  | Tx          %10llu  | Tx          %10llu  | Tx         %10llu  |\n",
-		   mcast->tx_pkt, reass->tx_pkts, frag->tx_pkt, ipsec_lld->ipsec.tx_pkt);
+		   mcast->tx_pkt, reass->tx_pkts, frag->tx_pkt, ipsec->tx_pkt);
 	pr_buf_cat(buf, sz, *n,
 		   "| Drop          %10llu  | Drop        %10llu  | Drop        %10llu  | Errors     %10llu  |\n",
 		   mcast->drop_pkt, reass->err.dropped, frag->total_drops,
-		   ipsec_lld->ipsec.error_pkt);
+		   ipsec->error_pkt);
 	pr_buf_cat(buf, sz, *n,
 		   "| Mirror TX     %10llu  | Reassembled %10llu  | Bmgr drops  %10llu  |                        |\n",
 		   mcast->mirror_tx_pkt, reass->reassembled, frag->bmgr_drops);
@@ -1552,28 +1856,46 @@ s32 pp_hal_global_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 		   "+---------------------------+-------------------------+-------------------------+------------------------+\n");
 
 	pr_buf_cat(buf, sz, *n,
-		   "| LLD                       | LRO                     |                         |                        |\n");
+		   "| LLD                       | LRO                     | SW AQM / Buffer control |                        |\n");
 	pr_buf_cat(buf, sz, *n,
 		   "+---------------------------+-------------------------+-------------------------+------------------------+\n");
 	pr_buf_cat(buf, sz, *n,
-		   "| Rx            %10llu  | Rx          %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.rx_pkt, lro->rx_pkt);
+		   "| Rx            %10llu  | Rx          %10llu  | AQM Rx       %10llu |                        |\n",
+		   lld->rx_pkt, lro->rx_pkt, lld->aqm_sw_aggr.rx_pkt);
 	pr_buf_cat(buf, sz, *n,
-		   "| Tx            %10llu  | Tx          %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.tx_pkt, lro->tx_pkt);
+		   "| Ctx Err       %10llu  | Tx          %10llu  | Buf ctrl drop%10llu |                        |\n",
+		   lld->ctx_error_pkt, lro->tx_pkt,
+		   lld->aqm_sw_aggr.bc_drop_pkt);
 	pr_buf_cat(buf, sz, *n,
-		   "| Error         %10llu  | Aggregated  %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.error_pkt, lro->agg_pkt);
-	pr_buf_cat(buf, sz, *n,
-		   "| Mark          %10llu  | Exception   %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.mark_pkt, lro->exp_pkt);
-	pr_buf_cat(buf, sz, *n,
-		   "| Sanction      %10llu  | Drop        %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.sanction_pkt, lro->drop_pkt);
-	pr_buf_cat(buf, sz, *n,
-		   "| Drop          %10llu  | Error       %10llu  |                         |                        |\n",
-		   ipsec_lld->lld.drop_pkt, lro->error_pkt);
+		   "| Gen Err       %10llu  | Aggregated  %10llu  | AQM drop     %10llu |                        |\n",
+		   lld->error_pkt, lro->agg_pkt,
+		   lld->aqm_sw_aggr.aqm_drop_pkt);
 
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Rx        %10llu  | Exception   %10llu  | AQM Tx       %10llu |                        |\n",
+			lld->lld_aggr.rx_pkt, lro->exp_pkt,
+			lld->aqm_sw_aggr.tx_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Rx ECT0   %10llu  | Drop        %10llu  |                         |                        |\n",
+			lld->lld_aggr.rx_ect0_pkt, lro->drop_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Rx ECT1   %10llu  | Error       %10llu  |                         |                        |\n",
+			lld->lld_aggr.rx_ect1_pkt, lro->error_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Rx CE     %10llu  |                         |                         |                        |\n",
+		   lld->lld_aggr.rx_ce_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Tx        %10llu  |                         |                         |                        |\n",
+		   lld->lld_aggr.tx_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Mark      %10llu  |                         |                         |                        |\n",
+		   lld->lld_aggr.mark_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Sanction  %10llu  |                         |                         |                        |\n",
+		   lld->lld_aggr.sanction_pkt);
+	pr_buf_cat(buf, sz, *n,
+		   "| LLD Drop      %10llu  |                         |                         |                        |\n",
+		   lld->lld_aggr.drop_pkt);
 	pr_buf_cat(buf, sz, *n,
 		   "+---------------------------+-------------------------+-------------------------+------------------------+\n\n");
 
@@ -1732,6 +2054,7 @@ void ignore_clk_updates_set(u32 ignore_updates)
 static s32 __pp_misc_db_init(struct device *dev, struct pp_dev_priv *dev_priv,
 					struct pp_misc_init_param *init_param)
 {
+	struct pp_qos_dev *qdev;
 	struct pp_misc_db *db;
 	u8 i;
 
@@ -1741,6 +2064,10 @@ static s32 __pp_misc_db_init(struct device *dev, struct pp_dev_priv *dev_priv,
 								sizeof(*db));
 		return -ENOMEM;
 	}
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (ptr_is_null(qdev))
+		return -ENODEV;
 
 	spin_lock_init(&db->lock);
 	db->pp_ext_id = MXL_SKB_EXT_INVALID;
@@ -1756,6 +2083,9 @@ static s32 __pp_misc_db_init(struct device *dev, struct pp_dev_priv *dev_priv,
 
 	for (i = 0; i < PP_QOS_MAX_SERVICE_FLOWS; i++)
 		db->sf_entry[i].fw_lld_ctx = PP_MAX_ASF;
+
+	/* set aqm_engine according to qos init */
+	db->aqm_engine = qdev->init_params.aqm_engine;
 
 	return 0;
 }

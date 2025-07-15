@@ -27,6 +27,7 @@
 #define DP_RES_ID_CPU           6
 #define DP_RES_ID_TOE		7
 #define DP_RES_ID_DPDK		8
+#define DP_RES_ID_LROUC		9
 #define DP_RES_ID_DOCSIS_MMM	30
 #define DP_RES_ID_DOCSIS_VOICE	31
 #define DP_RES_ID_DOCSIS_MPEG	32
@@ -38,6 +39,8 @@
 #define CQM_NIOC_ISOLATED	1
 #define CQM_NIOC_SHARED		2
 #define SSB_NIOC_SHARED		3
+#define SSB_LROUC_NIOC_SHARED	4
+#define SSB_LROUC_NIOC_ISOLATED	5
 
 /* CQM resource direction in bitmap format.
  * Bit 0 is for CQM_RX
