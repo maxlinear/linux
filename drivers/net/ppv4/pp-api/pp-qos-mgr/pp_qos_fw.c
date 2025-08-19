@@ -583,6 +583,7 @@ enum cmd_type {
 	CMD_TYPE_ADD_QUEUE,
 	CMD_TYPE_SET_QUEUE,
 	CMD_TYPE_REM_QUEUE,
+	CMD_TYPE_UPDATE_PREDS,
 	CMD_TYPE_GET_QUEUE_STATS,
 	CMD_TYPE_GET_QM_STATS,
 	CMD_TYPE_SET_AQM_SF,
@@ -629,6 +630,7 @@ static const char *const cmd_str[] = {
 	[CMD_TYPE_ADD_QUEUE] = "CMD_TYPE_ADD_QUEUE",
 	[CMD_TYPE_SET_QUEUE] = "CMD_TYPE_SET_QUEUE",
 	[CMD_TYPE_REM_QUEUE] = "CMD_TYPE_REM_QUEUE",
+	[CMD_TYPE_UPDATE_PREDS] = "CMD_TYPE_UPDATE_PREDS",
 	[CMD_TYPE_GET_QUEUE_STATS] = "CMD_TYPE_GET_QUEUE_STATS",
 	[CMD_TYPE_GET_QM_STATS] = "CMD_TYPE_GET_QM_STATS",
 	[CMD_TYPE_SET_AQM_SF] = "CMD_TYPE_SET_AQM_SF",
@@ -742,6 +744,11 @@ struct cmd_add_queue {
 struct cmd_set_queue {
 	struct cmd base;
 	struct fw_cmd_set_queue fw;
+} __attribute__((packed));
+
+struct cmd_update_preds {
+	struct cmd base;
+	struct fw_cmd_update_preds fw;
 } __attribute__((packed));
 
 struct cmd_flush_queue {
@@ -1820,6 +1827,8 @@ static s32 _create_set_port_cmd(struct pp_qos_dev *qdev,
 
 	add_suspend_port(qdev, phy);
 	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+	QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_PORT %u\n", qdev->drvcmds.cmd_id,
+		      phy);
 
 	if (QOS_BITS_IS_SET(common->valid, TSCD_NODE_CONF_BW_LIMIT)) {
 		node = get_node_from_phy(qdev->nodes, phy);
@@ -1869,10 +1878,6 @@ s32 create_set_port_cmd(struct pp_qos_dev *qdev,
 		if (ret)
 			return ret;
 	}
-
-	if (!QOS_BITS_IS_SET(modified, QOS_MODIFIED_NODE_TYPE))
-		QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_PORT %u\n",
-			      qdev->drvcmds.cmd_id, phy);
 
 	return 0;
 }
@@ -1976,6 +1981,8 @@ static void _create_set_sched_cmd(struct pp_qos_dev *qdev,
 
 	add_suspend_port(qdev, get_port(qdev->nodes, phy));
 	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+	QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_SCHED %u\n", qdev->drvcmds.cmd_id,
+		      phy);
 
 	if (QOS_BITS_IS_SET(common->valid, TSCD_NODE_CONF_BW_LIMIT)) {
 		node = get_node_from_phy(qdev->nodes, phy);
@@ -2016,11 +2023,6 @@ void create_set_sched_cmd(struct pp_qos_dev *qdev,
 		_create_set_sched_cmd(qdev, phy, modified,
 				      &common, &parent, &child);
 	}
-
-	if (!QOS_BITS_IS_SET(modified, QOS_MODIFIED_NODE_TYPE)) {
-		QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_SCHED %u\n",
-			      qdev->drvcmds.cmd_id, phy);
-	}
 }
 
 static void create_add_queue_cmd(struct pp_qos_dev *qdev,
@@ -2046,10 +2048,13 @@ static void create_add_queue_cmd(struct pp_qos_dev *qdev,
 
 	cmd.fw.base.type = UC_QOS_CMD_ADD_QUEUE;
 	cmd.fw.phy = phy;
-	if (is_orphaned)
+
+	if (is_orphaned) {
 		cmd.fw.port = 0;
-	else
+	} else {
 		cmd.fw.port = get_port(qdev->nodes, phy);
+		node->data.queue.port_phy = cmd.fw.port;
+	}
 
 	cmd.fw.rlm = rlm;
 	cmd.fw.bw_limit = conf->common_prop.bandwidth_limit;
@@ -2178,6 +2183,9 @@ static void _create_set_queue_cmd(struct pp_qos_dev *qdev, u32 phy,
 		add_suspend_port(qdev, get_port(qdev->nodes, phy));
 
 	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+	QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_QUEUE %u\n", qdev->drvcmds.cmd_id,
+		      phy);
+
 
 	if (QOS_BITS_IS_SET(common->valid, TSCD_NODE_CONF_BW_LIMIT)) {
 		node = get_node_from_phy(qdev->nodes, phy);
@@ -2217,11 +2225,6 @@ void create_set_queue_cmd(struct pp_qos_dev *qdev,
 		_create_set_queue_cmd(qdev, phy, node->data.queue.rlm,
 				      node->data.queue.is_alias, modified,
 				      &common, &child, &queue, is_orphaned);
-	}
-
-	if (!QOS_BITS_IS_SET(modified, QOS_MODIFIED_NODE_TYPE)) {
-		QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_QUEUE %u\n",
-			      qdev->drvcmds.cmd_id, phy);
 	}
 }
 
@@ -2461,58 +2464,64 @@ void update_parent(struct pp_qos_dev *qdev, u32 phy)
 		_create_set_sched_cmd(qdev, phy, 0, &common, &parent, &child);
 }
 
-void update_preds(struct pp_qos_dev *qdev, u32 phy, bool queue_port_changed)
+static void _create_update_preds_cmd(struct pp_qos_dev *qdev,
+				     u32 first_phy, u32 count,
+				     bool queue_port_changed)
 {
-	struct fw_set_common common;
-	struct fw_set_child child;
-	struct fw_set_parent parent;
-	struct fw_set_queue queue;
+	struct cmd_update_preds cmd;
 	const struct qos_node *node;
+	u32 phy, i;
 
-	/* Only external parameters may change here */
-	memset(&common, 0, sizeof(struct fw_set_common));
-	memset(&child, 0, sizeof(struct fw_set_child));
-	memset(&parent, 0, sizeof(struct fw_set_parent));
-	memset(&queue, 0, sizeof(struct fw_set_queue));
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_UPDATE_PREDS, sizeof(cmd), 0, NULL,
+		 0, 0);
 
-	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
-		return;
+	cmd.fw.valid =  TSCD_NODE_CONF_PREDECESSOR_0 |
+			TSCD_NODE_CONF_PREDECESSOR_1 |
+			TSCD_NODE_CONF_PREDECESSOR_2 |
+			TSCD_NODE_CONF_PREDECESSOR_3 |
+			TSCD_NODE_CONF_PREDECESSOR_4 |
+			TSCD_NODE_CONF_PREDECESSOR_5;
 
-	node = get_const_node_from_phy(qdev->nodes, phy);
-	if (unlikely(!node)) {
-		QOS_LOG_ERR("get_const_node_from_phy(%u) returned NULL\n",
-			    phy);
-		return;
-	}
+	if (queue_port_changed)
+		cmd.fw.valid |= TSCD_NODE_CONF_SET_PORT_TO_QUEUE;
 
-	child.valid = TSCD_NODE_CONF_PREDECESSOR_0 |
-		TSCD_NODE_CONF_PREDECESSOR_1 |
-		TSCD_NODE_CONF_PREDECESSOR_2 |
-		TSCD_NODE_CONF_PREDECESSOR_3 |
-		TSCD_NODE_CONF_PREDECESSOR_4 |
-		TSCD_NODE_CONF_PREDECESSOR_5;
+	fill_preds(qdev->nodes, first_phy, cmd.fw.preds, QOS_MAX_PREDECESSORS);
 
-	fill_preds(qdev->nodes, phy, child.preds, QOS_MAX_PREDECESSORS);
+	cmd.fw.base.type = UC_QOS_CMD_UPDATE_PREDS;
+	cmd.fw.num_nodes = count;
+	cmd.fw.port = get_port(qdev->nodes, first_phy);
+	cmd.fw.first_phy = first_phy;
 
-	switch (node->type) {
-	case TYPE_SCHED:
-		_create_set_sched_cmd(qdev, phy, 0,
-				      &common, &parent, &child);
-		break;
-	case TYPE_QUEUE:
-		if (queue_port_changed) {
-			common.valid |= TSCD_NODE_CONF_SET_PORT_TO_QUEUE;
-			common.port_phy = node->data.queue.port_phy;
+	for (i = 0; i < count; i++) {
+		phy = first_phy + i;
+		node = get_const_node_from_phy(qdev->nodes, phy);
+		if (!node) {
+			QOS_LOG_ERR("get_const_node_from_phy(%u) returned NULL\n",
+				    phy);
+			return;
 		}
-
-		_create_set_queue_cmd(qdev, phy, node->data.queue.rlm,
-				      node->data.queue.is_alias, 0,
-				      &common, &child, &queue, false);
-		break;
-	default:
-		QOS_LOG_ERR("illegal node type %d\n", node->type);
-		return;
+		if (node_queue(node)) {
+			cmd.fw.rlms[i] = node->data.queue.rlm;
+			cmd.fw.is_q_bmap |= BIT_ULL(i);
+			if (node->data.queue.is_alias)
+				cmd.fw.is_q_alias_bmap |= BIT_ULL(i);
+		}
 	}
+	add_suspend_port(qdev, get_port(qdev->nodes, first_phy));
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+
+	QOS_LOG_DEBUG("cmd %u: UC_QOS_CMD_UPDATE_PREDS\n",
+		      qdev->drvcmds.cmd_id);
+}
+
+void update_preds_group(struct pp_qos_dev *qdev, u32 first_phy, u32 count,
+			bool queue_port_changed)
+{
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev) || count == 0)
+		return;
+
+	_create_update_preds_cmd(qdev, first_phy, count, queue_port_changed);
 }
 
 void create_get_port_stats_cmd(struct pp_qos_dev *qdev, u32 phy,

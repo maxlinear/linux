@@ -475,6 +475,10 @@ static int add_dev_to_list(struct net_device *dev,
 		pr_err("dp_get_port_prop fail\n");
 		return -EINVAL; 
 	}
+	if (port_prop.alloc_flags & (DP_F_FAST_WLAN | DP_F_FAST_WLAN_EXT)) {
+		pr_debug("MIB CNT skip for FAST_WLAN type device\n");
+		return -EOPNOTSUPP;
+	}
 	sub_if_id_grp = GET_VAP(sub_if, port_prop.vap_offset,
 				port_prop.vap_mask);
 

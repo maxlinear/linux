@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 MaxLinear, Inc.
+ * Copyright (C) 2023-2025 MaxLinear, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -76,6 +76,7 @@ struct tdox_info {
 	bool revert_q;
 	bool is_docsis;
 	bool lro;
+	u8 lro_proto; /* for lro we support both TCP and UDP */
 };
 
 enum tdox_state {
@@ -196,8 +197,8 @@ static s32 tdox_rec_create(struct smgr_tdox_db *db, struct tdox_entry *ent)
 	cmd.sess_id = ent->info.sess_id;
 	cmd.tdox_id = ent->info.supp_id;
 	cmd.lro_flag = ent->info.lro;
+	cmd.lro_proto = ent->info.lro_proto;
 
-	/* TBD - add lro params */
 	/* send command */
 	ret = uc_egr_mbox_cmd_send(UC_CMD_TDOX_CREATE, 0, (const void *)&cmd,
 				   sizeof(cmd), NULL, 0);
@@ -846,7 +847,8 @@ static void tdox_entry_prepare(struct sess_info *s)
 	if (ptr_is_null(db) || !db->enable)
 		return;
 
-	if (tdox_tcp_hdr_info_get(s, &thr, &ts)) {
+	if (SESS_ARGS_IS_FLAG_OFF(s, PP_SESS_FLAG_SLRO_INFO_BIT) &&
+	    tdox_tcp_hdr_info_get(s, &thr, &ts)) {
 		pr_debug("failed to get the tcp header info\n");
 		return;
 	}
@@ -869,6 +871,7 @@ static void tdox_entry_prepare(struct sess_info *s)
 			s->si.tdox_flow = ent->info.supp_id;
 			ent->info.lro = true;
 			ent->info.sess_id = s->db_ent->info.sess_id;
+			ent->info.lro_proto = SESS_RX_IS_OUTER_UDP(s);
 			s->db_ent->info.tdox_id = ent->id;
 			if (tdox_lro_add(db, ent)) {
 				tdox_ent_free(db, ent);
@@ -937,8 +940,11 @@ void smgr_si_tdox_set(struct sess_info *s)
 	if (!SESS_RX_PKT(s) || !SESS_TX_PKT(s))
 		return; /* no parsing */
 
-	if (!SESS_RX_IS_OUTER_TCP(s) && !SESS_RX_IS_INNER_TCP(s))
-		return; /* not TCP */
+	/* For LRO we support UDP as well */
+	if (SESS_ARGS_IS_FLAG_OFF(s, PP_SESS_FLAG_SLRO_INFO_BIT)) {
+		if (!SESS_RX_IS_OUTER_TCP(s) && !SESS_RX_IS_INNER_TCP(s))
+			return; /* not TCP */
+	}
 
 	if (pktprs_first_frag(SESS_RX_PKT(s), HDR_OUTER) ||
 	    pktprs_first_frag(SESS_RX_PKT(s), HDR_INNER) ||

@@ -270,7 +270,7 @@ int p34x_ptp_init(struct p34x_priv_data *priv)
 			goto ERROR;
 	}
 
-	pr_err("p34x_ptp_init: successful\n");
+	pr_info("p34x_ptp_init: successful\n");
 	return 0;
 
 ERROR:

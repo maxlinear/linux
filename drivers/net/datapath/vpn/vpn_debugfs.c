@@ -108,7 +108,7 @@ static int vpn_genconf_show(struct seq_file *s, void *v)
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
 		seq_printf(s, "\tctx[%d]:\n", i);
-		for (j = 0; j < CTX_SIZE / 4; j++)
+		for (j = 0; j < CTX_SIZE; j += 4)
 			seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
 				   genconf->ctx[i].buf[j],
 				   genconf->ctx[i].buf[j + 1],
@@ -120,7 +120,7 @@ static int vpn_genconf_show(struct seq_file *s, void *v)
 
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
 		seq_printf(s, "\tacd_tmpl[%d]:\n", i);
-		for (j = 0; j < ACD_SIZE / 4; j++)
+		for (j = 0; j < ACD_SIZE; j += 4)
 			seq_printf(s, "\t\t[0x%08x][0x%08x][0x%08x][0x%08x]\n",
 				   genconf->acd_tmpl[i].buf[j],
 				   genconf->acd_tmpl[i].buf[j + 1],

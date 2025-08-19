@@ -20,12 +20,17 @@
 #include <crypto/hash.h>
 #include <crypto/hmac.h>
 #include <crypto/aes.h>
+#include <crypto/md5.h>
+#include <crypto/sha2.h>
 
 #include "vpn.h"
 
 /* control0 */
-#define CONTEXT_TYPE_ENCRYPT_HASH_OUT	0x6
-#define CONTEXT_TYPE_HASH_DECRYPT_IN	0xf
+#define CONTEXT_TYPE_IN			BIT(0)
+#define CONTEXT_TYPE_HASH		BIT(1)
+#define CONTEXT_TYPE_CRYPTO		BIT(2)
+#define CONTEXT_TYPE_HASH_FIRST		BIT(3)
+#define CONTEXT_TYPE_MASK		GENMASK(3, 0)
 #define CONTEXT_SIZE(n)			((n) << 8)
 #define CONTEXT_KEY_EN			BIT(16)
 #define CONTEXT_CRYPTO_ALG_DES		(0x0 << 17)
@@ -65,6 +70,9 @@
 #define TOKEN_WORDS_SIZE_OUTBOUND 6
 #define TOKEN_WORDS_SIZE_INBOUND 5
 
+/* null identifier */
+#define CONTEXT_CRYPTO_ALG_NULL (-1)
+
 #define MAX_ALGO_NAME 32
 
 enum token_offset {
@@ -77,6 +85,7 @@ enum vpn_cipher_alg {
 	CIPHER_DES,
 	CIPHER_3DES,
 	CIPHER_AES,
+	CIPHER_NULL
 };
 
 enum ctx_seq_num {
@@ -130,6 +139,13 @@ enum type_options {
 	TYPE_TOKEN_FETCH_OFF = 0x0,
 	TYPE_TOKEN_FETCH_ON = 0x1,
 	TYPE_TOKEN_FETCH_AUTO = 0x3
+};
+
+enum pad_endian_s {
+	PAD_LE32,
+	PAD_BE32,
+	PAD_LE64,
+	PAD_BE64,
 };
 
 struct vpn_sa {
@@ -219,9 +235,12 @@ struct auth_algo {
 	char *name;
 	u32 algo;
 	char *digest_name;
+	u32 ipad_size; /* inner/outer hash size */
+	enum pad_endian_s pad_endian;
 };
 
 static struct cipher_algo cipher_algo_list[] = {
+	{"ecb(cipher_null)", CIPHER_NULL, CONTEXT_CRYPTO_MODE_ECB},
 	{"cbc(aes)", CIPHER_AES, CONTEXT_CRYPTO_MODE_CBC},
 	{"cbc(des)", CIPHER_DES, CONTEXT_CRYPTO_MODE_CBC},
 	{"cbc(des3_ede)", CIPHER_3DES, CONTEXT_CRYPTO_MODE_CBC},
@@ -230,12 +249,20 @@ static struct cipher_algo cipher_algo_list[] = {
 };
 
 static struct auth_algo auth_algo_list[] = {
-	{"hmac(md5)", CONTEXT_CRYPTO_ALG_MD5, "md5"},
-	{"hmac(sha1)", CONTEXT_CRYPTO_ALG_SHA1, "sha1"},
-	{"hmac(sha224)", CONTEXT_CRYPTO_ALG_SHA224, "sha224"},
-	{"hmac(sha256)", CONTEXT_CRYPTO_ALG_SHA256, "sha256"},
-	{"hmac(sha384)", CONTEXT_CRYPTO_ALG_SHA384, "sha384"},
-	{"hmac(sha512)", CONTEXT_CRYPTO_ALG_SHA512, "sha512"},
+	{"digest_null", CONTEXT_CRYPTO_ALG_NULL,
+	 "null", 0, 0},
+	{"hmac(md5)", CONTEXT_CRYPTO_ALG_MD5,
+	 "md5", MD5_DIGEST_SIZE, PAD_LE32},
+	{"hmac(sha1)", CONTEXT_CRYPTO_ALG_SHA1,
+	 "sha1", SHA1_DIGEST_SIZE, PAD_BE32},
+	{"hmac(sha224)", CONTEXT_CRYPTO_ALG_SHA224,
+	 "sha224", SHA256_DIGEST_SIZE, PAD_BE32},
+	{"hmac(sha256)", CONTEXT_CRYPTO_ALG_SHA256,
+	 "sha256", SHA256_DIGEST_SIZE, PAD_BE32},
+	{"hmac(sha384)", CONTEXT_CRYPTO_ALG_SHA384,
+	 "sha384", SHA512_DIGEST_SIZE, PAD_BE64},
+	{"hmac(sha512)", CONTEXT_CRYPTO_ALG_SHA512,
+	 "sha512", SHA512_DIGEST_SIZE, PAD_BE64},
 };
 
 static struct cipher_algo *get_cipher_by_name(char *name)
@@ -266,13 +293,41 @@ static struct auth_algo *get_auth_by_name(char *name)
 	return NULL;
 }
 
-static bool get_hash_alg_be(const char *algo_name)
+static void swap_endian_hash_pad(enum pad_endian_s endian, void *pad,
+				 void *state, u32 size)
 {
-	if (!strcmp(algo_name, "md5"))
-		return false;
+	int i;
 
-	/* shaX are big endians */
-	return true;
+	switch (endian) {
+	case PAD_BE64:
+	case PAD_LE64: {
+		u64 *p = pad;
+		u64 *s = state;
+
+		for (i = 0; i < size / sizeof(u64); i++) {
+			if (endian == PAD_BE64)
+				*p = cpu_to_be64(s[i]);
+			else
+				*p = cpu_to_le64(s[i]);
+			p++;
+		}
+		break;
+	}
+	case PAD_BE32:
+	case PAD_LE32:
+	default: {
+		u32 *p = pad;
+		u32 *s = state;
+
+		for (i = 0; i < size / sizeof(u32); i++) {
+			if (endian == PAD_BE32)
+				*p = cpu_to_be32(s[i]);
+			else
+				*p = cpu_to_le32(s[i]);
+			p++;
+		}
+		break;
+	} };
 }
 
 /* Derive ipad/opad from key.
@@ -281,16 +336,16 @@ static bool get_hash_alg_be(const char *algo_name)
  */
 static int vpn_eip197_hash_pad(struct vpn_data *priv, const char *name,
 			       const u8 *key, unsigned int keylen,
-			       u8 *ipad, u8 *opad)
+			       u8 *ipad, u8 *opad, u32 ipad_size,
+			       enum pad_endian_s pad_endian)
 {
 	int block_size;
 	int state_size;
 	struct crypto_shash *shash = NULL;
-	bool is_be = get_hash_alg_be(name);
 	struct shash_desc *desc = NULL;
 	int ret;
 	int i;
-	u32 *state = NULL;
+	void *state = NULL;
 	u8 *ipad_block = NULL;
 	u8 *opad_block = NULL;
 
@@ -377,14 +432,7 @@ static int vpn_eip197_hash_pad(struct vpn_data *priv, const char *name,
 		goto error;
 	}
 
-	for (i = 0; i < keylen; i += sizeof(u32)) {
-		u32 *p = (u32 *)&ipad[i];
-
-		if (is_be)
-			*p = cpu_to_be32(state[i / sizeof(u32)]);
-		else
-			*p = cpu_to_le32(state[i / sizeof(u32)]);
-	}
+	swap_endian_hash_pad(pad_endian, ipad, state, ipad_size);
 
 	/* get outer hash */
 	ret = crypto_shash_init(desc);
@@ -405,14 +453,7 @@ static int vpn_eip197_hash_pad(struct vpn_data *priv, const char *name,
 		goto error;
 	}
 
-	for (i = 0; i < keylen; i += sizeof(u32)) {
-		u32 *p = (u32 *)&opad[i];
-
-		if (is_be)
-			*p = cpu_to_be32(state[i / sizeof(u32)]);
-		else
-			*p = cpu_to_le32(state[i / sizeof(u32)]);
-	}
+	swap_endian_hash_pad(pad_endian, opad, state, ipad_size);
 
 error:
 	if (ipad_block)
@@ -433,7 +474,7 @@ static int vpn_eip197_context_control(struct vpn_data *priv,
 				      u32 *ctx)
 {
 	const u32 seq_no_offset = 2 * sizeof(u32) /* cw0/1 */ +
-				  params->key_len + 2 * params->authkeylen +
+				  params->key_len + 2 * params->ipad_size +
 				  sizeof(u32) /* SPI */;
 	int ctrl_size = params->key_len / sizeof(u32);
 	u32 cw0 = 0, cw1 = 0;
@@ -454,14 +495,24 @@ static int vpn_eip197_context_control(struct vpn_data *priv,
 		cw1 = mode | CONTEXT_PAD;
 
 	/* Take in account the ipad+opad digests */
-	ctrl_size += params->authkeylen / sizeof(u32) * 2;
-	cw0 |= CONTEXT_KEY_EN | CONTEXT_DIGEST_HMAC | auth_algo |
-	       CONTEXT_SIZE(ctrl_size);
+	ctrl_size += params->ipad_size / sizeof(u32) * 2;
+	cw0 |= CONTEXT_SIZE(ctrl_size);
 
-	if (params->direction == VPN_DIRECTION_OUT)
-		cw0 |= CONTEXT_TYPE_ENCRYPT_HASH_OUT;
-	else
-		cw0 |= CONTEXT_TYPE_HASH_DECRYPT_IN;
+	if (enc_algo != CIPHER_NULL)
+		cw0 |= CONTEXT_KEY_EN;
+	if (auth_algo != CONTEXT_CRYPTO_ALG_NULL)
+		cw0 |= CONTEXT_DIGEST_HMAC | auth_algo;
+
+	/* Construct type-of-packet using enc/auth algo and direction */
+	if (enc_algo != CIPHER_NULL)
+		cw0 |= CONTEXT_TYPE_CRYPTO;
+	if (auth_algo != CONTEXT_CRYPTO_ALG_NULL)
+		cw0 |= CONTEXT_TYPE_HASH;
+	if (params->direction != VPN_DIRECTION_OUT)
+		cw0 |= CONTEXT_TYPE_IN;
+	if ((cw0 & CONTEXT_TYPE_MASK) ==
+	    (CONTEXT_TYPE_CRYPTO | CONTEXT_TYPE_HASH | CONTEXT_TYPE_IN))
+		cw0 |= CONTEXT_TYPE_HASH_FIRST;
 
 	if (enc_algo == CIPHER_DES) {
 		cw0 |= CONTEXT_CRYPTO_ALG_DES;
@@ -506,10 +557,6 @@ static int vpn_eip197_ctx(struct vpn_data *priv,
 
 	memset(ctx, 0, sizeof(struct ctx));
 
-	/* cw0/cw1 */
-	vpn_eip197_context_control(priv, params, enc_algo, auth_algo, mode,
-				   ctx);
-
 	/* key */
 	memcpy(ctx + 2, params->key, params->key_len);
 
@@ -518,13 +565,16 @@ static int vpn_eip197_ctx(struct vpn_data *priv,
 		return -EINVAL;
 
 	/* inner/outer hash */
+	params->ipad_size = auth->ipad_size;
 	p = ctx + 2 + params->key_len / sizeof(u32);
-	vpn_eip197_hash_pad(priv, auth->digest_name, params->authkey,
-			    params->authkeylen, (u8 *)p,
-			    (u8 *)(p + params->authkeylen / sizeof(u32)));
+	if (auth->ipad_size)
+		vpn_eip197_hash_pad(priv, auth->digest_name, params->authkey,
+				    params->authkeylen, (u8 *)p,
+				    (u8 *)(p + params->ipad_size / sizeof(u32)),
+				    params->ipad_size, auth->pad_endian);
 
 	/* spi/seqmask */
-	p += 2 * params->authkeylen / sizeof(u32);
+	p += 2 * params->ipad_size / sizeof(u32);
 	*p++ = params->spi;
 	*p++ = 0; /* seq0 */
 	if (params->direction == VPN_DIRECTION_IN) {
@@ -532,13 +582,17 @@ static int vpn_eip197_ctx(struct vpn_data *priv,
 		*p++ = 0; /* seqmask1 */
 	}
 
+	/* cw0/cw1 */
+	vpn_eip197_context_control(priv, params, enc_algo, auth_algo, mode,
+				   ctx);
+
 	return 0;
 }
 
 static int vpn_eip197_tkn(struct vpn_data *priv, struct vpn_sa_params *params)
 {
 	const u32 seq_no_offset = 2 * sizeof(u32) /* cw0/1 */ +
-				  params->key_len + 2 * params->authkeylen +
+				  params->key_len + 2 * params->ipad_size +
 				  sizeof(u32) /* SPI */;
 	const u32 seq_mask_size = 2 * sizeof(u32);
 	const u32 seq_no_size = sizeof(u32);
@@ -689,6 +743,9 @@ static int get_pad_blk_size(u32 crypto_alg, u32 crypto_mode)
 	int pad_blk_size = 4;
 
 	switch (crypto_alg) {
+	case CIPHER_NULL:
+		pad_blk_size = 4;
+		break;
 	case CIPHER_3DES:
 	case CIPHER_DES:
 		pad_blk_size = 8;

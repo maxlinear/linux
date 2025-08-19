@@ -15582,8 +15582,20 @@ GSW_return_t GSW_RMON_CTP_Get(void *cdev, GSW_RMON_CTP_cnt_t *parm)
 		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x06, 20, 22},
 		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x0c, 24, 26},
 		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x10, 21, 23},
-		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x12, 25, UINT16_MAX}
-
+		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x12, 25, UINT16_MAX},
+		/* Rx/Tx Pkt Size */
+		{CTP_PORT_RX_RMON, 0x00, 28, 29},
+		{CTP_PORT_RX_RMON, 0x02, 30, 31},
+		{CTP_PORT_RX_RMON, 0x04, 32, 33},
+		{CTP_PORT_RX_RMON, 0x08, 27, 34},
+		{CTP_PORT_TX_RMON, 0x00, 36, 37},
+		{CTP_PORT_TX_RMON, 0x02, 38, 39},
+		{CTP_PORT_TX_RMON, 0x04, 40, 41},
+		{CTP_PORT_TX_RMON, 0x08, 35, 42},
+		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x00, 44, 45},
+		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x02, 46, 47},
+		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x04, 48, 49},
+		{CTP_PORT_PCE_BYPASS_TX_RMON, 0x08, 43, 50}
 	};
 	static const struct {
 		u16 tbl;
@@ -15607,6 +15619,7 @@ GSW_return_t GSW_RMON_CTP_Get(void *cdev, GSW_RMON_CTP_cnt_t *parm)
 	gsw_ctp_cnt_u32_t *last;
 	gsw_ctp_cnt_u64_t *store;
 	u64 val[ARRAY_SIZE(tbl2)] = {0};
+	u64 rx_pkt_cnt, tx_pkt_cnt, tx_pkt_cnt1;
 	u32 i, ret;
 	u16 ctp;
 
@@ -15680,35 +15693,41 @@ GSW_return_t GSW_RMON_CTP_Get(void *cdev, GSW_RMON_CTP_cnt_t *parm)
 		val[i] = data;
 	}
 
-	// Handle wraparound value
+	/* Handle wraparound value */
 	last = &ctp_cnt_info->cnt[ctp].last;
 	store = &ctp_cnt_info->cnt[ctp].store;
-	// Aggregate RxGoodPkts
-	store->nRxPkts +=
-		wraparound(cnt.rx_u_g_pkt,
-			   last->rx_u_g_pkt,
-			   sizeof(last->rx_u_g_pkt));
-	store->nRxPkts +=
-		wraparound(cnt.rx_u_y_pkt,
-			   last->rx_u_y_pkt,
-			   sizeof(last->rx_u_y_pkt));
-	store->nRxPkts +=
-		wraparound(cnt.rx_m_g_pkt,
-			   last->rx_m_g_pkt,
-			   sizeof(last->rx_m_g_pkt));
-	store->nRxPkts +=
-		wraparound(cnt.rx_m_y_pkt,
-			   last->rx_m_y_pkt,
-			   sizeof(last->rx_m_y_pkt));
-	store->nRxPkts +=
-		wraparound(cnt.rx_b_g_pkt,
-			   last->rx_b_g_pkt,
-			   sizeof(last->rx_b_g_pkt));
-	store->nRxPkts +=
-		wraparound(cnt.rx_b_y_pkt,
-			   last->rx_b_y_pkt,
-			   sizeof(last->rx_b_y_pkt));
-	// Aggregate nRxErrors
+	/* Aggregate RxGoodPkts and nTxPkts */
+	for (i = 0; i < ARRAY_SIZE(cnt.rx_pkts); i++)
+	{
+		rx_pkt_cnt = wraparound(cnt.rx_pkts[i],
+					last->rx_pkts[i],
+					sizeof(last->rx_pkts[i]));
+		tx_pkt_cnt = wraparound(cnt.tx_pkts[i],
+					last->tx_pkts[i],
+					sizeof(cnt.tx_pkts[i]));
+		tx_pkt_cnt1 = wraparound(cnt.tx_byp_pkts[i],
+					 last->tx_byp_pkts[i],
+					 sizeof(cnt.tx_byp_pkts[i]));
+		store->nRxPkts += rx_pkt_cnt;
+		store->nTxPkts += tx_pkt_cnt + tx_pkt_cnt1;
+		switch (i) {
+			case 0:
+			case 1:
+				store->nRxUnicastPkts += rx_pkt_cnt;
+				store->nTxUnicastPkts += tx_pkt_cnt + tx_pkt_cnt1;
+				break;
+			case 2:
+			case 3:
+				store->nRxMulticastPkts += rx_pkt_cnt;
+				store->nTxMulticastPkts += tx_pkt_cnt + tx_pkt_cnt1;
+				break;
+			default:
+				store->nRxBroadcastPkts += rx_pkt_cnt;
+				store->nTxBroadcastPkts += tx_pkt_cnt + tx_pkt_cnt1;
+				break;
+		}
+	}
+	/* Aggregate nRxErrors */
 	store->nRxErrors +=
 		wraparound(cnt.rx_fcs_bad_pkt,
 			   last->rx_fcs_bad_pkt,
@@ -15721,9 +15740,9 @@ GSW_return_t GSW_RMON_CTP_Get(void *cdev, GSW_RMON_CTP_cnt_t *parm)
 		wraparound(cnt.rx_os_bad_pkt,
 			   last->rx_os_bad_pkt,
 			   sizeof(last->rx_os_bad_pkt));
-	// Add nRxErrors to the nRxPkts
+	/* Add nRxErrors to the nRxPkts */
 	store->nRxPkts += store->nRxErrors;
-	// Aggregate nRxDrops
+	/* Aggregate nRxDrops */
 	store->nRxDrops +=
 		wraparound(cnt.rx_dropped_pkt,
 			   last->rx_dropped_pkt,
@@ -15737,71 +15756,66 @@ GSW_return_t GSW_RMON_CTP_Get(void *cdev, GSW_RMON_CTP_cnt_t *parm)
 			   last->rx_mtu_dropped_pkt,
 			   sizeof(last->rx_mtu_dropped_pkt));
 
-	// Aggregate nTxPkts
-	store->nTxPkts +=
-		wraparound(cnt.tx_u_g_pkt,
-			   last->tx_u_g_pkt,
-			   sizeof(last->tx_u_g_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_u_y_pkt,
-			   last->tx_u_y_pkt,
-			   sizeof(last->tx_u_y_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_m_g_pkt,
-			   last->tx_m_g_pkt,
-			   sizeof(last->tx_m_g_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_m_y_pkt,
-			   last->tx_m_y_pkt,
-			   sizeof(last->tx_m_y_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_b_g_pkt,
-			   last->tx_b_g_pkt,
-			   sizeof(last->tx_b_g_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_b_y_pkt,
-			   last->tx_b_y_pkt,
-			   sizeof(last->tx_b_y_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_u_g_byp_pkt,
-			   last->tx_u_g_byp_pkt,
-			   sizeof(last->tx_u_g_byp_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_u_y_byp_pkt,
-			   last->tx_u_y_byp_pkt,
-			   sizeof(last->tx_u_y_byp_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_m_g_byp_pkt,
-			   last->tx_m_g_byp_pkt,
-			   sizeof(last->tx_m_g_byp_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_m_y_byp_pkt,
-			   last->tx_m_y_byp_pkt,
-			   sizeof(last->tx_m_y_byp_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_b_g_byp_pkt,
-			   last->tx_b_g_byp_pkt,
-			   sizeof(last->tx_b_g_byp_pkt));
-	store->nTxPkts +=
-		wraparound(cnt.tx_b_y_byp_pkt,
-			   last->tx_b_y_byp_pkt,
-			   sizeof(last->tx_b_y_byp_pkt));
 
-	// Aggregate nTxDrops
+	/* Aggregate nTxDrops */
 	store->nTxDrops +=
 		wraparound(cnt.tx_dropped_pkt,
 			   last->tx_dropped_pkt,
 			   sizeof(last->tx_dropped_pkt));
 
-	parm->nTxBytes = val[3] + val[4] + val[5] + val[6];
-	parm->nTxPkts = store->nTxPkts;
-	parm->nTxDrops = store->nTxDrops;
-	parm->nRxBytes = val[0] + val[1] + val[2];
-	parm->nRxPkts = store->nRxPkts;
-	parm->nRxDrops = store->nRxDrops;
-	parm->nRxErrors = store->nRxErrors;
+	/* Aggregate rx histogram */
+	for (i = 0; i < ARRAY_SIZE(store->rxHist); i++)
+	{
+		store->rxHist[i] +=
+			wraparound(cnt.rxHist[i],
+				   last->rxHist[i],
+				   sizeof(cnt.rxHist[i]));
+	}
 
-	// Store current counter value
+	/* Aggregate tx histogram */
+	for (i = 0; i < ARRAY_SIZE(store->txHist); i++)
+	{
+		store->txHist[i] +=
+			wraparound(cnt.txHist[i],
+				   last->txHist[i],
+				   sizeof(cnt.txHist[i]));
+	}
+	for (i = 0; i < ARRAY_SIZE(store->txHist); i++)
+	{
+		store->txHist[i] +=
+			wraparound(cnt.txBypHist[i],
+				   last->txBypHist[i],
+				   sizeof(cnt.txBypHist[i]));
+	}
+
+	/* Aggregate rx bad packets */
+	for (i  = 0; i < ARRAY_SIZE(cnt.rx_bad_pkts); i++)
+	{
+		store->nRxBad[i] +=
+			wraparound(cnt.rx_bad_pkts[i],
+				   last->rx_bad_pkts[i],
+				   sizeof(cnt.rx_bad_pkts[i]));
+	}
+
+	parm->nTxBytes         = val[3] + val[4] + val[5] + val[6];
+	parm->nTxPkts          = store->nTxPkts;
+	parm->nTxUnicastPkts   = store->nTxUnicastPkts;
+	parm->nTxMulticastPkts = store->nTxMulticastPkts;
+	parm->nTxBroadcastPkts = store->nTxBroadcastPkts;
+	parm->nTxDrops         = store->nTxDrops;
+	parm->nRxBytes         = val[0] + val[1] + val[2];
+	parm->nRxPkts          = store->nRxPkts;
+	parm->nRxUnicastPkts   = store->nRxUnicastPkts;
+	parm->nRxMulticastPkts = store->nRxMulticastPkts;
+	parm->nRxBroadcastPkts = store->nRxBroadcastPkts;
+	parm->nRxDrops         = store->nRxDrops;
+	parm->nRxErrors        = store->nRxErrors;
+	memcpy(parm->rxHist, store->rxHist, sizeof(parm->rxHist));
+	memcpy(parm->txHist, store->txHist, sizeof(parm->txHist));
+	memcpy(parm->nRxBad, store->nRxBad, sizeof(parm->nRxBad));
+
+
+	/* Store current counter value */
 	memcpy(last, &cnt, sizeof(cnt));
 
 	ret = GSW_statusOk;

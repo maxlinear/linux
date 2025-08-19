@@ -627,6 +627,101 @@ static int set_link_ksettings(struct net_device *dev,
 	return 0;
 }
 
+static void get_eth_mac_stats(struct net_device *dev,
+			      struct ethtool_eth_mac_stats *mac_stats)
+{
+	struct eth_priv *priv = netdev_priv(dev);
+	GSW_CTP_portAssignment_t ctp = {0}; 
+	GSW_RMON_CTP_cnt_t cnt = {0};
+	struct core_ops *gsw_ops;
+	int ret, i;
+
+	gsw_ops = get_swcore_ops(dev);
+	if (!gsw_ops) {
+		dev_err(&dev->dev, "failed in getting SW Core Ops\n");
+		return;
+	}
+	ctp.nLogicalPortId = priv->dp_port_id;
+	ret = gsw_ops->gsw_ctp_ops.CTP_PortAssignmentGet(gsw_ops, &ctp);
+	if (ret) {
+		dev_err(&dev->dev, "failed in getting ctp port assignment\n");
+		return;
+	}
+	memset(mac_stats, 0, sizeof(*mac_stats));
+	for (i = ctp.nFirstCtpPortId; i < ctp.nFirstCtpPortId + ctp.nNumberOfCtpPort; i++)
+	{
+		cnt.nCTP = i;
+		if (gsw_ops->gsw_rmon_ops.RMON_CTP_Get(gsw_ops, &cnt)) {
+			dev_err(&dev->dev, "failed in getting ctp rmon\n");
+			break;
+		} else {
+			mac_stats->FramesReceivedOK          += cnt.nRxUnicastPkts;
+			mac_stats->MulticastFramesReceivedOK += cnt.nRxMulticastPkts;
+			mac_stats->BroadcastFramesReceivedOK += cnt.nRxBroadcastPkts;
+			mac_stats->OctetsReceivedOK          += cnt.nRxBytes;
+			mac_stats->FramesTransmittedOK       += cnt.nTxUnicastPkts;
+			mac_stats->MulticastFramesXmittedOK  += cnt.nTxMulticastPkts;
+			mac_stats->BroadcastFramesXmittedOK  += cnt.nTxBroadcastPkts;
+			mac_stats->OctetsTransmittedOK       += cnt.nTxBytes;
+			mac_stats->FrameCheckSequenceErrors  += cnt.nRxFCSErr;
+			mac_stats->FrameTooLongErrors        += cnt.nRxBadOverSz;
+		}
+	}
+}
+
+static const struct ethtool_rmon_hist_range gsw_rmon_ranges[] = {
+	{    0,   64 },
+	{   65,  127 },
+	{  128,  255 },
+	{  256,  511 },
+	{  512, 1023 },
+	{ 1024, 1518 },
+	{ 1519, 9000 },
+        {0, 0}
+};
+
+static void get_rmon_stats(struct net_device *dev,
+			   struct ethtool_rmon_stats *rmon_stats,
+			   const struct ethtool_rmon_hist_range **ranges)
+{
+	struct eth_priv *priv = netdev_priv(dev);
+	GSW_CTP_portAssignment_t ctp = {0}; 
+	GSW_RMON_CTP_cnt_t cnt = {0};
+	struct core_ops *gsw_ops;
+	int ret, i, j;
+
+	gsw_ops = get_swcore_ops(dev);
+	if (!gsw_ops) {
+		dev_err(&dev->dev, "failed in getting SW Core Ops\n");
+		return;
+	}
+	ctp.nLogicalPortId = priv->dp_port_id;
+	ret = gsw_ops->gsw_ctp_ops.CTP_PortAssignmentGet(gsw_ops, &ctp);
+	if (ret) {
+		dev_err(&dev->dev, "failed in getting ctp port assignment\n");
+		return;
+	}
+	memset(rmon_stats, 0, sizeof(*rmon_stats));
+	for (i = ctp.nFirstCtpPortId; i < ctp.nFirstCtpPortId + ctp.nNumberOfCtpPort; i++)
+	{
+		cnt.nCTP = i;
+		if (gsw_ops->gsw_rmon_ops.RMON_CTP_Get(gsw_ops, &cnt)) {
+			dev_err(&dev->dev, "failed in getting ctp rmon\n");
+			break;
+		} else {
+			rmon_stats->undersize_pkts += cnt.nRxBadUnderSz;
+			rmon_stats->oversize_pkts  += cnt.nRxBadOverSz;
+			rmon_stats->hist[0]        += cnt.rxHist[0] + cnt.rxHist[1];
+			rmon_stats->hist_tx[0]     += cnt.txHist[0] + cnt.txHist[1];
+			for (j = 1; j < ARRAY_SIZE(rmon_stats->hist) && j < ARRAY_SIZE(cnt.rxHist) - 1; j++) {
+				rmon_stats->hist[j]    += cnt.rxHist[j+1];
+				rmon_stats->hist_tx[j] += cnt.txHist[j+1];
+			}
+		}
+	}
+	*ranges = gsw_rmon_ranges;
+}
+
 static u32 get_priv_flags(struct net_device *dev)
 {
 	struct eth_priv *np = netdev_priv(dev);
@@ -754,6 +849,8 @@ static const struct ethtool_ops ethtool_ops = {
 	 */
 	.get_ts_info		= dp_get_ts_info,
 #endif
+	.get_eth_mac_stats	= get_eth_mac_stats,
+	.get_rmon_stats		= get_rmon_stats,
 };
 
 /* open the network device interface*/

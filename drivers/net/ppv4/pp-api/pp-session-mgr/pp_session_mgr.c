@@ -1946,6 +1946,23 @@ s32 pp_accl_mode_get(u8 *mode)
 }
 EXPORT_SYMBOL(pp_accl_mode_get);
 
+s32 pp_lro_q_set(u16 queue)
+{
+	s32 ret;
+	u16 physical;
+	struct smgr_database *db = smgr_get_db();
+
+	if (ptr_is_null(db))
+		return -EPERM;
+
+	ret = smgr_get_queue_phy_id(queue, &physical);
+	if (ret)
+		return ret;
+
+	return smgr_lro_queue_set(physical);
+}
+EXPORT_SYMBOL(pp_lro_q_set);
+
 /**
  * @brief Update stats upon session create request
  */
@@ -4030,13 +4047,13 @@ static s32 __smgr_lro_si_ud_set(struct sess_info *s)
 	s->si.tmpl_ud_sz = PP_TEMPLATE_UD_SZ;
 	/* set the paylod off and the l3 offset, rest will be set by the hw/fw */
 	hdr_lvl = HDR_OUTER;
-	if (SESS_TX_IS_INNER_TCP(s))
+	if (SESS_TX_IS_INNER_L4(s))
 		hdr_lvl = HDR_INNER;
 
 	ps.tcp_seq = 0;
 	off = pktprs_ip_hdr_off(SESS_TX_PKT(s), hdr_lvl);
 	ps.l3_off = off & 0xFF;
-	off = pktprs_hdr_sz(SESS_TX_PKT(s), PKTPRS_PROTO_TCP, hdr_lvl);
+	off = pktprs_hdr_sz(SESS_TX_PKT(s), SESS_TX_OUTER_IP_NEXT(s), hdr_lvl);
 	ps.pl_off = off & 0x7F;
 	ps.ip_ver = SESS_RX_IS_OUTER_V4(s);
 	ps.fid = s->si.tdox_flow & 0x7F;
@@ -4222,6 +4239,7 @@ static s32 __smgr_aqm_lld_si_ud_set(struct sess_info *s)
 	struct pp_nf_info nf_info;
 	enum pktprs_hdr_level lvl = HDR_OUTER;
 	u8 lld_ctx;
+	u8 coupled_subif;
 	u16 coupled_queue;
 	u16 phys_q;
 	u16 sf_indx;
@@ -4234,15 +4252,16 @@ static s32 __smgr_aqm_lld_si_ud_set(struct sess_info *s)
 	/* handle ud in case packet is lld type - queues & flags */
 	if (SESS_IS_FLAG_ON(s->db_ent, SESS_FLAG_LLD)) {
 		ret = pp_misc_get_lld_info_by_q(s->si.dst_q, &lld_ctx,
-						&coupled_queue);
+						&coupled_queue, &coupled_subif);
 		if (unlikely(ret)) {
 			pr_err("Failed to get lld info\n");
 			return ret;
 		}
 
-		if (lld_ctx == PP_MAX_ASF || coupled_queue == PP_QOS_INVALID_ID) {
-			pr_err("failure on lld_ctx %d or coupled_queue %d\n",
-				lld_ctx, coupled_queue);
+		if (lld_ctx == PP_MAX_ASF || coupled_queue == PP_QOS_INVALID_ID
+			|| coupled_subif == PP_SUBIF_INVALID) {
+			pr_err("failure on lld_ctx %d or coupled_queue %d subif %d\n",
+				lld_ctx, coupled_queue, coupled_subif);
 			return -EINVAL;
 		}
 
@@ -4253,6 +4272,7 @@ static s32 __smgr_aqm_lld_si_ud_set(struct sess_info *s)
 		}
 		info.dst_cq = q_info.physical_id;
 		info.lld_ctx_id = lld_ctx;
+		info.subif_c = coupled_subif;
 
 		if (PKTPRS_IS_MULTI_LEVEL(SESS_TX_PKT(s)))
 			lvl = HDR_INNER;

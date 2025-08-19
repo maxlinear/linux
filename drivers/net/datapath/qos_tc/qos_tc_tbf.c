@@ -315,6 +315,11 @@ static struct qos_tc_port *replace_port(struct qos_tc_port *port,
 	// Needed for new allocated port
 	new_port->root_qdisc.deq_idx = -1;
 	new_port->root_qdisc.dev = dev;
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+	/* Reserve 8 bits for root scheduler */
+	new_port->q_map = QOS_TC_QMASK;
+#endif
+
 	return new_port;
 }
 
@@ -368,6 +373,10 @@ static int tbf_setup_new_port(struct net_device *dev,
 	port->root_qdisc.dev = dev;
 
 	port->tbf = *tbf;
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+	/* Reserve 8 bits for root scheduler */
+	port->q_map = QOS_TC_QMASK;
+#endif
 
 	ret = setup_port_tbf(port, handle);
 	if (ret) {

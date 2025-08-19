@@ -73,9 +73,11 @@
 #define LLD_MAX_FLOOR         (65535000)
 
 /**
- * @define LLD_SCALE_DOWN_FACTOR for QL calculation
+ * @define CRITICAL_QL_FACTOR for QL calculation
+ * (spec CM-SP-MULPI C.2.2.9.17.8)
  */
-#define LLD_SCALE_DOWN_FACTOR     (1024)
+#define CRITICAL_QL_FACTOR     (1000)
+
 
 struct pp_sf_entry {
 	struct pp_qos_aqm_lld_sf_config sf_cfg;
@@ -564,20 +566,20 @@ s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 	uc_lld_cfg.lld_cfg.maxth_ns = min(uc_lld_cfg.lld_cfg.maxth_ns, LLD_MAX_FLOOR);
 
 	/* critical_ql taken from configuration if exist, otherwise according to
-	 * maxth
+	 * maxth div 1000 (according to spec CM-SP-MULPI C.2.2.9.17.8)
 	 */
 	uc_lld_cfg.lld_cfg.critical_ql_ns = sf_cfg->cfg.lld_cfg.critical_ql_us
 		? US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_us)
-		: uc_lld_cfg.lld_cfg.maxth_ns / LLD_SCALE_DOWN_FACTOR;
+		: uc_lld_cfg.lld_cfg.maxth_ns / CRITICAL_QL_FACTOR;
 
 	/* critical_ql_score taken from configuration if exist, otherwise set to
-	 * default
+	 * default (according to spec CM-SP-MULPI C.2.2.9.17.9)
 	 */
 	critical_ql_score_ns = sf_cfg->cfg.lld_cfg.critical_ql_score_us
 		? US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_score_us)
-		: US_2_NS(LLD_DEFAULT_QLSCORE) / LLD_SCALE_DOWN_FACTOR;
+		: US_2_NS(LLD_DEFAULT_QLSCORE);
 
-	uc_lld_cfg.lld_cfg.critical_qL_product = critical_ql_score_ns *
+	uc_lld_cfg.lld_cfg.critical_qL_product = (u64)critical_ql_score_ns *
 					  uc_lld_cfg.lld_cfg.critical_ql_ns;
 
 	uc_lld_cfg.lld_cfg.vq_interval = sf_cfg->cfg.lld_cfg.vq_interval;
@@ -657,7 +659,7 @@ s32 pp_misc_check_queue_lld_sf(u16 dst_q, bool *lld_sf)
 		pr_err("Failed getting queue %u info\n", dst_q);
 		return ret;
 	}
-	ret = pp_misc_get_lld_info_by_q((u16)q_info.physical_id, &lld_ctx, &coupled_queue);
+	ret = pp_misc_get_lld_info_by_q((u16)q_info.physical_id, &lld_ctx, &coupled_queue, NULL);
 	if (unlikely(ret)) {
 		pr_err("Failed to get lld queue info\n");
 		return ret;
@@ -912,7 +914,7 @@ found:
 }
 EXPORT_SYMBOL(pp_misc_get_sf_indx_by_q);
 
-s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue)
+s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue, u8 *coupled_subif)
 {
 	struct pp_misc_db *db = get_misc_db();
 	s32 rc = 0;
@@ -952,14 +954,20 @@ s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue)
 not_found:
 	*lld_ctx = PP_MAX_ASF;
 	*coupled_queue = PP_QOS_INVALID_ID;
+	if (!ptr_is_null(coupled_subif))
+		*coupled_subif = PP_SUBIF_INVALID;
 	goto out;
 
 found:
 	*lld_ctx = db->sf_entry[sf_ind].fw_lld_ctx;
 	if (cfg->coupled_sf < PP_QOS_MAX_SERVICE_FLOWS &&
-	    db->sf_entry[cfg->coupled_sf].enabled)
-		*coupled_queue =
-			db->sf_entry[cfg->coupled_sf].sf_cfg.queue[q_ind].id;
+	    db->sf_entry[cfg->coupled_sf].enabled) {
+			*coupled_queue =
+				db->sf_entry[cfg->coupled_sf].sf_cfg.queue[q_ind].id;
+			if (!ptr_is_null(coupled_subif))
+				*coupled_subif =
+					db->sf_entry[cfg->coupled_sf].sf_cfg.queue[q_ind].subif;
+	}
 out:
 	return rc;
 }

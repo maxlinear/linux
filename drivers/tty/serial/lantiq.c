@@ -33,6 +33,7 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/pm_qos.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
 #include <linux/slab.h>
@@ -77,7 +78,7 @@
 #define ASC_IRNCR_MASK		GENMASK(2, 0)
 
 #define ASCOPT_CSIZE		0x3
-#define TXFIFO_FL		1
+#define TXFIFO_FL		8
 #define RXFIFO_FL		8
 #define ASCCLC_DISS		0x2
 #define ASCCLC_RMCMASK		0x0000FF00
@@ -160,6 +161,9 @@ struct ltq_uart_port {
 	unsigned int		err_irq;
 	unsigned int		common_irq;
 
+	int			qos_en;
+	struct pm_qos_request   qos_req;
+
 	const struct ltq_soc_data	*soc;
 };
 
@@ -198,12 +202,14 @@ lqasc_rx_chars(struct uart_port *port)
 {
 	struct tty_port *tport = &port->state->port;
 	unsigned char ch = 0;
-	u32 rsr = 0;
+	u32 cnt, rsr = 0;
 
 	spin_lock(&port->lock);
 
-	while (__raw_readl(port->membase + LTQ_ASC_FSTAT) &
-		  ASCFSTAT_RXFFLMASK) {
+	cnt = __raw_readl(port->membase + LTQ_ASC_FSTAT) &
+			  ASCFSTAT_RXFFLMASK;
+
+	while (cnt-- > 0) {
 		u8 flag = TTY_NORMAL;
 
 		ch = __raw_readb(port->membase + LTQ_ASC_RBUF);
@@ -275,32 +281,47 @@ static void
 lqasc_tx_chars(struct uart_port *port)
 {
 	struct circ_buf *xmit = &port->state->xmit;
+	struct ltq_uart_port *ltq_port = to_ltq_uart_port(port);
+	u32 cnt, to_send;
 
 	if (uart_tx_stopped(port)) {
 		lqasc_stop_tx(port);
 		return;
 	}
 
-	while (((__raw_readl(port->membase + LTQ_ASC_FSTAT) &
-		ASCFSTAT_TXFREEMASK) >> ASCFSTAT_TXFREEOFF) != 0) {
-		if (port->x_char) {
-			__raw_writeb(port->x_char, port->membase + LTQ_ASC_TBUF);
-			port->icount.tx++;
-			port->x_char = 0;
-			continue;
-		}
+	cnt = (__raw_readl(port->membase + LTQ_ASC_FSTAT) &
+		ASCFSTAT_TXFREEMASK) >> ASCFSTAT_TXFREEOFF;
 
-		if (uart_circ_empty(xmit))
-			break;
+	if (cnt && port->x_char) {
+		__raw_writeb(port->x_char, port->membase + LTQ_ASC_TBUF);
+		port->icount.tx++;
+		port->x_char = 0;
+		return;
+	}
 
+	to_send = uart_circ_chars_pending(xmit);
+	if (to_send < cnt)
+		cnt = to_send;
+
+	if (to_send > WAKEUP_CHARS && !ltq_port->qos_en) {
+		cpu_latency_qos_update_request(&ltq_port->qos_req, 30);
+		ltq_port->qos_en = 1;
+	}
+
+	while (cnt-- > 0) {
 		__raw_writeb(xmit->buf[xmit->tail],
 			     port->membase + LTQ_ASC_TBUF);
 		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
 		port->icount.tx++;
 	}
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS) {
 		uart_write_wakeup(port);
+		if (ltq_port->qos_en) {
+			cpu_latency_qos_update_request(&ltq_port->qos_req, PM_QOS_DEFAULT_VALUE);
+			ltq_port->qos_en = 0;
+		}
+	}
 
 	if (uart_circ_empty(xmit))
 		lqasc_stop_tx(port);
@@ -359,6 +380,7 @@ static irqreturn_t lqasc_irq(int irq, void *p)
 	if (stat & ASC_IRNCR_RIR)
 		lqasc_rx_int(irq, p);
 
+	stat = __raw_readl(port->membase + LTQ_ASC_IRNCR);
 	if (stat & ASC_IRNCR_TIR)
 		lqasc_tx_int(irq, p);
 
@@ -1020,6 +1042,8 @@ static int lqasc_probe(struct platform_device *pdev)
 
 	lqasc_port[line] = ltq_port;
 	platform_set_drvdata(pdev, ltq_port);
+
+	cpu_latency_qos_add_request(&ltq_port->qos_req, PM_QOS_DEFAULT_VALUE);
 
 	ret = uart_add_one_port(&lqasc_reg, port);
 

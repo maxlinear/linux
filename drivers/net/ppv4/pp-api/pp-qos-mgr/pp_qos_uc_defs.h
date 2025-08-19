@@ -21,9 +21,10 @@
 
 /* UC version */
 #define UC_VERSION_MAJOR (1)
-#define UC_VERSION_MINOR (31)
+#define UC_VERSION_MINOR (34)
 
 #define QOS_MAX_PREDECESSORS            (6)
+#define QOS_MAX_CHILDREN                (8)
 #define QOS_AQM_CONTEXT_MAX_QUEUES      (8)
 #define QOS_AQM_MAX_BINS                (16)
 #define QOS_ENHANCED_WSP_MAX_QUEUES_PRX (12)
@@ -876,6 +877,7 @@ enum uc_qos_command {
 	UC_QOS_CMD_AQM_Q_TO_CTX,
 	UC_QOS_CMD_SET_PCI_ADDR,
 	UC_QOS_CMD_SET_AQM_ENGINE,
+	UC_QOS_CMD_UPDATE_PREDS,
 };
 
 /**************************************************************************
@@ -1051,6 +1053,18 @@ struct fw_cmd_add_queue {
 	u32 max_burst; /*! Defines the max quantas that can be accumulated (num quantas = 1 << (max_burst)) */
 	u32 preds[QOS_MAX_PREDECESSORS]; /*! Predecessors */
 	struct fw_cmd_queue_params params;
+} __attribute__((packed));
+
+struct fw_cmd_update_preds {
+	struct uc_qos_cmd_base base;
+	u32 first_phy; /*! first node ID */
+	u32 rlms[QOS_MAX_CHILDREN]; /*! Physical Queues IDs, for queues */
+	u32 preds[QOS_MAX_PREDECESSORS]; /*! Predecessors */
+	u32 num_nodes; /*! Number of nodes to update */
+	u32 is_q_bmap; /*! Is queue bitmap */
+	u32 is_q_alias_bmap; /*! Is queue alias bitmap */
+	u32 valid; /*! Valid fields */
+	u32 port; /*! Port ID */
 } __attribute__((packed));
 
 struct fw_cmd_set_sched {
@@ -1385,6 +1399,7 @@ union uc_qos_cmd_s {
 	struct fw_cmd_get_hist_stats     get_hist_stats;
 	struct fw_cmd_aqm_q_to_ctx       aqm_q_to_ctx;
 	struct fw_cmd_set_pci_addr       pci_addr;
+	struct fw_cmd_update_preds       update_preds;
 } __attribute__((packed));
 
 typedef struct {

@@ -1883,26 +1883,34 @@ int udp_read_sock(struct sock *sk, read_descriptor_t *desc,
 }
 EXPORT_SYMBOL(udp_read_sock);
 
-static int udpst_skb_copy_iter(const struct sk_buff *skb, int offset, struct iov_iter *to, int len)
+static int udpst_skb_copy_iter(struct sk_buff *skb, struct iov_iter *to)
 {
-	int i, copy = skb_headlen(skb) - offset, n;
-	int copiedlen = 0;
+	unsigned int i = 0, copied = 0;
+	unsigned int copiedlen = 0;
+	unsigned char *ch;
+	u16 segmentlen;
 
 #define UDPST_HDR_DATA_LEN 32
+#define UDPST_SEGLEN_OFFSET 8
 
-	/* Copy header. */
-	copy = UDPST_HDR_DATA_LEN;
-	n = copy_to_iter(skb->data, copy, to);
-	copiedlen += n;
+	for ( ; i < skb->len; ) {
+		copied = copy_to_iter(skb->data + i, UDPST_HDR_DATA_LEN, to);
+		copiedlen += copied;
+		ch  = (unsigned char *)(skb->data + i + UDPST_SEGLEN_OFFSET);
+		segmentlen = ch[0] << 8 | ch[1];
+		i += segmentlen;
+	}
 
-	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
-		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-		struct page *page = skb_frag_page(frag);
+	if (skb_is_nonlinear(skb)) {
+		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+			const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+			struct page *page = skb_frag_page(frag);
 
-		n = copy_page_to_iter(page,
-				      frag->bv_offset, copy, to);
-		kunmap(page);
-		copiedlen += n;
+			copied = copy_page_to_iter(page,
+						   frag->bv_offset, UDPST_HDR_DATA_LEN, to);
+			kunmap(page);
+			copiedlen += copied;
+		}
 	}
 	return copiedlen;
 }
@@ -1953,7 +1961,7 @@ try_again:
 	}
 
 	if (checksum_valid || udp_skb_csum_unnecessary(skb)) {
-		err = udpst_skb_copy_iter(skb, off, &msg->msg_iter, val_data);
+		err = udpst_skb_copy_iter(skb, &msg->msg_iter);
 	} else {
 		err = skb_copy_and_csum_datagram_msg(skb, off, msg);
 		if (err == -EINVAL)
@@ -2013,11 +2021,11 @@ csum_copy_err:
 	goto try_again;
 }
 EXPORT_SYMBOL(udpst_recvmsg);
+
 /*
  * 	This should be easy, if there is something there we
  * 	return it, otherwise we block.
  */
-
 int udp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int noblock,
 		int flags, int *addr_len)
 {

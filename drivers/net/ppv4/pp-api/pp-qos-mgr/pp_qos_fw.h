@@ -67,8 +67,8 @@ void create_remove_node_cmd(struct pp_qos_dev *qdev, enum node_type type,
 			    u32 phy, u32 rlm);
 
 void update_parent(struct pp_qos_dev *qdev, u32 phy);
-void update_preds(struct pp_qos_dev *qdev, u32 phy,
-		  bool queue_port_changed);
+void update_preds_group(struct pp_qos_dev *qdev, u32 first_phy, u32 count,
+			bool queue_port_changed);
 void create_init_qos_cmd(struct pp_qos_dev *qdev);
 void enqueue_cmds(struct pp_qos_dev *qdev);
 bool is_ongoing(struct pp_qos_dev *qdev);
@@ -166,8 +166,9 @@ void fill_preds(const struct pp_nodes *nodes, u32 phy, u32 *preds, size_t size);
 #define update_parent(qdev, phy)                                     \
 	QOS_LOG_DEBUG("PARENT_CHANGE: %u\n", phy)
 
-#define update_preds(qdev, phy, queue_port_changed)                  \
-	QOS_LOG_DEBUG("UPDATE_PREDS: %u\n", phy)
+#define update_preds_group(qdev, first_phy, count, queue_port_changed) \
+	QOS_LOG_DEBUG("UPDATE_PREDS_GROUP: first_phy %u, count %u\n", \
+	first_phy, count)
 
 #define create_init_qos_cmd(qdev)                                    \
 	QOS_LOG_DEBUG("INIT QOS\n")
@@ -247,7 +248,7 @@ void fill_preds(const struct pp_nodes *nodes, u32 phy, u32 *preds, size_t size);
 #define create_set_queue_cmd(qdev, conf, phy, node, modified, is_orphaned)
 #define create_remove_node_cmd(qdev, type, phy, rlm)
 #define update_parent(qdev, phy)
-#define update_preds(qdev, phy, queue_port_changed)
+#define update_preds_group(qdev, first_phy, count, queue_port_changed)
 #define create_init_qos_cmd(qdev)
 #define enqueue_cmds(qdev)
 #define init_fwdata_internals(qdev) 0

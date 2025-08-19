@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -161,10 +161,12 @@ static void __fv_l2_set(struct pktprs_hdr *pkt, struct pp_fv *fv, u8 lvl)
 		l2->h_prot = p.vlan->h_vlan_encapsulated_proto;
 	}
 
-	p.vlan = pktprs_vlan_hdr(pkt, lvl, 1);
-	if (p.vlan) {
-		l2->int_vlan = p.vlan->h_vlan_TCI;
-		l2->h_prot = p.vlan->h_vlan_encapsulated_proto;
+	if (lvl == PKTPRS_HDR_LEVEL0) {
+		p.vlan = pktprs_vlan_hdr(pkt, lvl, 1);
+		if (p.vlan) {
+			l2->int_vlan = p.vlan->h_vlan_TCI;
+			l2->h_prot = p.vlan->h_vlan_encapsulated_proto;
+		}
 	}
 
 	p.pppoe = pktprs_pppoe_hdr(pkt, lvl);

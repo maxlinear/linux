@@ -155,6 +155,10 @@ static int qos_tc_drr_replace(struct net_device *dev,
 			return -ENOMEM;
 		}
 		newp = true;
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+		/* Reserve 8 bits for root scheduler */
+		port->q_map = QOS_TC_QMASK;
+#endif
 	}
 
 	if (!TC_H_MIN(opt->handle)) {

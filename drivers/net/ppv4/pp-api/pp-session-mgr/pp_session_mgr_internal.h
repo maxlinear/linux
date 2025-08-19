@@ -696,11 +696,13 @@ struct si_ud_frag_remark_info {
  */
 struct si_ud_aqm_lld_info {
 	/*! Service Flow ID */
-	u32 sf_id;
-	/*! Destination queue */
+	u8 sf_id;
+	/*! LL destination queue */
 	u16 dst_q;
-	/*! classic queue (for sunction)*/
+	/*! classic queue (for sanction)*/
 	u16 dst_cq;
+	/*! subif of classic SF (for sanction)*/
+	u8 subif_c;
 	/*! flags */
 	u8  flags;
 	/*! Outer L3 offset */
@@ -1209,6 +1211,13 @@ s32 smgr_lro_conf_set(struct smgr_lro_conf *conf);
  * @param lro conf
  */
 s32 smgr_lro_conf_get(struct smgr_lro_conf *conf);
+
+/**
+ * @brief Set lro tx queue
+ * @param phyq lro tx queue id
+ * @return s32 0 on success, error code otherwise
+ */
+s32 smgr_lro_queue_set(u16 phyq);
 
 /**
  * @brief Clean lro resources

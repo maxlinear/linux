@@ -42,6 +42,7 @@
 #define ARC_EM6_NFM_BASE 0xFC
 #define ARC_EM6_CR 0x184
 #define ARC_EM6_SR 0x188
+#define ADDR_MSB_CFG_ARCEM6 0x210
 #define ATOM2EM6 0x600
 #define EM62ATOM 0x604
 
@@ -136,6 +137,7 @@ struct vpn_sa_params {
 	u32 key_len;
 	u8 *authkey;
 	u32 authkeylen;
+	u32 ipad_size;
 	u8 *iv;
 	u8 *authkey3;
 	u8 *nonce;

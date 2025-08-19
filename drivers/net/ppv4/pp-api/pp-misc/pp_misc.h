@@ -247,10 +247,11 @@ void pp_misc_exit(void);
  * @param lld_ctx [OUT] FW LLD Context
  *                returns PP_MAX_ASF if no lld ctx attached
  * @param coupled_queue [OUT] Coupled context Queue
+ * @param coupled_subif [OUT] Coupled subif
  *                returns PP_QOS_INVALID_ID if no coupled context
  * @return 0 on success
  */
-s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue);
+s32 pp_misc_get_lld_info_by_q(u16 queue, u8 *lld_ctx, u16 *coupled_queue, u8 *coupled_subif);
 
 /**
  * @brief Get SF index by queue

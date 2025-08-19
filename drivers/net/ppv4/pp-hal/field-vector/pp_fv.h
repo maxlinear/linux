@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2021 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -94,10 +94,10 @@ struct pp_fv_oob {
 struct pp_fv_l2 {
 	__u8   h_dst[ETH_ALEN]; /* destination eth addr */
 	__u8   h_src[ETH_ALEN]; /* source ether addr    */
-	__be16 ext_vlan;        /* external VLAN        */
-	__be16 int_vlan;        /* internal VLAN        */
-	__be16 h_prot;          /* packet type ID field */
 	__be16 res;             /* reserved             */
+	__be16 ext_vlan;        /* external VLAN        */
+	__be16 h_prot;          /* packet type ID field */
+	__be16 int_vlan;        /* internal VLAN        */
 } __packed;
 
 /**

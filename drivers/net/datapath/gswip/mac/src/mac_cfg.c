@@ -163,7 +163,7 @@ int mac_reset(void *pdev, u32 reset)
 	u32 val[17] = {0};
 	size_t tscr_idx = 0, i;
 
-	pr_err("mac_reset(%u, %u)\n", pdata->mac_idx, reset);
+	pr_info("mac_reset(%u, %u)\n", pdata->mac_idx, reset);
 	if (reset == 1)
 		reset = 2;
 

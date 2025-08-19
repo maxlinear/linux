@@ -20,7 +20,7 @@
 #ifndef __VPN_GENCONF_H_
 #define __VPN_GENCONF_H_
 
-#define FW_COMPATIBLE_ID    0xB
+#define FW_COMPATIBLE_ID    0xC
 
 #define MAX_VERSION_DESC_LEN 8 /*!< Maximum FW version description string
 				* length
@@ -41,7 +41,7 @@
 		      * HIA_RDR_y_DESC_SIZE.rd_offset
 		      */
 #define ACD_SIZE 16 /*!< Size of ACD in number of DWORDS */
-#define CTX_SIZE 32 /*!< Size of CTX in number of DWORDS */
+#define CTX_SIZE 64 /*!< Size of CTX in number of DWORDS */
 #define CD_SIZE 12 /*!< Size of CD words in number of DWORDS */
 #define RD_SIZE 12 /*!< Size of RD words in number of DWORDS */
 #define IPSEC_TUN_MAX 16 /*!< MAX IPSEC Tunnel number supported. */
@@ -1047,15 +1047,15 @@ struct genconf {
 
 	/*!< Second partition SRAM */
 	/* ARC and Host and EIP197 access */
-	u32 genconf_2nd_part __aligned(GC_PART_SIZE);
-	struct ctx ctx[IPSEC_TUN_MAX]; /*!< IPSEC Tunnel SA info */
+
+	/*!< IPSEC Tunnel SA info */
+	struct ctx ctx[IPSEC_TUN_MAX] __aligned(GC_PART_SIZE);
 
 	/*!< Third partition SRAM */
 	/* ARC and EIP197 access only */
-	u32 genconf_3rd_part __aligned(GC_PART_SIZE);
 
 	/*!< Eip197 Result descriptor buffer per Ring*/
-	struct e97_rdw rdr[MAX_RING][RD_RING_SIZE];
+	struct e97_rdw rdr[MAX_RING][RD_RING_SIZE] __aligned(GC_PART_SIZE);
 
 	/*!< Eip197 Command descriptor buffer per Ring */
 	struct e97_cdw cdr[MAX_RING][CD_RING_SIZE];

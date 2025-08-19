@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -389,6 +389,55 @@ static s32 __proto_vlan_init(struct protocol_info *info)
 }
 
 /**
+ * @brief Init internal vlan extended protocol profile info,
+ *        2nd vlan and above
+ */
+static s32 __proto_vlan_int_ext_init(struct protocol_info *info)
+{
+	struct prsr_up_layer_proto_params *params;
+	struct skip_info *skip;
+	struct np_info *np;
+	s32 n;
+
+	if (unlikely(ptr_is_null(info)))
+		return -EINVAL;
+
+	params      = &info->up;
+	info->id       = PRSR_PROTO_VLAN_EXT;
+	info->prof_id  = PRSR_PROFILE_COMMON;
+	info->name     = params->name; /* a reference to the name */
+	n = strscpy(params->name, "VLAN INT Ext", sizeof(params->name));
+
+	/* parsing info */
+	params->proto_id   = U16_MAX;
+	params->hw_idx     = TABLE_ENTRY_INVALID_IDX;
+	params->hdr_len    = sizeof(struct vlan_hdr);;
+	params->ignore     = true;
+	params->entry_type = ETYPE_NONE;
+	/* next protocol info */
+	np = &params->np;
+	np->off   = offsetof(struct vlan_hdr, h_vlan_encapsulated_proto) *
+		    BITS_PER_BYTE;
+	np->len   = sizeof_field(struct vlan_hdr, h_vlan_encapsulated_proto) *
+		    BITS_PER_BYTE;
+	np->logic = NP_LOGIC_TUNN;
+	np->dflt  = PRSR_PROTO_PAYLOAD;
+	/* header skip info */
+	skip = &params->skip;
+	skip->hdr_len_im  = sizeof(struct vlan_hdr);;
+	skip->logic       = SKIP_LOGIC_IM;
+	/* preceding protocols */
+	params->n_pre = 1;
+	/* VLAN INT -> VLAN Ext */
+	params->pre[0].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[0].val      = ETH_P_8021Q;
+	__proto_pr_debug(info);
+	pr_debug("done\n");
+
+	return 0;
+}
+
+/**
  * @brief Init internal vlan protocol profile info, vlan header which
  *        come after a tunnel
  */
@@ -420,7 +469,7 @@ static s32 __proto_vlan_int_init(struct protocol_info *info)
 		    BITS_PER_BYTE;
 	np->len   = sizeof_field(struct vlan_hdr, h_vlan_encapsulated_proto) *
 		    BITS_PER_BYTE;
-	np->logic = NP_LOGIC_TUNN;
+	np->logic = NP_LOGIC_IP_SELECT;
 	np->dflt  = PRSR_PROTO_PAYLOAD;
 	/* header skip info */
 	skip = &params->skip;
@@ -432,27 +481,15 @@ static s32 __proto_vlan_int_init(struct protocol_info *info)
 	params->pre[0].np_logic = NP_LOGIC_TUNN;
 	params->pre[0].val      = ETH_P_8021Q;
 	/* extract info */
-	/* mac addresses */
+	/* we configure to extract the entire L2 header
+	 * and mask the MAC h_proto (0x8100) field.
+	 * using mask '0b000011000000000000'
+	 */
 	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = offsetof(struct ethhdr, h_proto);
+	fld->len    = sizeof(struct ethhdr) + sizeof(struct vlan_hdr);
 	fld->off    = offsetof(struct ethhdr, h_dest);
 	fld->fv_idx = offsetof(struct pp_fv, second.l2.h_dst);
-	fld->mask   = 0;
-	/* VLAN ID */
-	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = sizeof_field(struct vlan_hdr, h_vlan_TCI);
-	fld->off    = sizeof(struct ethhdr) +
-		      offsetof(struct vlan_hdr, h_vlan_TCI);
-	fld->fv_idx = offsetof(struct pp_fv, second.l2.ext_vlan);
-	fld->mask   = 0;
-	/* ethertype */
-	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = sizeof_field(struct vlan_hdr,
-				   h_vlan_encapsulated_proto);
-	fld->off    = sizeof(struct ethhdr) +
-		      offsetof(struct vlan_hdr, h_vlan_encapsulated_proto);
-	fld->fv_idx = offsetof(struct pp_fv, second.l2.h_prot);
-	fld->mask   = 0;
+	fld->mask   = 0x3000;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
 
@@ -506,26 +543,12 @@ static s32 __proto_q_in_q_init(struct protocol_info *info)
 	params->pre[0].np_logic = NP_LOGIC_TUNN;
 	params->pre[0].val      = ETH_P_8021AD;
 	/* extract info */
-	/* mac addresses */
+	/* mac addresses + VLAD ID + ethertype */
 	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = offsetof(struct ethhdr, h_proto);
+	fld->len    = sizeof(struct ethhdr) + sizeof(struct vlan_hdr);
 	fld->off    = offsetof(struct ethhdr, h_dest);
 	fld->fv_idx = offsetof(struct pp_fv, second.l2.h_dst);
-	fld->mask   = 0;
-	/* External VLAN ID */
-	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = sizeof_field(struct vlan_hdr, h_vlan_TCI);
-	fld->off    = (sizeof(struct ethhdr) +
-		       offsetof(struct vlan_hdr, h_vlan_TCI));
-	fld->fv_idx = offsetof(struct pp_fv, second.l2.ext_vlan);
-	fld->mask   = 0;
-	/* Internal VLAN ID + ethertype */
-	fld = &params->ext.fld[params->ext.n_fld++];
-	fld->len    = sizeof(struct vlan_hdr);
-	fld->off    = sizeof(struct ethhdr) + sizeof(struct vlan_hdr) +
-		      offsetof(struct vlan_hdr, h_vlan_TCI);
-	fld->fv_idx = offsetof(struct pp_fv, second.l2.int_vlan);
-	fld->mask   = 0;
+	fld->mask   = 0x3000;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
 
@@ -611,10 +634,13 @@ static s32 __proto_pppoe_int_init(struct protocol_info *info)
 	skip->hdr_len_im = PPPOE_SES_HLEN;
 	skip->logic      = SKIP_LOGIC_IM;
 	/* preceding protocols */
-	params->n_pre = 1;
+	params->n_pre = 2;
 	/* Tunnel -> PPPoE */
 	params->pre[0].np_logic = NP_LOGIC_TUNN;
 	params->pre[0].val      = ETH_P_PPP_SES;
+	/* VLAN internal -> PPPoE */
+	params->pre[1].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[1].val      = ETH_P_PPP_SES;
 	/* extract info */
 	/* PPPoE code and session id */
 	fld = &params->ext.fld[params->ext.n_fld++];
@@ -998,7 +1024,7 @@ static s32 __proto_ipv4_int_init(struct protocol_info *info)
 	np = &params->np;
 	np->logic = NP_LOGIC_IPV4_2_L2TP;
 	/* preceding protocols */
-	params->n_pre = 4;
+	params->n_pre = 5;
 	/* (DSlite) IPv4 -> IPv4 */
 	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_IPIP;
@@ -1008,9 +1034,12 @@ static s32 __proto_ipv4_int_init(struct protocol_info *info)
 	/* Tunnel -> IPv4 */
 	params->pre[2].np_logic = NP_LOGIC_TUNN;
 	params->pre[2].val      = ETH_P_IP;
+	/* VLAN internal -> IPv4 */
+	params->pre[3].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[3].val      = ETH_P_IP;
 	/* PPPoE internal -> IPv4 */
-	params->pre[3].np_logic = NP_LOGIC_TUNN;
-	params->pre[3].val      = PPP_IP;
+	params->pre[4].np_logic = NP_LOGIC_TUNN;
+	params->pre[4].val      = PPP_IP;
 	/* extract info */
 	/* set fv index value to the first IPv4 */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l3.v4);
@@ -1129,7 +1158,7 @@ static s32 __proto_ipv6_int_init(struct protocol_info *info)
 	/* next protocol info */
 	params->np.logic = NP_LOGIC_IPV6_2;
 	/* preceding protocols */
-	params->n_pre = 4;
+	params->n_pre = 5;
 	/* (DSlite) IPv4 -> IPv6 */
 	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_IPV6;
@@ -1139,9 +1168,12 @@ static s32 __proto_ipv6_int_init(struct protocol_info *info)
 	/* Tunnel -> IPv6 */
 	params->pre[2].np_logic = NP_LOGIC_TUNN;
 	params->pre[2].val      = ETH_P_IPV6;
+	/* VLAN internal -> IPv6 */
+	params->pre[3].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[3].val      = ETH_P_IPV6;
 	/* PPPoE internal -> IPv6 */
-	params->pre[3].np_logic = NP_LOGIC_TUNN;
-	params->pre[3].val      = PPP_IPV6;
+	params->pre[4].np_logic = NP_LOGIC_TUNN;
+	params->pre[4].val      = PPP_IPV6;
 	/* extract info */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l3.v6);
 	params->ext.fld[1].fv_idx = offsetof(struct pp_fv, second.l3.v6.saddr);
@@ -2473,6 +2505,7 @@ s32 __prsr_protocols_init(struct protocols *protos)
 	INIT_PROTO(__proto_ipv6_frag_int_init,  protos, ret, i);
 	INIT_PROTO(__proto_mpls_init,           protos, ret, i);
 	INIT_PROTO(__proto_mpls_select_init,    protos, ret, i);
+	INIT_PROTO(__proto_vlan_int_ext_init,   protos, ret, i);
 
 	protos->n_proto = i;
 

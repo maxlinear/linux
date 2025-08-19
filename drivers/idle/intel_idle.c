@@ -44,6 +44,8 @@
 #include <linux/acpi.h>
 #include <linux/kernel.h>
 #include <linux/cpuidle.h>
+#include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/tick.h>
 #include <trace/events/power.h>
 #include <linux/sched.h>
@@ -113,6 +115,152 @@ static unsigned int mwait_substates __initdata;
 #define flg2MWAIT(flags) (((flags) >> 24) & 0xFF)
 #define MWAIT2flg(eax) ((eax & 0xFF) << 24)
 
+#ifdef CONFIG_DEBUG_FS
+
+#define DURATION_CNT		16
+#define TIMER_INTERVAL_MS	3
+static u64 duration_ns[NR_CPUS][DURATION_CNT];
+static ktime_t start_time[NR_CPUS];
+static ktime_t end_time[NR_CPUS];
+static DEFINE_PER_CPU(unsigned int, dur_idx);
+static DEFINE_PER_CPU(unsigned int, measure_enable);
+
+static void cpu_wakeup_func(struct work_struct *work);
+static DECLARE_WORK(idle_measure_work, cpu_wakeup_func);
+
+/**
+ * Measure function to measure the exit latency in the system.
+ **/
+static void latency_measure_fn(void *dummy)
+{
+	int cpu = smp_processor_id();
+	int *idx = &per_cpu(dur_idx, cpu);
+	u64 dur_time;
+
+	if (end_time[cpu] == 0)
+		return;
+
+	dur_time = ktime_to_ns(ktime_sub(end_time[cpu], start_time[cpu]));
+	if (dur_time > duration_ns[cpu][*idx])
+		WRITE_ONCE(duration_ns[cpu][*idx], dur_time);
+	*idx = (*idx + 1) % DURATION_CNT;
+}
+
+static void cpu_wakeup_func(struct work_struct *work)
+{
+	int cpu;
+
+	for_each_online_cpu(cpu) {
+		if (idle_cpu(cpu)) {
+			if (cpu == smp_processor_id())
+				continue;
+
+			start_time[cpu] = ktime_get();
+			end_time[cpu] = 0;
+			per_cpu(measure_enable, cpu) = 1;
+			smp_call_function_single(cpu, latency_measure_fn, NULL, true);
+		}
+	}
+
+	msleep(TIMER_INTERVAL_MS);
+	queue_work(system_unbound_wq, &idle_measure_work);
+}
+
+static void measure_timer_init(void)
+{
+	queue_work(system_unbound_wq, &idle_measure_work);
+}
+
+static void measure_timer_exit(void)
+{
+	cancel_work_sync(&idle_measure_work);
+}
+
+static ssize_t idle_enable_write(struct file *file, const char __user *ubuf, size_t
+		count, loff_t *ppos)
+{
+	char buf[32];
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
+		return -EFAULT;
+
+	if (!strncmp(buf, "on", 2)) {
+		measure_timer_init();
+	} else if (!strncmp(buf, "off", 3)) {
+		measure_timer_exit();
+	}
+
+	return count;
+}
+
+static int idle_enable_show(struct seq_file *s, void *unused)
+{
+	seq_printf(s, "echo \"on/off\" > idle_measure_enable\n");
+
+	return 0;
+}
+
+static int idle_enable_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, idle_enable_show, inode->i_private);
+}
+
+static const struct file_operations idle_enable_fops = {
+	.owner		= THIS_MODULE,
+	.open		= idle_enable_open,
+	.write		= idle_enable_write,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int idle_latency_show(struct seq_file *s, void *v)
+{
+	int cpu;
+	int i;
+
+	for_each_online_cpu(cpu) {
+		seq_printf(s, "CPU%i Latency values in nanoseconds\n", cpu);
+		for (i = 0; i < DURATION_CNT; i += 8) {
+			seq_printf(s, "%8lld, %8lld, %8lld, %8lld, %8lld, %8lld, %8lld, %8lld\n",
+				   duration_ns[cpu][i], duration_ns[cpu][i+1], duration_ns[cpu][i+2], duration_ns[cpu][i+3],
+				   duration_ns[cpu][i+4], duration_ns[cpu][i+5], duration_ns[cpu][i+6], duration_ns[cpu][i+7]);
+		}
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(idle_latency);
+
+static int idle_debugfs_init(struct cpuidle_driver *drv)
+{
+	struct dentry *idle_dir, *file;
+
+	idle_dir = debugfs_create_dir(drv->name, NULL);
+	if (!idle_dir)
+		return -ENOMEM;
+
+	file = debugfs_create_file("idle_measure_enable", 0644, idle_dir, drv, &idle_enable_fops);
+	if (!file)
+		goto err;
+
+	file = debugfs_create_file("idle_latency", 0444, idle_dir, drv, &idle_latency_fops);
+	if (!file)
+		goto err;
+
+	return 0;
+
+err:
+	debugfs_remove_recursive(idle_dir);
+	return -ENODEV;
+}
+#else
+static int idle_debugfs_init(struct cpuidle_driver *drv)
+{
+	return 0;
+}
+#endif
+
 /**
  * intel_idle - Ask the processor to enter the given idle state.
  * @dev: cpuidle device of the target CPU.
@@ -145,6 +293,11 @@ static __cpuidle int intel_idle(struct cpuidle_device *dev,
 
 	if (!strcmp(state->name, "C7"))
 		epu_notifier_raw_chain(CPU_EVENT_C7_REL_CORE(cpu), NULL);
+
+	if (per_cpu(measure_enable, cpu)) {
+		end_time[cpu] = ktime_get();
+		per_cpu(measure_enable, cpu) = 0;
+	}
 
 	return index;
 }
@@ -335,7 +488,7 @@ static struct cpuidle_state lgm_cstates[] = {
 		.name = "C6NS",
 		.desc = "MWAIT 0x58",
 		.flags = MWAIT2flg(0x58) | CPUIDLE_FLAG_TLB_FLUSHED,
-		.exit_latency = 40,
+		.exit_latency = 50,
 		.target_residency = 200,
 		.enter = &intel_idle,
 		.enter_s2idle = intel_idle_s2idle, },
@@ -1867,6 +2020,7 @@ static int __init intel_idle_init(void)
 	if (retval < 0)
 		goto hp_setup_fail;
 
+	idle_debugfs_init(&intel_idle_driver);
 	pr_debug("Local APIC timer is reliable in %s\n",
 		 boot_cpu_has(X86_FEATURE_ARAT) ? "all C-states" : "C1");
 

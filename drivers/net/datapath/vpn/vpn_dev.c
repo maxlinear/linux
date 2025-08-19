@@ -139,6 +139,12 @@ static int vpn_load_firmware(struct vpn_data *priv)
 	unsigned int stat;
 	int ret;
 
+	ret = dma_set_mask_and_coherent(priv->dev, DMA_BIT_MASK(36));
+	if (ret) {
+		dev_err(priv->dev, "Set dma bitmask to 36 failed!\n");
+		return ret;
+	}
+
 	data.dev = priv->dev;
 	data.sai = priv->sai;
 	data.opt = MXL_FW_OPT_SKIP_FWRULE;
@@ -197,6 +203,8 @@ static int vpn_load_firmware(struct vpn_data *priv)
 	priv->genconf->load_stat = VPN_FW_NOT_LOADED;
 
 	/* enable/reset ARC */
+	regmap_update_bits(priv->syscfg, ADDR_MSB_CFG_ARCEM6, ~0,
+			   base_phys >> 32);
 	regmap_update_bits(priv->syscfg, ARC_EM6_FM_BASE, ~0, base_phys);
 	regmap_update_bits(priv->syscfg, ARC_EM6_CR, 1, 1);
 	usleep_range(500, 1000);
@@ -594,7 +602,10 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 		params.authkeylen = (x->aalg->alg_key_len + 7)
 				 / 8; /* bit to bytes */
 		params.icv_size = (x->aalg->alg_trunc_len + 7) / 8;
+	} else {
+		params.auth_algo = "digest_null";
 	}
+
 	if (x->ealg) {
 		dev_dbg(priv->dev, "%s enc alg %s\n", __func__,
 			x->ealg->alg_name);
@@ -603,6 +614,8 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 		params.key_len = (x->ealg->alg_key_len + 7)
 				 / 8; /* bit to bytes */
 		params.iv = NULL;
+	} else {
+		params.enc_algo = "ecb(cipher_null)";
 	}
 
 	if (x->props.family == AF_INET6)
@@ -1701,7 +1714,7 @@ static int vpn_enable_txin_update(struct vpn_data *priv,
 	struct umt_update_info *info;
 	u32 interval;
 	int i, j;
-	u32 addr;
+	dma_addr_t addr;
 	u8 port;
 
 	/* only apply in incremental mode */
@@ -1773,6 +1786,9 @@ search_slot:
 		dev_err(priv->dev, "Timer %d has no free slot\n", i);
 		return -EINVAL;
 	}
+
+	regmap_update_bits(priv->syscfg, ADDR_MSB_CFG_ARCEM6, ~0,
+			   addr >> 32);
 
 	priv->genconf->umt_txin[i].period = interval;
 	info = &priv->genconf->umt_txin[i].info[j];

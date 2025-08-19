@@ -174,6 +174,20 @@ s32 smgr_lro_nf_set(u16 gpid, u16 subif, u16 phyq)
 	return smgr_lro_conf_set(&conf);
 }
 
+s32 smgr_lro_queue_set(u16 phyq)
+{
+	s32 ret = 0;
+	struct smgr_lro_conf conf;
+
+	ret = smgr_lro_conf_get(&conf);
+	if (ret)
+		return ret;
+
+	conf.tx_q = phyq;
+
+	return smgr_lro_conf_set(&conf);
+}
+
 s32 smgr_lro_init(struct device *dev, struct smgr_database *smgr_db)
 {
 	struct smgr_lro_db *db;

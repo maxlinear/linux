@@ -25,10 +25,10 @@
  * the version here
  */
 #define EGRESS_VER_MAJOR  1
-#define EGRESS_VER_MINOR  48
+#define EGRESS_VER_MINOR  51
 
 #define INGRESS_VER_MAJOR 1
-#define INGRESS_VER_MINOR 26
+#define INGRESS_VER_MINOR 28
 
 /* some attributes shortcuts */
 #ifndef __packed
@@ -591,7 +591,8 @@ struct tdox_record_create_cmd {
 	u16 nf_q;
 	u16 ts_flag;
 	u8 is_docsis;
-	u8 lro_flag;
+	u8 lro_flag  : 4,
+	   lro_proto : 4;
 };
 
 /**
@@ -881,13 +882,13 @@ enum ing_wl_rule_type {
 #define WL_RULE_IP_AND_MAC_MAX_RULES			(8)
 #define WL_RULE_MAC_MAX_RULES				(8)
 #define WL_RULE_ETH_MAX_RULES				(8)
-#define WL_RULE_IP_PROTO_PORTS_MAX_RULES		(8)
+#define WL_RULE_IP_PROTO_PORTS_MAX_RULES		(10)
 #define WL_RULE_ICMP_MAX_RULES				(8)
 #define WL_RULE_IPV4_SRC_OR_DST_AND_L4_PORTS_MAX_RULES	(4)
 #define WL_RULE_IPV4_SRC_AND_DST_AND_L4_PORTS_MAX_RULES	(2)
 #define WL_RULE_IPV6_SRC_OR_DST_AND_L4_PORTS_MAX_RULES	(4)
 /* KEEP this as the maximum from all the above max rules type */
-#define ING_WL_RULE_MAX_RULES (8)
+#define ING_WL_RULE_MAX_RULES (10)
 
 /* equal to PP_MAX_PORT define in pp_api.h file */
 #define UC_WHITELIST_MAX_PORTS (256)

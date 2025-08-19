@@ -14,6 +14,11 @@
 #include <linux/types.h>
 
 #include "qos_tc_flower.h"
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+#include <net/qos_notify.h>
+#define QOS_TC_QMASK 0xff /* To reserve bits per scheduler */
+#define QOS_TC_MAX_OFFSET (SZ_64 - SZ_8) /* Max offset for 64bit qmap */
+#endif
 
 #define QOS_TC_MAX_Q 8
 #define QOS_TC_DOT1P_SZ 8

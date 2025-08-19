@@ -751,10 +751,6 @@ resume:
 			return err;
 		}
 
-		sp = skb_sec_path(skb);
-		if (sp)
-			sp->olen = 0;
-
 		return err;
 	}
 

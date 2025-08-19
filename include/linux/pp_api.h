@@ -50,6 +50,12 @@
  */
 #define PP_MAX_ASF  (8)
 
+
+/**
+ * @define Subif invalid value
+ */
+#define PP_SUBIF_INVALID  (U8_MAX)
+
 /**
  * @define number of maximum session group counters assigned to
  *  a session
@@ -1732,5 +1738,12 @@ s32 pp_accl_mode_set(u8 mode);
  * @return s32 0 on success, error code otherwise
 */
 s32 pp_accl_mode_get(u8 *mode);
+
+/**
+ * @brief Set pp LRO queue
+ * @param queue logical queue id
+ * @return s32 0 on success, error code otherwise
+*/
+s32 pp_lro_q_set(u16 queue);
 
 #endif /* __PP_API_H__ */

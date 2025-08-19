@@ -977,39 +977,99 @@ struct gsw_lpid_epg_map_s {
 	u8 txdma_chan;
 };
 
-#define GSW_CTP_CNT_VAL_SZ 27
+#define GSW_CTP_CNT_VAL_SZ	51
+#define GSW_CTP_PKT_TYPE_SZ	6
 typedef struct {
 	union {
 		struct {
-			u32 rx_u_g_pkt;	/* unicast green,	nRxGoodPkts */
-			u32 rx_u_y_pkt;	/* unicast yellow,	nRxGoodPkts */
-			u32 rx_m_g_pkt;	/* multicast green,	nRxGoodPkts */
-			u32 rx_m_y_pkt;	/* multicast yellow,	nRxGoodPkts */
-			u32 rx_b_g_pkt;	/* broadcast green,	nRxGoodPkts */
-			u32 rx_b_y_pkt;	/* broadcast yellow,	nRxGoodPkts */
+			union {
+				struct {
+					u32 rx_u_g_pkt;	/* unicast green,	nRxGoodPkts */
+					u32 rx_u_y_pkt;	/* unicast yellow,	nRxGoodPkts */
+					u32 rx_m_g_pkt;	/* multicast green,	nRxGoodPkts */
+					u32 rx_m_y_pkt;	/* multicast yellow,	nRxGoodPkts */
+					u32 rx_b_g_pkt;	/* broadcast green,	nRxGoodPkts */
+					u32 rx_b_y_pkt;	/* broadcast yellow,	nRxGoodPkts */
+				};
+				u32 rx_pkts[GSW_CTP_PKT_TYPE_SZ];
+			};
 			u32 rx_dropped_pkt;	/* nRxDropedPkts */
 			u32 rx_vlan_dropped_pkt;/* nRxDropedPkts */
 			u32 rx_mtu_dropped_pkt;	/* nRxDropedPkts */
 			u32 rx_filtered_pkt;	/* nRxFilteredPkts */
-			u32 rx_fcs_bad_pkt;	/* FCS_err,	nRxBadPkts */
-			u32 rx_us_bad_pkt;	/* Undersize,	nRxBadPkts */
-			u32 rx_os_bad_pkt;	/* Oversize,	nRxBadPkts */
-
-			u32 tx_u_g_pkt;	/* unicast green,	nTxPkts */
-			u32 tx_u_y_pkt;	/* unicast yellow,	nTxPkts */
-			u32 tx_m_g_pkt;	/* multicast green,	nTxPkts */
-			u32 tx_m_y_pkt;	/* multicast yellow,	nTxPkts */
-			u32 tx_b_g_pkt;	/* broadcast green,	nTxPkts */
-			u32 tx_b_y_pkt;	/* broadcast yellow,	nTxPkts */
+			union {
+				struct {
+					u32 rx_fcs_bad_pkt;	/* FCS_err,	nRxBadPkts */
+					u32 rx_us_bad_pkt;	/* Undersize,	nRxBadPkts */
+					u32 rx_os_bad_pkt;	/* Oversize,	nRxBadPkts */
+				};
+				u32 rx_bad_pkts[GSW_RMON_RX_BAD_PKT];
+			};
+			union {
+				struct {
+					u32 tx_u_g_pkt;	/* unicast green,	nTxPkts */
+					u32 tx_u_y_pkt;	/* unicast yellow,	nTxPkts */
+					u32 tx_m_g_pkt;	/* multicast green,	nTxPkts */
+					u32 tx_m_y_pkt;	/* multicast yellow,	nTxPkts */
+					u32 tx_b_g_pkt;	/* broadcast green,	nTxPkts */
+					u32 tx_b_y_pkt;	/* broadcast yellow,	nTxPkts */
+				};
+				u32 tx_pkts[GSW_CTP_PKT_TYPE_SZ];
+			};
 			u32 tx_dropped_pkt;	/* nTxDroppedPkts */
-			u32 tx_u_g_byp_pkt;	/* unicast green,	nTxPkts */
-			u32 tx_u_y_byp_pkt;	/* unicast yellow,	nTxPkts */
-			u32 tx_m_g_byp_pkt;	/* multicast green,	nTxPkts */
-			u32 tx_m_y_byp_pkt;	/* multicast yellow,	nTxPkts */
-			u32 tx_b_g_byp_pkt;	/* broadcast green,	nTxPkts */
-			u32 tx_b_y_byp_pkt;	/* broadcast yellow,	nTxPkts */
+			union {
+				struct {
+					u32 tx_u_g_byp_pkt;	/* unicast green,	nTxPkts */
+					u32 tx_u_y_byp_pkt;	/* unicast yellow,	nTxPkts */
+					u32 tx_m_g_byp_pkt;	/* multicast green,	nTxPkts */
+					u32 tx_m_y_byp_pkt;	/* multicast yellow,	nTxPkts */
+					u32 tx_b_g_byp_pkt;	/* broadcast green,	nTxPkts */
+					u32 tx_b_y_byp_pkt;	/* broadcast yellow,	nTxPkts */
+				};
+				u32 tx_byp_pkts[GSW_CTP_PKT_TYPE_SZ];
+			};
 			u32 tx_dropped_byp_pkt;	/* nTxDroppedPkts */
 						/* no nTxError */
+
+			union {
+				struct {
+					u32 rx_good_undersz_pkt;
+					u32 rx_sz64_pkt;
+					u32 rx_sz65to127_pkt;
+					u32 rx_sz128to255_pkt;
+					u32 rx_sz256to511_pkt;
+					u32 rx_sz512to1023_pkt;
+					u32 rx_sz1024to1518_pkt;
+					u32 rx_good_oversz_pkt;
+				};
+				u32 rxHist[GSW_RMON_HIST_NUM];
+			};
+			union {
+				struct {
+					u32 tx_good_undersz_pkt;
+					u32 tx_sz64_pkt;
+					u32 tx_sz65to127_pkt;
+					u32 tx_sz128to255_pkt;
+					u32 tx_sz256to511_pkt;
+					u32 tx_sz512to1023_pkt;
+					u32 tx_sz1024to1518_pkt;
+					u32 tx_good_oversz_pkt;
+				};
+				u32 txHist[GSW_RMON_HIST_NUM];
+			};
+			union {
+				struct {
+					u32 tx_byp_good_undersz_pkt;
+					u32 tx_byp_sz64_pkt;
+					u32 tx_byp_sz65to127_pkt;
+					u32 tx_byp_sz128to255_pkt;
+					u32 tx_byp_sz256to511_pkt;
+					u32 tx_byp_sz512to1023_pkt;
+					u32 tx_byp_sz1024to1518_pkt;
+					u32 tx_byp_good_oversz_pkt;
+				};
+				u32 txBypHist[GSW_RMON_HIST_NUM];
+			};
 		};
 		u32 val[GSW_CTP_CNT_VAL_SZ];
 	};
@@ -1022,6 +1082,46 @@ typedef struct {
 	u64 nRxErrors;
 	u64 nTxPkts;
 	u64 nTxDrops;
+	union {
+		struct {
+			u64 nRxGoodUnderSz;
+			u64 nRxSz64;
+			u64 nRxSz65to127;
+			u64 nRxSz128to255;
+			u64 nRxSz256to511;
+			u64 nRxSz512to1023;
+			u64 nRxSz1024to1518;
+			u64 nRxGoodOverSz;
+		};
+		u64 rxHist[GSW_RMON_HIST_NUM];
+	};
+	union {
+		struct {
+			u64 nTxGoodUnderSz;
+			u64 nTxSz64;
+			u64 nTxSz65to127;
+			u64 nTxSz128to255;
+			u64 nTxSz256to511;
+			u64 nTxSz512to1023;
+			u64 nTxSz1024to1518;
+			u64 nTxGoodOverSz;
+		};
+		u64 txHist[GSW_RMON_HIST_NUM];
+	};
+	union {
+		struct {
+			u64 nRxFCSErr;
+			u64 nRxBadUnderSz;
+			u64 nRxBadOverSz;
+		};
+		u64 nRxBad[GSW_RMON_RX_BAD_PKT];
+	};
+	u64 nRxUnicastPkts;
+	u64 nRxMulticastPkts;
+	u64 nRxBroadcastPkts;
+	u64 nTxUnicastPkts;
+	u64 nTxMulticastPkts;
+	u64 nTxBroadcastPkts;
 } gsw_ctp_cnt_u64_t;
 
 typedef struct {

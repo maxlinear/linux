@@ -621,6 +621,9 @@ struct pp_qos_sf_queue_config {
 
 	/*! queue type */
 	enum pp_qos_sf_queue_type type;
+
+	/*! subif */
+	u8                        subif;
 };
 
 /**

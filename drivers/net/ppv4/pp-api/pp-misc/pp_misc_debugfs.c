@@ -1692,22 +1692,32 @@ static void sf_show_help(void)
 
 static void sf_conf_dump(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 {
+	struct pp_qos_queue_info q_info;
+	struct pp_qos_dev *qdev;
 	u8 queue_idx;
 	u8 fw_ctx;
+
+	/* get qos device */
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return;
 
 	pr_info("SF %u configuration [%s]:\n", sf_id, sf_cfg->llsf ? "LLD" : "AQM");
 	pr_info("==========================\n");
 
 	pr_info("num queues %u\n", sf_cfg->num_queues);
-	for (queue_idx = 0; queue_idx < sf_cfg->num_queues; queue_idx++)
-		pr_info("\tQ[%u] %u (%s)\n",
-		queue_idx, sf_cfg->queue[queue_idx].id,
-		pp_qos_sf_q_type_str[sf_cfg->queue[queue_idx].type]);
-	pr_info("buffer_size %u\n", sf_cfg->buffer_size);
+	for (queue_idx = 0; queue_idx < sf_cfg->num_queues; queue_idx++) {
+		pp_qos_queue_info_get(qdev, sf_cfg->queue[queue_idx].id, &q_info);
+		pr_info("\tQ[%u] %u [rlm-%u] [subif-%u] (%s)\n",
+			queue_idx, sf_cfg->queue[queue_idx].id, q_info.physical_id,
+			sf_cfg->queue[queue_idx].subif,
+			pp_qos_sf_q_type_str[sf_cfg->queue[queue_idx].type]);
+	}
+	pr_info("buffer_size %u [B]\n", sf_cfg->buffer_size);
 	pr_info("coupled SF %u\n", sf_cfg->coupled_sf);
-	pr_info("amsr %u\n", sf_cfg->amsr);
-	pr_info("msr_l %u\n", sf_cfg->msr_l);
-	pr_info("couling factor %u\n", sf_cfg->coupling_factor);
+	pr_info("amsr %u [b]\n", sf_cfg->amsr);
+	pr_info("msr_l %u [b]\n", sf_cfg->msr_l);
+	pr_info("coupling factor %u\n", sf_cfg->coupling_factor);
 	pr_info("weight %u\n", sf_cfg->weight);
 	pr_info("num bins %u\n", sf_cfg->num_hist_bins);
 	pr_info("aqm_mode %u, %s\n", sf_cfg->aqm_mode,
@@ -1720,19 +1730,19 @@ static void sf_conf_dump(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 		pr_info("fw_lld_ctx %u\n", fw_ctx);
 		pr_info("iaqm_en %u\n", sf_cfg->cfg.lld_cfg.iaqm_en);
 		pr_info("qp_en %u\n", sf_cfg->cfg.lld_cfg.qp_en);
-		pr_info("maxth %u\n", sf_cfg->cfg.lld_cfg.maxth_us);
+		pr_info("maxth %u [us]\n", sf_cfg->cfg.lld_cfg.maxth_us);
 		pr_info("LG Aging %u\n", sf_cfg->cfg.lld_cfg.lg_aging);
 		pr_info("LG Range %u\n", sf_cfg->cfg.lld_cfg.lg_range);
-		pr_info("Critical QL %u\n", sf_cfg->cfg.lld_cfg.critical_ql_us);
+		pr_info("Critical QL %u [us]\n", sf_cfg->cfg.lld_cfg.critical_ql_us);
 		pr_info("Critical QL Score %u\n",
 			sf_cfg->cfg.lld_cfg.critical_ql_score_us);
 		pr_info("VQ interval %u\n", sf_cfg->cfg.lld_cfg.vq_interval);
 		pr_info("VQ Alpha %u\n", sf_cfg->cfg.lld_cfg.vq_ewma_alpha);
 	} else {
-		pr_info("latency_target_ms %u\n",
+		pr_info("latency_target %u [ms]\n",
 			sf_cfg->cfg.aqm_cfg.latency_target_ms);
 		pr_info("peak_rate %u\n", sf_cfg->cfg.aqm_cfg.peak_rate);
-		pr_info("msr %u [%u bits]\n", sf_cfg->cfg.aqm_cfg.msr,
+		pr_info("msr %u [B] / %u [b]\n", sf_cfg->cfg.aqm_cfg.msr,
 			sf_cfg->cfg.aqm_cfg.msr * 8);
 		pr_info("\n");
 	}

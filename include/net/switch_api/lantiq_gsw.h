@@ -3003,6 +3003,10 @@ typedef enum {
 	GSW_RMON_PMACIG = 0x1C,
 } GSW_RMON_Port_t;
 
+/** \brief This is the number of frame size group in the rx/tx rmon histogram. */
+#define GSW_RMON_HIST_NUM 8
+/** \brief This is the number of rx bad packets type. */
+#define GSW_RMON_RX_BAD_PKT 3
 /**
  \brief RMON Counters for individual CTP.
  This structure contains the RMON counters of an CTP.
@@ -3028,6 +3032,65 @@ typedef struct {
 	u64	nRxDrops;
 	/** Rx Error Packet. */
 	u64	nRxErrors;
+	union {
+		struct {
+			/* Rx Packet Size < 64 */
+			u64 nRxGoodUnderSz;
+			/* Rx Packet Size 64 */
+			u64 nRxSz64;
+			/* Rx Packet Size 65-127 */
+			u64 nRxSz65to127;
+			/* Rx Packet Size 128-255 */
+			u64 nRxSz128to255;
+			/* Rx Packet Size 256-511 */
+			u64 nRxSz256to511;
+			/* Rx Packet Size 512-1023 */
+			u64 nRxSz512to1023;
+			/* Rx Packet Size 1024-1518 */
+			u64 nRxSz1024to1518;
+			/* Rx Packet Size 1519 to max */
+			u64 nRxGoodOverSz;
+		};
+		u64 rxHist[GSW_RMON_HIST_NUM];
+	};
+	union {
+		struct {
+			/* Tx Packet Size < 64 */
+			u64 nTxGoodUnderSz;
+			/* Tx Packet Size 64 */
+			u64 nTxSz64;
+			/* Tx Packet Size 65-127 */
+			u64 nTxSz65to127;
+			/* Tx Packet Size 128-255 */
+			u64 nTxSz128to255;
+			/* Tx Packet Size 256-511 */
+			u64 nTxSz256to511;
+			/* Tx Packet Size 512-1023 */
+			u64 nTxSz512to1023;
+			/* Tx Packet Size 1024-1518 */
+			u64 nTxSz1024to1518;
+			/* Tx Packet Size 1519 to max */
+			u64 nTxGoodOverSz;
+		};
+		u64 txHist[GSW_RMON_HIST_NUM];
+	};
+	union {
+		struct {
+			/* Rx Packet FCS error */
+			u64 nRxFCSErr;
+			/* Rx Packet Bad Undersize */
+			u64 nRxBadUnderSz;
+			/* Rx Packet Bad Oversize */
+			u64 nRxBadOverSz;
+		};
+		u64 nRxBad[GSW_RMON_RX_BAD_PKT];
+	};
+	u64	nRxUnicastPkts;
+	u64	nRxMulticastPkts;
+	u64	nRxBroadcastPkts;
+	u64	nTxUnicastPkts;
+	u64	nTxMulticastPkts;
+	u64	nTxBroadcastPkts;
 } GSW_RMON_CTP_cnt_t;
 
 /*@}*/ /* GSW_IOCTL_RMON */

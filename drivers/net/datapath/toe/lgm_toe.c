@@ -1494,15 +1494,15 @@ static void lro_port_work(struct work_struct *work)
 
 static void lro_flush_stall(struct lro_port *lp, struct lro_sc_store *head)
 {
-	struct lro_sc_store *ls;
+	struct lro_sc_store *ls, *next;
 
 	ls = head;
 	while (ls) {
+		next = ls->next;
 		lro_process_single(lp, &ls->stall, LRO_RSLT_STALL);
-		kmem_cache_free(lp->toe->cache[SC_CACHE], ls);
 		dev_dbg(lp->toe->dev, "cleanup stall port %d\n", lp->id);
-
-		ls = ls->next;
+		kmem_cache_free(lp->toe->cache[SC_CACHE], ls);
+		ls = next;
 	}
 }
 

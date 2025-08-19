@@ -65,6 +65,9 @@ int xfrm6_transport_finish(struct sk_buff *skb, int async)
 		return 0;
 	}
 
+	if (xo)
+		skb_sec_path(skb)->olen = 0;
+
 	NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
 		dev_net(skb->dev), NULL, skb, skb->dev, NULL,
 		xfrm6_transport_finish2);

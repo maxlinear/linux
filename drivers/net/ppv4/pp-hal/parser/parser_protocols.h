@@ -1,10 +1,23 @@
 /*
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2018-2020 Intel Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR APARTICULARPURPOSE.See the
+ * GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public
+ * License along with this program; if not,see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
  * Description: PP parser HAL protocols definitions, this file includes
  *              all the definitions or header files includes which
  *              the parser driver will ever need
- *
- * SPDX-License-Identifier: GPL-2.0-only
- * Copyright (C) 2018-2019 Intel Corporation
  */
 
 #ifndef __PARSER_PROTOCOLS_H__
@@ -90,6 +103,7 @@ enum prsr_proto_id {
 	PRSR_PROTO_ESP_INT, /* IPPROTO_ESP */
 	PRSR_PROTO_MPLS, /* ETH_P_MPLS_UC */
 	PRSR_PROTO_MPLS_SEL, /* MPLS Select */
+	PRSR_PROTO_VLAN_EXT, /* VLAN Extended */
 	PRSR_PROTO_PAYLOAD, /* Payload */
 	PRSR_PROTO_IDLE, /* Idle */
 	PRSR_PROTO_NO_PARSE, /* Dummy protocol to support no parsing */

@@ -2841,41 +2841,91 @@ void get_bw_grp_members_under_node(struct pp_qos_dev *qdev, u32 id, u32 phy,
 					   update_ids_container, &data);
 }
 
+static bool _queue_check_update_new_port(struct pp_qos_dev *qdev, u32 phy)
+{
+	struct qos_node *node = get_node_from_phy(qdev->nodes, phy);
+	u32 new_port;
+
+	if (!node_queue(node))
+		return false;
+
+	new_port = get_port(qdev->nodes, phy);
+	if (new_port == node->data.queue.port_phy)
+		return false;
+
+	QOS_LOG_DEBUG("Queue %u port changed from %u to %u\n",
+		      get_id_from_phy(qdev->mapping, phy),
+		      node->data.queue.port_phy,
+		      new_port);
+	node->data.queue.port_phy = new_port;
+	return true;
+}
+
+/**
+ * @brief Update predecessors for a specific node
+ */
 s32 update_predecessors(struct pp_qos_dev *qdev,
 			struct qos_node *node, void *data)
 {
 	bool queue_port_changed = false;
-	u32  queue_port = QOS_INVALID_PHY;
-	u32  queue_id = PP_QOS_INVALID_ID;
 	u32  phy = get_phy_from_node(qdev->nodes, node);
 
-	if (node_queue(node)) {
-		queue_id  = get_id_from_phy(qdev->mapping, phy);
-		queue_port = get_port(qdev->nodes, phy);
-		if (queue_port != node->data.queue.port_phy) {
-			QOS_LOG_DEBUG("Queue %u port changed from %u to %u\n",
-				      queue_id,
-				      node->data.queue.port_phy,
-				      queue_port);
-			node->data.queue.port_phy = queue_port;
-			queue_port_changed = true;
-		}
-	}
+	/* no need to update predecessors for port */
+	if (node_port(node))
+		return 0;
 
-	update_preds(qdev, phy, queue_port_changed);
+	if (node_queue(node))
+		queue_port_changed = _queue_check_update_new_port(qdev, phy);
+
+	update_preds_group(qdev, phy, 1, queue_port_changed);
 	return 1;
 }
 
-static s32 node_child_wrapper(const struct pp_qos_dev *qdev,
-			      const struct qos_node *node, void *data)
+/**
+ * @brief Update all predecessors for all children of a given parent node
+ */
+static s32 update_predecessors_for_all_children(struct pp_qos_dev *qdev,
+						struct qos_node *parent,
+						void *data)
 {
-	return node_child(node);
+	bool queue_port_changed = false;
+	u32 i, num_children, first_child_phy;
+
+	num_children = parent->parent_prop.num_of_children;
+	first_child_phy = parent->parent_prop.first_child_phy;
+
+	if (num_children > QOS_MAX_CHILDREN) {
+		QOS_ASSERT(0, "Too many children %u for phy %u\n", num_children,
+			   get_phy_from_node(qdev->nodes, parent));
+		return 0;
+	}
+
+	for (i = 0; i < num_children; i++) {
+		queue_port_changed |=
+			_queue_check_update_new_port(qdev, first_child_phy + i);
+	}
+
+	update_preds_group(qdev, first_child_phy, num_children,
+			   queue_port_changed);
+	return num_children;
+}
+
+static s32 node_has_child_wrapper(const struct pp_qos_dev *qdev,
+				  const struct qos_node *node, void *data)
+{
+	return node_parent(node) && node->parent_prop.num_of_children > 0;
 }
 
 void tree_update_predecessors(struct pp_qos_dev *qdev, u32 phy)
 {
-	post_order_travers_tree(qdev, phy, node_child_wrapper,
-				NULL, update_predecessors, NULL);
+	/* traverse the tree, and each parent collects all its children and
+	 * update the predecessors
+	 */
+	post_order_travers_tree(qdev, phy, node_has_child_wrapper, NULL,
+				update_predecessors_for_all_children, NULL);
+
+	/* Update the root subtree node predecessors */
+	update_predecessors(qdev, get_node_from_phy(qdev->nodes, phy), NULL);
 }
 
 /* Return the sum of bandwidth share of all direct children of parent */
@@ -3158,9 +3208,10 @@ static s32 parent_cfg_valid(const struct pp_qos_dev *qdev,
 		return 0;
 	}
 
-	if (node->parent_prop.num_of_children > 8) {
-		QOS_LOG_ERR("node has %u children but max allowed is 8\n",
-			    node->parent_prop.num_of_children);
+	if (node->parent_prop.num_of_children > QOS_MAX_CHILDREN) {
+		QOS_LOG_ERR("node has %u children but max allowed is %u\n",
+			    node->parent_prop.num_of_children,
+			    QOS_MAX_CHILDREN);
 		return 0;
 	}
 

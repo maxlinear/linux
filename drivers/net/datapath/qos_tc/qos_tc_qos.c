@@ -15,12 +15,6 @@
 #include "qos_tc_qmap.h"
 #include "qos_tc_trace.h"
 
-#if IS_ENABLED(CONFIG_QOS_NOTIFY)
-#include <net/qos_notify.h>
-#define QOS_TC_QMASK 0xff	/* to reserve bits per scheduler */
-#define QOS_TC_MAX_OFFSET (SZ_64 - SZ_8) /* max offset for 64bit qmap */
-#endif
-
 static LIST_HEAD(port_list);
 
 static int __qos_tc_qdata_remove(struct net_device *dev,
@@ -129,6 +123,7 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 
 	if (tc_params && tc_params->flags & QOS_TC_IS_LIF_CONFIG) {
 		sch->def_q = tc_params->def_q;
+		sch->alloc_flag = tc_params->dp_alloc_flag;
 		/* For logical interfaces, the required phy port data is received
 		 * through tc_params.
 		 */
@@ -728,7 +723,6 @@ int qos_tc_add_sched(struct qos_tc_qdisc *sch, int prio,
 		return -ENODEV;
 	}
 
-	port->q_map = QOS_TC_QMASK; /* reserve 8 bits for root scheduler*/
 	sch->offset = 0;
 	/*! Send scheduler added notification */
 	qos_tc_check_and_notify(sch, QOS_EVENT_SCH_ADD, QOS_TC_UNUSED, prio,
@@ -1339,6 +1333,7 @@ int qos_tc_add_sch_to_tbf_port(struct qos_tc_port *port,
 	struct qos_tc_qdisc *psch = &port->root_qdisc;
 	struct qos_tc_q_data *qid = &psch->qids[0];
 	struct qos_tc_qdata_params *p;
+	int __maybe_unused idx = TC_H_MIN(parent) - 1;
 	int ret;
 
 	struct qos_tc_qdisc qdisc = {
@@ -1359,7 +1354,20 @@ int qos_tc_add_sch_to_tbf_port(struct qos_tc_port *port,
 		return ret;
 	}
 
-	return add_qdisc(psch, &qdisc);
+	ret = add_qdisc(psch, &qdisc);
+	if (ret < 0) {
+		netdev_err(dev, "%s: add_qdisc failed\n", __func__);
+		return ret;
+	}
+
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+	qdisc.offset = 0;
+	/*! Send scheduler added notification */
+	qos_tc_check_and_notify(&qdisc, QOS_EVENT_SCH_ADD, QOS_TC_UNUSED, idx,
+		qdisc.qids[idx].p_w, NULL);
+#endif
+
+	return ret;
 }
 
 static int qos_tc_sched_policy_update(struct qos_tc_qdisc *sch,
