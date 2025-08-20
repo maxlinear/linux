@@ -17113,7 +17113,7 @@ static GSW_return_t GSW_PMAC_CountGet_v32(void *cdev, GSW_PMAC_Cnt_t *parm)
 
 
 
-int GSW_PMAC_CountGet(void *cdev, GSW_PMAC_Cnt_t *parm)
+GSW_return_t GSW_PMAC_CountGet(void *cdev, GSW_PMAC_Cnt_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	int ret = GSW_statusOk;
@@ -17603,7 +17603,7 @@ GSW_return_t GSW_PMAC_GLBL_CfgGet(void *cdev, GSW_PMAC_Glbl_Cfg_t *parm)
 
 
 /* Back pressure mapping Table */
-int GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
+GSW_return_t GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;
@@ -17649,7 +17649,7 @@ int GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
 
 }
 
-int GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
+GSW_return_t GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;
@@ -17694,7 +17694,7 @@ int GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm)
 	return ret;
 }
 
-int GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
+GSW_return_t GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;
@@ -17794,7 +17794,7 @@ int GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
 }
 
 
-int GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
+GSW_return_t GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;
@@ -17885,7 +17885,7 @@ int GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm)
 	return ret;
 }
 
-int GSW_PMAC_EG_CfgSet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm)
+GSW_return_t GSW_PMAC_EG_CfgSet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;
@@ -18032,7 +18032,7 @@ UNLOCK_AND_RETURN:
 
 }
 
-int GSW_PMAC_EG_CfgGet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm)
+GSW_return_t GSW_PMAC_EG_CfgGet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm)
 {
 	ethsw_api_dev_t *gswdev = GSW_PDATA_GET(cdev);
 	pmtbl_prog_t pmtbl;

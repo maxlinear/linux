@@ -559,7 +559,7 @@ bool uc_is_whitelist_rule_exist(union ing_wl_rule_union *rule_data,
  * @param hits_val the returned hits value
  * @return s32 0 on succuss, error code otherwise
  */
-s32 uc_ing_whitelist_rule_hits_get(unsigned int rule_type,
+s32 uc_ing_whitelist_rule_hits_get(enum ing_wl_rule_type rule_type,
 				  unsigned int rule_index,
 				  unsigned int *hits_val);
 

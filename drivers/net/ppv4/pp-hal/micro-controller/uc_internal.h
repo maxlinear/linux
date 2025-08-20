@@ -371,7 +371,7 @@ s32 uc_ing_db_get(struct ingress_uc_gdb *dst);
  * @param rule_index rule index
  * @return int 0 on success, error code otherwie
  */
-s32 uc_ing_whitelist_rule_hits_reset(unsigned int rule_type,
+s32 uc_ing_whitelist_rule_hits_reset(enum ing_wl_rule_type rule_type,
 				     unsigned int rule_index);
 
 /**

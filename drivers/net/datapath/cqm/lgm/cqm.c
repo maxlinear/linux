@@ -135,10 +135,10 @@ static s32 cqm_dma_port_enable(s32 cqm_port_id, u32 flags, unsigned long size,
 static s32 cqm_dq_dma_chan_init(s32 cqm_port_id, u32 flags);
 static void init_cqm_deq_cpu_port(int idx, u32);
 static s32 cqm_dequeue_dma_port_uninit(s32 cqm_port_id, u32 flags);
-static s32 cqm_pp_policy_setup(u32, u32, u32);
+static s32 cqm_pp_policy_setup(enum DIRECTION, enum CQM_SUP_DEVICE, u32);
 static void init_cqm_enq_cpu_port(u32, u32);
 static void init_qos_bypass_dma_deq(const u32);
-static s32 get_cqmport(u32 *, u32, u32, u32);
+static s32 get_cqmport(u32 *, enum EQM_DQM_PORT_TYPE, enum DQ_PORT_SUB_TYPE, const u32);
 static s32 handle_dma_chnl_init(s32, u32);
 static void cqm_vm_pool_check_enable(const u32, const u16, const u16);
 static u8 get_pool_from_policy(const s16 id);
