@@ -1078,6 +1078,159 @@ int udp_cmsg_send(struct sock *sk, struct msghdr *msg, u16 *gso_size)
 }
 EXPORT_SYMBOL_GPL(udp_cmsg_send);
 
+struct load_hdr {
+	u16 loadid;
+	u8 testaction;
+	u8 rx_stopped;
+	u32 pdu_seqno;
+	u16 hdr_payload;
+	u16 spduseqerr;
+	u32 spdutime_sec;
+	u32 spdutime_nsec;
+	u32 lpdutime_sec;
+	u32 lpdutime_nsec;
+	u16 rttrespdelay;
+	u16 checkSum;
+};
+
+#define MTU_OFFSET 30
+#define PAYLOAD_OFFSET 8
+
+static inline void _populate_header(struct load_hdr *lhdr, struct load_hdr *initial_pdu,
+		int32_t payload_rem, u16 mtu)
+{
+	lhdr->loadid     = initial_pdu->loadid;
+	lhdr->testaction = initial_pdu->testaction;
+	lhdr->rx_stopped  = initial_pdu->rx_stopped;
+	lhdr->spduseqerr    = initial_pdu->spduseqerr;
+	lhdr->spdutime_sec  = initial_pdu->spdutime_sec;
+	lhdr->spdutime_nsec = initial_pdu->spdutime_nsec;
+	lhdr->lpdutime_sec  = initial_pdu->lpdutime_sec;
+	lhdr->lpdutime_nsec = initial_pdu->lpdutime_nsec;
+	lhdr->rttrespdelay  = initial_pdu->rttrespdelay;
+	lhdr->hdr_payload = htons( ((payload_rem > mtu) ? mtu: payload_rem) );
+	lhdr->pdu_seqno  = htonl((u32)initial_pdu->pdu_seqno++);
+	lhdr->checkSum   = 0;
+}
+
+static int udpst_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+{
+	char *data  = NULL;
+	struct load_hdr *lhdr, *initial_pdu;
+	u16 mtu;
+	u16 payload_sz;
+	int32_t payload_rem;
+	u32 initial_seq;
+	struct udp_sock *up = udp_sk(sk);
+
+	/* page info */
+	void *page_ptr;
+	size_t size,
+	       vsize; /* Valid data size in the page */
+	int32_t err = 0,
+		npdus;
+	int32_t flags = MSG_SENDPAGE_NOTLAST;
+	struct page_frag *pfrag = NULL;
+	u16 frags = 0;
+	
+	if (len < sizeof(struct load_hdr)) {
+		net_dbg_ratelimited("length err\n");
+		return -EFAULT;
+	}
+
+	data = kmalloc(len, GFP_KERNEL);
+	if (!copy_from_iter_full(data, len, &msg->msg_iter)) {
+		net_dbg_ratelimited("copy err\n");
+		return -EFAULT;
+	}
+
+	initial_pdu = (struct load_hdr *)data;
+	mtu = *(u16 *)(data + MTU_OFFSET);
+	payload_sz = *(u16 *)(data + PAYLOAD_OFFSET);
+	initial_seq =  initial_pdu->pdu_seqno;
+	payload_rem = payload_sz;
+
+	WRITE_ONCE(up->gso_size, mtu);
+
+	while (payload_rem > (int)(sizeof(struct load_hdr))) {
+		/* If sk-pfrags used, there is no need to handle error
+		 * case when udp_sendpae fails
+		 */
+		pfrag = sk_page_frag(sk);
+
+		if (!sk_page_frag_refill(sk, pfrag)) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+		size = pfrag->size - pfrag->offset;
+		if( size < mtu ) {//Ignore the page having space less than mtu
+			/* TODO: Fix this for better optimization */
+			pfrag->offset += size ;
+			continue; 
+		}
+		size = min_t(int, payload_rem, size);
+
+		page_ptr = page_address(pfrag->page) + pfrag->offset;
+		if( payload_rem >= mtu) {
+			int rembytes;
+			/* Full PDUs that can be formed in this page */
+			npdus = size/mtu;
+			vsize = npdus*mtu;
+			rembytes = payload_rem - vsize;
+			if(rembytes && rembytes <= (size-vsize)) {
+				vsize += rembytes;
+				++npdus;
+			}
+		} else {
+			/* Last PDU */
+			vsize = payload_rem;
+			npdus = 1;
+		}
+		while ( npdus ) {
+			lhdr = (struct load_hdr *)page_ptr;
+			_populate_header(lhdr, initial_pdu, payload_rem, mtu);
+			page_ptr += mtu;
+			size -= mtu;
+			payload_rem -= mtu;
+			--npdus;
+		}
+		if (payload_rem <= (int)(sizeof(struct load_hdr))) {
+			flags = 0;
+		}
+
+		if( unlikely(err = udp_sendpage(sk,
+						pfrag->page, pfrag->offset, vsize,
+						flags) < 0)) {
+			frags--;
+			goto cleanup;
+		}
+		pfrag->offset += vsize;
+		frags++;
+	}
+	err = udp_push_pending_frames(sk);
+cleanup:
+	kfree(data);
+	return err;
+}
+
+static inline bool is_proto_udpst(struct msghdr *msg)
+{
+	struct cmsghdr *cmsg;
+
+	cmsg = CMSG_FIRSTHDR(msg);
+	if (cmsg) {
+		if (!CMSG_OK(msg, cmsg)) {
+			return 0;
+		}
+		if (cmsg->cmsg_level != SOL_UDP) {
+			return 0;
+		}
+		if (cmsg->cmsg_type == OB_UDPST_GSO)
+			return 1;
+	}
+	return 0;
+}
+
 int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 {
 	struct inet_sock *inet = inet_sk(sk);
@@ -1101,6 +1254,10 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 	if (len > 0xFFFF)
 		return -EMSGSIZE;
+
+	if (is_proto_udpst(msg)) {
+		return udpst_sendmsg(sk, msg, len);
+	}
 
 	/*
 	 *	Check the flags.

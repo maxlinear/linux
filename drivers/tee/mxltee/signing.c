@@ -217,6 +217,30 @@ static void print_signature(enum sec_alg algo, u32 signature)
 	}
 }
 
+static void print_sign_digest_struct(struct seccrypto_sign_digest_param_tep *digest)
+{
+	pr_debug("struct seccrypto_digest_param_tep =>\n");
+	pr_debug("digest->data_ptr	: 0x%x\n", digest->digest);
+	pr_debug("digest->data_len	: 0x%x\n", digest->digest_len);
+	pr_debug("digest->sign_ptr	: 0x%x\n", digest->sign_ptr);
+	pr_debug("digest->sign_len	: 0x%x\n", digest->sign_len);
+	pr_debug("digest->sign_algo	: 0x%x\n", digest->sign_algo);
+	pr_debug("digest->hash_algo	: 0x%x\n", digest->hash_algo);
+	print_signature(digest->sign_algo, digest->sign_ptr);
+}
+
+static void print_digest_verify_struct(struct seccrypto_digest_verify_param_tep *verify)
+{
+	pr_debug("struct seccrypto_verify_param_tep =>\n");
+	pr_debug("verify->data_ptr	: 0x%x\n", verify->digest);
+	pr_debug("verify->data_len	: 0x%x\n", verify->digest_len);
+	pr_debug("verify->sign_ptr	: 0x%x\n", verify->sign_ptr);
+	pr_debug("verify->sign_len	: 0x%x\n", verify->sign_len);
+	pr_debug("verify->sign_algo	: 0x%x\n", verify->sign_algo);
+	pr_debug("verify->hash_algo	: 0x%x\n", verify->hash_algo);
+	print_signature(verify->sign_algo, verify->sign_ptr);
+}
+
 static void print_sign_struct(struct seccrypto_sign_param_tep *sign)
 {
 	pr_debug("struct seccrypto_sign_param_tep =>\n");
@@ -241,6 +265,76 @@ static void print_verify_struct(struct seccrypto_verify_param_tep *verify)
 	pr_debug("verify->hash_flags	: 0x%x\n", verify->hash_flags);
 	pr_debug("verify->hash_algo	: 0x%x\n", verify->hash_algo);
 	print_signature(verify->sign_algo, verify->sign_ptr);
+}
+
+static int sign_digest_params_validate(struct seccrypto_sign_digest_param *udigest,
+		struct seccrypto_sign_digest_param_tep *digest)
+{
+	if (sizeof(*udigest) < sizeof(*digest)) {
+		pr_err("sign digest: signing parameter is invalid\n");
+		return -EINVAL;
+	}
+	if (!udigest->digest || !udigest->digest_len) {
+		pr_err("sign digest: data parameters are invalid\n");
+		return -EINVAL;
+	}
+	if (!udigest->signature || !udigest->sign_len) {
+		pr_err("sign digest: signature parameters are invalid\n");
+		return -EINVAL;
+	}
+	if ((udigest->sign_algo < SEC_ALG_RSA_2048) || (udigest->sign_algo > SEC_ALG_ECDSA_P384)) {
+		pr_err("sign digest: algorithm %d is not supported\n", udigest->sign_algo);
+		return -ENOTSUPP;
+	}
+	if ((udigest->hash_algo < RSA_PKCS1_5_SHA1) || (udigest->hash_algo > ECDSA_ASN1_SHA384)) {
+		pr_err("sign digest: hash algorithm %d is not supported\n", udigest->hash_algo);
+		return -ENOTSUPP;
+	}
+	if (udigest->digest_len > MAX_INPUT_SIZE) {
+		pr_err("sign digest: maximum input size for signature is 4095 Bytes\n");
+		return -EINVAL;
+	}
+
+	digest->sign_algo = udigest->sign_algo;
+	digest->hash_algo = udigest->hash_algo;
+	digest->digest_len = udigest->digest_len;
+	digest->sign_len = udigest->sign_len;
+	return 0;
+}
+
+static s32 digest_verify_params_validate(struct seccrypto_digest_verify_param *uverify,
+		struct seccrypto_digest_verify_param_tep *verify)
+{
+	if (sizeof(*uverify) < sizeof(*verify)) {
+		pr_err("digest verify: verify signature parameter is invalid\n");
+		return -EINVAL;
+	}
+	if (!uverify->digest || !uverify->digest_len) {
+		pr_err("digest verify: verify signature data parameters are invalid\n");
+		return -EINVAL;
+	}
+	if (!uverify->signature || !uverify->sign_len) {
+		pr_err("digest verify: verify signature parameters are invalid\n");
+		return -EINVAL;
+	}
+	if ((uverify->sign_algo < SEC_ALG_RSA_2048) || (uverify->sign_algo > SEC_ALG_ECDSA_P384)) {
+		pr_err("digest verify: algorithm %d is not supported\n", uverify->sign_algo);
+		return -ENOTSUPP;
+	}
+	if ((uverify->hash_algo < RSA_PKCS1_5_SHA1) || (uverify->hash_algo > ECDSA_ASN1_SHA384)) {
+		pr_err("digest verify: hash algorithm %d is not supported\n", uverify->hash_algo);
+		return -ENOTSUPP;
+	}
+	if (uverify->digest_len > MAX_INPUT_SIZE) {
+		pr_err("verify: maximum input size for sign verify is 4095 Bytes\n");
+		return -EINVAL;
+	}
+
+	verify->sign_algo = uverify->sign_algo;
+	verify->hash_algo = uverify->hash_algo;
+	verify->digest_len = uverify->digest_len;
+	verify->sign_len = uverify->sign_len;
+	return 0;
 }
 
 static int sign_params_validate(struct seccrypto_sign_param *usign,
@@ -321,6 +415,284 @@ static s32 verify_params_validate(struct seccrypto_verify_param *uverify,
 	verify->data_len = uverify->data_len;
 	verify->sign_len = uverify->sign_len;
 	return 0;
+}
+
+s32 handle_signdgst_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		u32 num_params, struct tee_param *param)
+{
+	s32 ret = 0;
+	struct active_session_param *active_session = NULL;
+	struct seccrypto_sign_digest_param_tep *digest = NULL;
+	struct seccrypto_sign_digest_param *udigest = NULL;
+	dma_addr_t dma_active_session = 0x0;
+	dma_addr_t dma_sign_buffer = 0x0;
+	dma_addr_t dma_digest_data = 0x0;
+	dma_addr_t dma_digest = 0x0;
+	void *sign_buffer = NULL;
+	void *digest_data = NULL;
+	icc_msg_t icc_msg = {0};
+	u32 sign_buf_len = 0;
+
+	active_session = get_active_scsa_session(drv, session,
+			 TA_SECURE_CRYPTO_SIGN_DIGEST, &dma_active_session);
+	if (IS_ERR_OR_NULL(active_session)) {
+		pr_err("sign digest: memory allocation failed for session\n");
+		return PTR_ERR(active_session);
+	}
+
+	digest = (void *)gen_pool_alloc(drv->iccpool, sizeof(*digest));
+	if (!digest) {
+		pr_err("sign digest: memory allocation failed for digest signature generation\n");
+		return -ENOMEM;
+	}
+	memset(digest, 0x0, sizeof(*digest));
+
+	udigest = param[0].u.memref.shm->kaddr;
+
+	ret =  sign_digest_params_validate(udigest, digest);
+	if (ret < 0)
+		goto gen_free;
+
+	ret = atom_sign_ctx_init(udigest->sign_algo, udigest->signature, &udigest->sign_len);
+	if (ret < 0) {
+		pr_err("sign digest: atom context init failed\n");
+		goto gen_free;
+	}
+	sign_buf_len = ret;
+
+	/* move user data to genpool buffer */
+	digest_data = (void *)gen_pool_alloc(drv->iccpool, udigest->digest_len);
+	if (!digest_data) {
+		pr_err("sign digest: memory allocation failed for storing data data_len:%u\n", udigest->digest_len);
+		ret = -ENOMEM;
+		goto gen_free;
+	}
+	memcpy(digest_data, udigest->digest, udigest->digest_len);
+	dma_digest_data = dma_map_single_attrs(drv->iccdev, digest_data, udigest->digest_len,
+			DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_digest_data)) {
+		pr_err("sign digest: DMA mapping failed for signature data\n");
+		goto gen_free;
+	}
+	digest->digest = dma_digest_data;
+
+	/* create signature context buffer for tep */
+	sign_buffer = (void *)gen_pool_alloc(drv->iccpool, sign_buf_len);
+	if (!sign_buffer) {
+		pr_err("sign digest: memory allocation failed for signature generation sign_buf_len:%d\n", sign_buf_len);
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+	memset(sign_buffer, 0x0, sign_buf_len);
+
+	dma_sign_buffer = dma_map_single_attrs(drv->iccdev, sign_buffer, sign_buf_len,
+			DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_sign_buffer)) {
+		pr_err("sign digest: DMA mapping failed for signature generation\n");
+		goto dma_unmap;
+	}
+	digest->sign_ptr = dma_sign_buffer;
+	tep_sign_ctx_init(digest->sign_algo, sign_buffer, digest->sign_ptr, &digest->sign_len);
+
+	dma_digest = dma_map_single_attrs(drv->iccdev, digest, sizeof(*digest),
+			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_digest)) {
+		pr_err("sign digest: DMA mapping failed for signature generation\n");
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+
+	dma_sync_single_for_device(drv->iccdev, digest->digest, digest->digest_len, DMA_TO_DEVICE);
+	dma_sync_single_for_device(drv->iccdev, digest->sign_ptr, sign_buf_len, DMA_TO_DEVICE);
+	dma_sync_single_for_device(drv->iccdev, dma_digest, sizeof(*digest), DMA_TO_DEVICE);
+
+	icc_msg.src_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.dst_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.msg_id = ICC_CMD_ID_INVOKE_CMD;
+	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
+	icc_msg.param[0] = dma_active_session;
+	icc_msg.param[1] = dma_digest;
+
+	ret = icc_write_and_read(&icc_msg);
+	dma_sync_single_for_cpu(drv->iccdev, dma_sign_buffer, digest->sign_len, DMA_FROM_DEVICE);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = validate_icc_reply(&icc_msg, session->session_id);
+	if (ret < 0)
+		goto dma_unmap;
+
+	if (icc_msg.param[1] != digest->sign_ptr) {
+		ret = -EINVAL;
+		goto dma_unmap;
+	}
+	if (icc_msg.param[2] == digest->sign_len) {
+		copy_signature_gen2user(digest->sign_algo, sign_buffer, udigest->signature);
+	} else {
+		ret = -EINVAL;
+		pr_err("sign digest: invalid signature length found\n");
+	}
+	print_sign_digest_struct(digest);
+dma_unmap:
+	if (dma_digest) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_digest, sizeof(*digest), DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_digest, sizeof(*digest), DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_sign_buffer)
+		dma_unmap_single_attrs(drv->iccdev, dma_sign_buffer, sign_buf_len, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_digest_data)
+		dma_unmap_single_attrs(drv->iccdev, dma_digest_data, digest->digest_len, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+
+gen_free:
+	if (digest_data)
+		gen_pool_free(drv->iccpool, (unsigned long)digest_data, digest->digest_len);
+	if (sign_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)sign_buffer, sign_buf_len);
+	if (digest)
+		gen_pool_free(drv->iccpool, (unsigned long)digest, sizeof(*digest));
+
+	if (active_session) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		gen_pool_free(drv->iccpool, (unsigned long)active_session, sizeof(*active_session));
+	}
+	return ret;
+}
+
+s32 handle_verifydgst_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		u32 num_params, struct tee_param *param)
+{
+	struct active_session_param *active_session = NULL;
+	struct seccrypto_digest_verify_param_tep *verify = NULL;
+	struct seccrypto_digest_verify_param *uverify = NULL;
+	dma_addr_t dma_active_session = 0x0;
+	dma_addr_t dma_sign_buffer = 0x0;
+	dma_addr_t dma_digest_data = 0x0;
+	dma_addr_t dma_verify = 0x0;
+	void *sign_buffer = NULL;
+	void *digest_data = NULL;
+	icc_msg_t icc_msg = {0};
+	u32 sign_buf_len = 0;
+	s32 ret = 0;
+
+	active_session = get_active_scsa_session(drv, session, TA_SECURE_CRYPTO_VERIFY_DIGEST,
+			&dma_active_session);
+	if (IS_ERR_OR_NULL(active_session)) {
+		pr_debug("verify: memory allocation failed for session\n");
+		return PTR_ERR(active_session);
+	}
+
+	verify = (void *)gen_pool_alloc(drv->iccpool, sizeof(*verify));
+	if (!verify) {
+		pr_debug("verify: memory allocation failed for signature verification\n");
+		return -ENOMEM;
+	}
+	memset(verify, 0x0, sizeof(*verify));
+
+	uverify = param[0].u.memref.shm->kaddr;
+	ret =  digest_verify_params_validate(uverify, verify);
+	if (ret < 0)
+		goto gen_free;
+
+	ret = get_sign_ctx_and_len(uverify->sign_algo, uverify->signature);
+	if (ret < 0) {
+		pr_debug("verify: get signature context failed\n");
+		goto gen_free;
+	}
+	sign_buf_len = ret;
+
+	/* move user data to genpool buffer */
+	digest_data = (void *)gen_pool_alloc(drv->iccpool, uverify->digest_len);
+	if (!digest_data) {
+		pr_debug("verify: memory allocation failed for storing data data_len:%u\n", uverify->digest_len);
+		ret = -ENOMEM;
+		goto gen_free;
+	}
+	memcpy(digest_data, uverify->digest, uverify->digest_len);
+	dma_digest_data = dma_map_single_attrs(drv->iccdev, digest_data, uverify->digest_len,
+			DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_digest_data)) {
+		pr_debug("verify: DMA mapping failed for signature data\n");
+		goto gen_free;
+	}
+	verify->digest = dma_digest_data;
+
+	/* create signature context buffer for tep */
+	sign_buffer = (void *)gen_pool_alloc(drv->iccpool, sign_buf_len);
+	if (!sign_buffer) {
+		pr_debug("verify: memory allocation failed for signature verification sign_buf_len:%d\n", sign_buf_len);
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+	memset(sign_buffer, 0x0, sign_buf_len);
+
+	dma_sign_buffer = dma_map_single_attrs(drv->iccdev, sign_buffer, sign_buf_len,
+			DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_sign_buffer)) {
+		pr_debug("verify: DMA mapping failed for signature verification\n");
+		goto dma_unmap;
+	}
+	verify->sign_ptr = dma_sign_buffer;
+	tep_sign_ctx_init(verify->sign_algo, sign_buffer, verify->sign_ptr, &verify->sign_len);
+	copy_signature_user2gen(verify->sign_algo, uverify->signature, sign_buffer);
+
+	dma_verify = dma_map_single_attrs(drv->iccdev, verify, sizeof(*verify),
+			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_verify)) {
+		pr_debug("verify: DMA mapping failed for signature verification\n");
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+	dma_sync_single_for_device(drv->iccdev, verify->digest, verify->digest_len, DMA_TO_DEVICE);
+	dma_sync_single_for_device(drv->iccdev, verify->sign_ptr, sign_buf_len, DMA_TO_DEVICE);
+	dma_sync_single_for_device(drv->iccdev, dma_verify, sizeof(*verify), DMA_TO_DEVICE);
+
+	icc_msg.src_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.dst_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.msg_id = ICC_CMD_ID_INVOKE_CMD;
+	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
+	icc_msg.param[0] = dma_active_session;
+	icc_msg.param[1] = dma_verify;
+
+	print_digest_verify_struct(verify);
+
+	ret = icc_write_and_read(&icc_msg);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = validate_icc_reply(&icc_msg, session->session_id);
+	if (ret < 0)
+		goto dma_unmap;
+
+dma_unmap:
+	if (dma_verify) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_verify, sizeof(*verify), DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_verify, sizeof(*verify), DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_sign_buffer)
+		dma_unmap_single_attrs(drv->iccdev, dma_sign_buffer, sign_buf_len, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_digest_data)
+		dma_unmap_single_attrs(drv->iccdev, dma_digest_data, verify->digest_len, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+
+gen_free:
+	if (digest_data)
+		gen_pool_free(drv->iccpool, (unsigned long)digest_data, verify->digest_len);
+	if (sign_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)sign_buffer, sign_buf_len);
+	if (verify)
+		gen_pool_free(drv->iccpool, (unsigned long)verify, sizeof(*verify));
+
+	if (active_session) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		gen_pool_free(drv->iccpool, (unsigned long)active_session, sizeof(*active_session));
+	}
+
+	return ret;
 }
 
 s32 handle_sign_command(struct mxltee_driver *drv, struct mxltee_session *session,

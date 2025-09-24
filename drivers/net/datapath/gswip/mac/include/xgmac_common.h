@@ -416,7 +416,14 @@ struct mac_prv_data {
 	struct ptp_flags ptp_flgs;
 	u32 def_addend;
 	u32 tstamp_addend;
+	u32 tstamp_status;
 	u64 tx_tstamp;
+	u64 pps_interval;
+	u64 pps_width;
+	u64 pps_start;
+	u64 pps_phase;
+	u64 pps_last_stop;
+	u64 pps_last_start;
 	u32 sec;
 	u32 nsec;
 	u32 one_nsec_accuracy;

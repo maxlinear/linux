@@ -238,7 +238,7 @@ int qos_tc_mirred_offload(struct net_device *dev,
 	struct qos_tc_mirr_filter flt = {0};
 	struct net_device *mirr_dev;
 	GSW_PCE_rule_t *pce_rule = NULL;
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	u16 nForwardPortMap[16] = {0,};
 	int ret = 0;
 
@@ -326,7 +326,7 @@ int qos_tc_mirred_unoffload(struct net_device *dev,
 			    struct flow_cls_offload *f,
 			    unsigned long cookie)
 {
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret = 0;
 
 	ret = qos_tc_pce_rule_delete(cookie, pref);

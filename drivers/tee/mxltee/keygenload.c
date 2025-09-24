@@ -79,6 +79,10 @@ static void print_keygen_struct(struct seccrypto_gen_key_tep *gen_key)
 	print_sst_details(&gen_key->sst_params);
 	pr_debug("key_ctx		: 0x%x\n", gen_key->key_ptr);
 	pr_debug("key_len		: %u\n", gen_key->key_len);
+	pr_debug("public_attribute_size: %d\n", gen_key->public_attribute_size);
+	pr_debug("public_key_attribute ptr: %u\n", gen_key->public_key_attribute);
+	pr_debug("private_attribute_size: %d\n", gen_key->private_attribute_size);
+	pr_debug("private_key_attribute ptr: %u\n", gen_key->private_key_attribute);
 }
 
 static void print_keyload_struct(struct seccrypto_load_key_tep *loadkey)
@@ -273,6 +277,9 @@ static int keygen_params_validate(struct seccrypto_gen_key *ugenkey,
 		genkey->key_len = 0;
 	else
 		genkey->key_len = ugenkey->key_len;
+	genkey->public_attribute_size = ugenkey->public_attribute_size;
+	genkey->private_attribute_size = ugenkey->private_attribute_size;
+
 	return TEEC_SUCCESS;
 }
 
@@ -405,7 +412,11 @@ int handle_keygen_command(struct mxltee_driver *drv, struct mxltee_session *sess
 	struct seccrypto_gen_key_tep *genkey = NULL;
 	struct seccrypto_gen_key *ugenkey = NULL;
 	void *genkey_out_buffer = NULL;
+	void *genkey_public_attribute_buffer = NULL;
+	void *genkey_private_attribute_buffer = NULL;
 	dma_addr_t dma_genkey_out_buffer = 0x0;
+	dma_addr_t dma_genkey_public_attribute_buffer = 0x0;
+	dma_addr_t dma_genkey_private_attribute_buffer = 0x0;
 	dma_addr_t dma_active_session = 0x0;
 	dma_addr_t dma_genkey = 0x0;
 	uint32_t ugenkey_size = 0;
@@ -454,6 +465,62 @@ int handle_keygen_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		genkey->key_ptr = dma_genkey_out_buffer;
 	}
 
+	if (genkey->public_attribute_size) {
+		genkey_public_attribute_buffer = (void *)gen_pool_alloc(drv->iccpool, genkey->public_attribute_size);
+		if (!genkey_public_attribute_buffer) {
+			pr_debug("keygen: memory allocation failed for key public attribute public_attribute_size:%u\n",
+					 genkey->public_attribute_size);
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		memset(genkey_public_attribute_buffer, 0x0, genkey->public_attribute_size);
+		if (copy_from_user(genkey_public_attribute_buffer, ugenkey->public_key_attribute, ugenkey->public_attribute_size))
+			return -EFAULT;
+		printk(KERN_INFO "public_key_attribute content => %*phD\n", genkey->public_attribute_size, (uint32_t *)genkey_public_attribute_buffer);
+		printk(KERN_INFO "public_key_attribute content => %s\n", (char *)genkey_public_attribute_buffer);
+
+		dma_genkey_public_attribute_buffer = dma_map_single_attrs(drv->iccdev,
+									genkey_public_attribute_buffer,
+									genkey->public_attribute_size,
+									DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_genkey_public_attribute_buffer)) {
+			pr_debug("keygen: DMA mapping failed for genkey public attribute buffer\n");
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_genkey_public_attribute_buffer,
+						 genkey->public_attribute_size, DMA_TO_DEVICE);
+		genkey->public_key_attribute = dma_genkey_public_attribute_buffer;
+	}
+
+	if (genkey->private_attribute_size) {
+		genkey_private_attribute_buffer = (void *)gen_pool_alloc(drv->iccpool, genkey->private_attribute_size);
+		if (!genkey_private_attribute_buffer) {
+			pr_debug("keygen: memory allocation failed for key private attribute private_attribute_size:%u\n",
+					 genkey->private_attribute_size);
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		memset(genkey_private_attribute_buffer, 0x0, genkey->private_attribute_size);
+		if (copy_from_user(genkey_private_attribute_buffer, ugenkey->private_key_attribute, ugenkey->private_attribute_size))
+			return -EFAULT;
+		printk(KERN_INFO "private_key_attribute content => %*phD\n", genkey->private_attribute_size, (uint32_t *)genkey_private_attribute_buffer);
+		printk(KERN_INFO "private_key_attribute content => %s\n", (char *)genkey_private_attribute_buffer);
+
+		dma_genkey_private_attribute_buffer = dma_map_single_attrs(drv->iccdev,
+									genkey_private_attribute_buffer,
+									genkey->private_attribute_size,
+									DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_genkey_private_attribute_buffer)) {
+			pr_debug("keygen: DMA mapping failed for genkey private attribute buffer\n");
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_genkey_private_attribute_buffer,
+						 genkey->private_attribute_size, DMA_TO_DEVICE);
+		genkey->private_key_attribute = dma_genkey_private_attribute_buffer;
+	}
+
 	dma_genkey = dma_map_single_attrs(drv->iccdev, genkey, sizeof(*genkey),
 			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
 	if (dma_mapping_error(drv->iccdev, dma_genkey)) {
@@ -469,6 +536,7 @@ int handle_keygen_command(struct mxltee_driver *drv, struct mxltee_session *sess
 	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
 	icc_msg.param[0] = dma_active_session;
 	icc_msg.param[1] = dma_genkey;
+	icc_msg.param[2] = BASE_VERSION_1;
 
 	print_keygen_struct(genkey);
 
@@ -496,10 +564,20 @@ dma_unmap:
 	}
 	if (dma_genkey_out_buffer)
 		dma_unmap_single_attrs(drv->iccdev, dma_genkey_out_buffer, genkey->key_len, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_genkey_public_attribute_buffer)
+		dma_unmap_single_attrs(drv->iccdev, dma_genkey_public_attribute_buffer,
+					genkey->public_attribute_size, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	if (dma_genkey_private_attribute_buffer)
+		dma_unmap_single_attrs(drv->iccdev, dma_genkey_private_attribute_buffer,
+					genkey->public_attribute_size, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
 
 gen_free:
 	if (genkey_out_buffer)
 		gen_pool_free(drv->iccpool, (unsigned long)genkey_out_buffer, genkey->key_len);
+	if (genkey_public_attribute_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)genkey_public_attribute_buffer, genkey->public_attribute_size);
+	if (genkey_private_attribute_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)genkey_private_attribute_buffer, genkey->public_attribute_size);
 	if (genkey)
 		gen_pool_free(drv->iccpool, (unsigned long)genkey, sizeof(*genkey));
 

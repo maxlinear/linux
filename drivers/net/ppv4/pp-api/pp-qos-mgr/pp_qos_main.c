@@ -3072,6 +3072,17 @@ s32 __qos_aqm_rlms_attach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 				/* set queue bw limit from sf in kbit */
 				conf.common_prop.bandwidth_limit =
 								(sf_cfg->cfg.aqm_cfg.msr * 8) / 1024;
+			} else if (qdev->init_params.aqm_engine == PP_AQM_HW && 
+				   sf_cfg->queue[queue_idx].type != PP_QOS_SF_QUEUE_TYPE_MGMT) {
+				/* for regular AQM, put WRED configuration to be
+				 * the same as AQM buffer size to apply buff
+				 * control
+				 */
+				conf.wred_enable = 1;
+				conf.wred_max_avg_green = sf_cfg->buffer_size;
+				conf.wred_min_avg_green = sf_cfg->buffer_size;
+				conf.wred_max_avg_yellow = sf_cfg->buffer_size;
+				conf.wred_min_avg_yellow = sf_cfg->buffer_size;
 			}
 		}
 

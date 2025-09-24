@@ -176,6 +176,13 @@ struct mxl_vpn_ops {
 	 *@return true if offload is permitted, false otherwise
 	 */
 	bool (*xfrm_offload_ok)(struct sk_buff *skb, struct xfrm_state *x);
+
+	/*!
+	 *@brief xfrm advance esn
+	 *@param[in] x: xfrm state
+	 *@return void
+	 */
+	void (*state_advance_esn)(struct xfrm_state *x);
 };
 
 /*!

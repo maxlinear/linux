@@ -138,8 +138,8 @@ enum mac_flags {
 
 /**
  * struct big_number -	represents big number
- * @number_len	: length of @number in bytes
- * @number	:	pointer to number
+ * @number_len: length of @number in bytes
+ * @number:	pointer to number
  */
 struct big_number {
 	int num_len;
@@ -149,8 +149,8 @@ typedef struct big_number big_number;
 
 /**
  * struct ecdsa_signature - represents ECDSA signature
- * @r	:	
- * @s	:	
+ * @r:
+ * @s:
  */
 struct ecdsa_signature {
 	big_number r;
@@ -160,15 +160,15 @@ struct ecdsa_signature {
 /**
  * struct ec_public_key - represents ECDSA public key
  * ECDSA domain parameters
- * @modulus	:	modulus
- * @a	:	constant a
- * @b	:	constant b
- * @g_order	:	curve order
+ * @modulus:	modulus
+ * @a:		constant a
+ * @b:		constant b
+ * @g_order:	curve order
  * ECC base point of the curve
- * @Gx	:	x co-ordinate of G
- * @Gy	:	y co-ordinate of G
- * @Qx	:	x co-ordinate of Q
- * @Qy	:	y co-ordinate of Q
+ * @Gx:		x co-ordinate of G
+ * @Gy:		y co-ordinate of G
+ * @Qx:		x co-ordinate of Q
+ * @Qy:		y co-ordinate of Q
  */
 struct ec_public_key {
 	big_number modulus;
@@ -183,7 +183,7 @@ struct ec_public_key {
 
 /**
  * struct ecdsa_private_key	-	represents ECDSA private key
- * @private_key	:	private key
+ * @private_key:	private key
  */
 struct ecdsa_private_key {
 	big_number pri_key;
@@ -191,8 +191,8 @@ struct ecdsa_private_key {
 
 /**
  * struct ecdsa_key_pair - represents ECDSA key pair
- * @public	:	public key
- * @private	:	private key
+ * @public:	public key
+ * @private:	private key
  */
 struct ecdsa_key_pair {
 	struct ec_public_key pub_key;
@@ -201,7 +201,7 @@ struct ecdsa_key_pair {
 
 /**
  * struct rsa_signature - represents RSA signature
- * @rsa_signature	:	RSA signature
+ * @rsa_signature:	RSA signature
  */
 struct rsa_signature {
 	big_number rsa_signature;
@@ -209,9 +209,9 @@ struct rsa_signature {
 
 /**
  * struct key_meta_info - maintains wrapper information for key
- * @format	:	key format like plain or wrapped
- * @sec_algo	:	crypto algorithm
- * @total_key_len	:	total key len i.e lengths of public + private + modulus
+ * @format:		key format like plain or wrapped
+ * @sec_algo:		crypto algorithm
+ * @total_key_len:	total key len i.e lengths of public + private + modulus
  */
 struct key_meta_info {
 	enum key_format format;
@@ -221,8 +221,8 @@ struct key_meta_info {
 
 /**
  * structure to store keys into secure storage
- * @key_len	:	size of @key
- * @key		:	buffer of length @key_len
+ * @key_len:	size of @key
+ * @key	:	buffer of length @key_len
  */
 struct key_data {
 	uint32_t key_len;
@@ -231,9 +231,9 @@ struct key_data {
 
 /**
  * struct rsa_key - RSA key format
- * @pub_exp	:	public key exponent
- * @pri_exp	:	private key exponent
- * @modulus	:	modulus
+ * @pub_exp:	public key exponent
+ * @pri_exp:	private key exponent
+ * @modulus:	modulus
  */
 struct rsa_key {
 	struct big_number pub_exp;
@@ -243,8 +243,8 @@ struct rsa_key {
 
 /**
  * struct aes_key - AES key format used in for wrap operation
- * @key_len	:	size of @key
- * @key		:	buffer of length @key_len
+ * @key_len:	size of @key
+ * @key:	buffer of length @key_len
  */
 struct aes_key {
 	uint32_t key_len;
@@ -305,14 +305,17 @@ enum MXLTEE_TA_SECURE_CRYPTO_CMD {
 	 * param0	- MAC generation parameters
 	 */
 	TA_SECURE_CRYPTO_GEN_MAC_SINGLE = 0x08,
+	TA_SECURE_CRYPTO_INIT_PIN = 0x09,
+	TA_SECURE_CRYPTO_AUTH_PIN = 0x0a,
+	TA_SECURE_CRYPTO_SET_PIN = 0x0b,
 };
 
 /**
  * struct secure_storage_params - represents secure storage information to store/load the key
- * @handle	:	64-bit secure storage handle of opened sst object
- * @access_perm	:	access permissions associated with sst object
- * @policy_attr	:	policy attributes for enforcing policy check
- * @crypto_mode_flag	:	crypto mode options like integrity, encryption etc...
+ * @handle:		64-bit secure storage handle of opened sst object
+ * @access_perm:	access permissions associated with sst object
+ * @policy_attr:	policy attributes for enforcing policy check
+ * @crypto_mode_flag:	crypto mode options like integrity, encryption etc...
  */
 struct secure_storage_params {
 	uint64_t handle;
@@ -323,11 +326,15 @@ struct secure_storage_params {
 
 /**
  * struct seccrypto_gen_key	- key generation parameters for TA_SECURE_CRYPTO_GEN_KEYPAIR tee command
- * @genkey_algo	:	algorithm to be used for key generation
- * @flag	:	flags to be passed for keygen
- * @sst_params	:	secure storage parameters like handle, permission etc...
- * @key_ptr	:	key context pointer for returning key context back to ATOM
- * @key_len	:	buffer length of @key_ptr
+ * @genkey_algo:		algorithm to be used for key generation
+ * @flag:			flags to be passed for keygen
+ * @sst_params:			secure storage parameters like handle, permission etc...
+ * @key_ptr:			key context pointer for returning key context back to ATOM
+ * @key_len:			buffer length of @key_ptr
+ * @public_attribute_size:	buffer length of @public_key_attribute
+ * @public_key_attribute:	pointer to buffer containing public key attribute
+ * @private_attribute_size:	buffer length of @private_key_attribute
+ * @private_key_attribute:	pointer to buffer containing private key attribute
  */
 struct seccrypto_gen_key {
 	enum sec_alg genkey_algo;
@@ -335,15 +342,19 @@ struct seccrypto_gen_key {
 	struct secure_storage_params sst_params;
 	void *key_ptr;
 	uint32_t key_len;
+	uint32_t public_attribute_size;
+	uint32_t *public_key_attribute;
+	uint32_t private_attribute_size;
+	uint32_t *private_key_attribute;
 };
 
 /**
  * struct seccrypto_load_key - key load parameters for TA_SECURE_CRYPTO_LOAD_KEY tee command
- * @sst_params	:	secure storage params like handle, policy etc...
- * @key_type	:	0-private key, 1-public key
- * @load_flags	:	load options like 0-keyblob, 1-plaintext
- * @load_algo	:	secure crypto algorithm to be used
- * @hash_algo	:	hash algorithm
+ * @sst_params:	secure storage params like handle, policy etc...
+ * @key_type:	0-private key, 1-public key
+ * @load_flags:	load options like 0-keyblob, 1-plaintext
+ * @load_algo:	secure crypto algorithm to be used
+ * @hash_algo:	hash algorithm
  */
 struct seccrypto_load_key {
 	struct secure_storage_params sst_params;
@@ -355,13 +366,13 @@ struct seccrypto_load_key {
 
 /**
  * struct seccrypto_sign_param -  signature generation parameters for TA_SECURE_CRYPTO_SIGN tee command
- * @data	:	data for which signature needs to generated
- * @data_len	:	length of @data_len
- * @sign_algo	:	algorithm to be used for signature generation
- * @hash_algo	:	hash algorithm to be used for signature generation
- * @hash_flags	:	flags to be used for signature generation
- * @signature	: signature of @data
- * @sign_len	:	length of @signature
+ * @data:	data for which signature needs to generated
+ * @data_len:	length of @data_len
+ * @sign_algo:	algorithm to be used for signature generation
+ * @hash_algo:	hash algorithm to be used for signature generation
+ * @hash_flags:	flags to be used for signature generation
+ * @signature: 	signature of @data
+ * @sign_len:	length of @signature
  */
 struct seccrypto_sign_param {
 	uint8_t *data;
@@ -375,13 +386,13 @@ struct seccrypto_sign_param {
 
 /**
  * struct seccrypto_verify_param - signature verify parameters for TA_SECURE_CRYPTO_VERIFY tee command
- * @data	:	data to be verified by @signature
- * @data_len	:	length of @data
- * @signature	: signature of @data
- * @sign_len	:	length of @signature
- * @sign_algo	:	algorithm used while generating @signature
- * @hash_algo	:	hash algorithm to be used for signature verification
- * @hash_flags	:	flags used while generating @signature
+ * @data:	data to be verified by @signature
+ * @data_len:	length of @data
+ * @signature:	signature of @data
+ * @sign_len:	length of @signature
+ * @sign_algo:	algorithm used while generating @signature
+ * @hash_algo:	hash algorithm to be used for signature verification
+ * @hash_flags:	flags used while generating @signature
  */
 struct seccrypto_verify_param {
 	uint8_t *data;
@@ -394,14 +405,50 @@ struct seccrypto_verify_param {
 };
 
 /**
+ * struct seccrypto_sign_digest_param - signature generation parameters for TA_SECURE_CRYPTO_SIGN_DIGEST tee command
+ * @digest:	hash digest input for signature generation
+ * @digest_len:	length of @digest
+ * @sign_algo:	algorithm to be used for signature generation
+ * @hash_algo:	hash algorithm to be used for signature generation
+ * @signature:	signature of @digest
+ * @sign_len:	length of @signature
+ */
+struct seccrypto_sign_digest_param {
+	uint8_t *digest;
+	uint32_t digest_len;
+	enum sec_alg sign_algo;
+	enum sign_flag hash_algo;
+	void *signature; /* Pointer to the signature context */
+	unsigned int sign_len; /* Size of the signature context */
+};
+
+/**
+ * struct seccrypto_digest_verify_param - signature verification paramters for TA_SECURE_CRYPTO_DIGEST_VERIFY tee command
+ * @digest:	hash digest to verified by @signature
+ * @digest_len:	length of @digest
+ * @signature:	signature of @digest
+ * @sign_len:	length of @signature
+ * @sign_algo:	signature algorithm used while signing hash diest
+ * @sign_flags:	signature flags used while sigining hash digest
+ */
+struct seccrypto_digest_verify_param {
+	uint8_t *digest;
+	uint32_t digest_len;
+	uint8_t *signature;
+	uint32_t sign_len;
+	enum sec_alg sign_algo;
+	enum sign_flag hash_algo;
+};
+
+/**
  * struct seccrypto_wrap_unwrap - wrap/unwrap parameters for TA_SECURE_CRYPTO_WRAP/UNWRAP tee command
- * @input	:	pointer to secret data to be wrapped/unwrapped
- * @output	:	pointer to wrapped/unwrapped data
+ * @input:	pointer to secret data to be wrapped/unwrapped
+ * @output:	pointer to wrapped/unwrapped data
  * @key	:	pointer to wrapping/unwrapping key or key information
- * @input_size	:	length of input data i.e @input
- * @output_size	:	length of output data i.e @output
- * @key_size	:	length of wrap key i.e @key
- * @flags	:	flags like INPUT_BUFFER, KEY_SS_HANDLE etc...
+ * @input_size:	length of input data i.e @input
+ * @output_size:length of output data i.e @output
+ * @key_size:	length of wrap key i.e @key
+ * @flags:	flags like INPUT_BUFFER, KEY_SS_HANDLE etc...
  */
 struct seccrypto_wrap_unwrap {
 	uint8_t *input;
@@ -415,14 +462,14 @@ struct seccrypto_wrap_unwrap {
 
 /**
  * struct seccrypto_mac_gen - MAC generation parameters for TA_SECURE_CRYPTO_GEN_MAC_SINGLE tee command
- * @mac_algo	:	MAC generation algorithms
- * @input		:	Input data to generate MAC
- * @output		:	MAC
- * @mac_key		:	Key used to generate MAC
- * @input_size	:	Input data size i.e size of @input
- * @output_size	:	MAC size i.e size of @output
- * @key_size	:	MAC Key size i.e size of @mac_key
- * @flags		:	Options for MAC generation
+ * @mac_algo:	MAC generation algorithms
+ * @input:	Input data to generate MAC
+ * @output:	MAC
+ * @mac_key:	Key used to generate MAC
+ * @input_size:	Input data size i.e size of @input
+ * @output_size:MAC size i.e size of @output
+ * @key_size:	MAC Key size i.e size of @mac_key
+ * @flags:	Options for MAC generation
  */
 struct seccrypto_mac_gen {
 	enum mac_alg mac_algo;
@@ -433,5 +480,35 @@ struct seccrypto_mac_gen {
 	uint32_t output_size;
 	uint32_t key_size;
 	enum mac_flags flags;
+};
+
+#define MXL_TEE_SEC_STORE
+enum user_types {
+	TYPE_SO,
+	TYPE_USER,
+};
+
+enum pin_hash_alg {
+	PIN_HASH_ALGO_SHA256,
+	PIN_HASH_ALGO_SHA384,
+	PIN_HASH_ALGO_EPBKDF2,
+};
+
+typedef struct {
+	enum user_types user_type;
+	enum pin_hash_alg pin_hash_algo;
+	uint8_t *pin;
+	uint32_t pin_len;
+} seccrypto_pin_info_t;
+
+typedef struct {
+	seccrypto_pin_info_t old_pin_info;
+	uint8_t *new_pin;
+	uint32_t new_pin_len;
+} seccrypto_pin_set_info_t;
+
+enum gen_keypair_ver {
+	BASE_VERSION_0 = 0, /* Old driver, without PKCS Attribute Support */
+	BASE_VERSION_1 = 1, /* With PKCS Attribute Support */
 };
 #endif //_MXLTEE_H_

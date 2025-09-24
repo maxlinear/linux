@@ -621,3 +621,4 @@ endif # NETDEVICES
 source "drivers/net/qos_mgr/Kconfig"
 source "drivers/net/ppv4/Kconfig"
 source "drivers/net/directconnect_dp/Kconfig"
+source "drivers/net/datapath/datapath_wa/Kconfig"

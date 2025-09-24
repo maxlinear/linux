@@ -740,6 +740,16 @@ struct mac_ops {
 	int (*adjust_systime)(void *ops, u32 sec, u32 nsec, u32 addsub,
 			      u32 adjust_systime);
 
+	/* This function Initializes System time Configuration
+	 * param[in/out]IN:     ops     MAC ops Struct registered for MAC 0/1/2.
+	 * param[in/out]IN:     interval Pulse ineterval
+	 * param[in/out]IN:     width	Pulse width
+	 * param[in/out]IN:     start	Pulse start time
+	 * param[in/out]IN:     phase	Pulse phase
+	 * return       OUT     -1: System time Configuration Set Error
+	 */
+	int (*ptp_per_out_enable)(void *ops, u64 interval, u64 width, u64 start, u64 phase);
+
 	/* This sequence is used get 64-bit system time in nano sec
 	 * param[in/out]IN:	ops	MAC ops Struct registered for MAC 0/1/2.
 	 * return	OUT	u64: 64-bit system time in nano sec

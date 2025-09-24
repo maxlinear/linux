@@ -3820,7 +3820,7 @@ static u32 _config_policy_sel(void)
 	pr_debug("CBM_POLICY_SEL0_3: 0x%x\n", val);
 	cbm_w32(cqm_ctrl->cqm + CBM_POLICY_SEL0_3, val);
 
-	policy = _get_policy_from_type_dir_size(SYS, EGRESS, SIZE_2048);
+	policy = _get_policy_from_type_dir_size(LROUC, INGRESS, SIZE_2048);
 	pr_debug("CBM_POLICY_SEL4: 0x%x\n", policy);
 	cbm_w32(cqm_ctrl->cqm + CBM_POLICY_SEL4, policy);
 
@@ -9007,7 +9007,7 @@ static s32 NO_OPTIMIZE init_cqm_deq_dma_port(int dqp_idx)
 		 ((dqp_idx << CFG_DMA_EGP_27_EPMAP_POS) &
 		 CFG_DMA_EGP_27_EPMAP_MASK);
 	if (cqm_ctrl->dqm_port_info[dqp_idx].dma_port_type == DEQ_VPN) {
-		config |= CFG_DMA_EGP_27_HFLAG_MASK | CFG_DMA_EGP_27_HMODE_MASK;
+		config &= ~(CFG_DMA_EGP_27_HFLAG_MASK | CFG_DMA_EGP_27_HMODE_MASK);
 	} else if (cqm_ctrl->dqm_port_info[dqp_idx].dma_port_type == DEQ_PP_NF ||
 		   cqm_ctrl->dqm_port_info[dqp_idx].dma_port_type == DEQ_TOE) {
 		config |= CFG_DMA_EGP_27_HMODE_MASK;

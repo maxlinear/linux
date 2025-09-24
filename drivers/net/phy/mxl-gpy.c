@@ -41,6 +41,7 @@
 #define PHY_ISTAT		0x1A	/* interrupt status */
 #define PHY_LED			0x1B	/* LED control */
 #define PHY_FWV			0x1E	/* firmware version */
+#define PHY_TEST		0x1F	/* internal test modes CDIAG and ABIST */
 
 #define PHY_MIISTAT_SPD_MASK	GENMASK(2, 0)
 #define PHY_MIISTAT_DPX		BIT(3)
@@ -452,6 +453,9 @@ static int gpy_probe(struct phy_device *phydev)
 	phydev_info(phydev, "Firmware Version: %d.%d (0x%04X%s)\n",
 		    priv->fw_major, priv->fw_minor, fw_version,
 		    fw_version & PHY_FWV_REL_MASK ? "" : " test version");
+
+	/* disable EXC Average running */
+	phy_write(phydev, PHY_TEST, BIT(6));
 
 	phy_sysfs_init(&phydev->mdio.dev);
 

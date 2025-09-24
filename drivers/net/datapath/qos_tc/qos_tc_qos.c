@@ -112,6 +112,23 @@ static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
 	return ret;
 }
 
+static int set_alloc_flag(struct qos_tc_qdisc *sch)
+{
+	struct net_device *dev = sch->dev;
+	struct dp_port_prop prop;
+
+	if (dp_get_port_prop(sch->inst, sch->port, &prop)) {
+		netdev_dbg(dev, "%s: get port properties failed\n", __func__);
+		return -ENODEV;
+	}
+
+	sch->alloc_flag  = prop.alloc_flags;
+	netdev_dbg(dev, "%s: %s alloc_flag:%#x\n",
+		   __func__, dev->name, sch->alloc_flag);
+
+	return 0;
+}
+
 int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 		const struct qos_tc_params *tc_params)
 {
@@ -265,7 +282,9 @@ int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 		sch->ds = true;
 	}
 
-	return 0;
+	ret = set_alloc_flag(sch);
+
+	return ret;
 }
 
 int qos_tc_alloc_qdisc(struct qos_tc_qdisc **qdisc)
@@ -1361,8 +1380,9 @@ int qos_tc_add_sch_to_tbf_port(struct qos_tc_port *port,
 	}
 
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
+	port->q_map = QOS_TC_QMASK; /* reserve 8 bits for root scheduler*/
 	qdisc.offset = 0;
-	/*! Send scheduler added notification */
+	/*! Send scheduler added notification */	
 	qos_tc_check_and_notify(&qdisc, QOS_EVENT_SCH_ADD, QOS_TC_UNUSED, idx,
 		qdisc.qids[idx].p_w, NULL);
 #endif
@@ -1424,6 +1444,22 @@ static int qos_tc_sched_policy_update(struct qos_tc_qdisc *sch,
 #define MAX_QUEUE_LENGTH_1K 0x400
 #define MAX_QUEUE_LENGTH_3K 0xC00
 
+static void q_parms_enable(struct qos_tc_qdisc *sch, struct dp_queue_conf *q)
+{
+	struct dp_qos_q_parms p = {0};
+	int ret;
+
+	ret = dp_qos_get_q_global_parms(sch->inst, sch->port,
+					sch->alloc_flag, 0, &p);
+	if (!ret) {
+		/* Apply global DPM queue parameters here. The parameters are
+		 * currently set over dts.
+		 */
+		netdev_dbg(sch->dev, "codel for qid: %u enabled\n", q->q_id);
+		q->codel = p.codel_en;
+	}
+}
+
 int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 {
 	struct dp_queue_conf q_cfg = {
@@ -1454,6 +1490,7 @@ int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 #if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
 	/* Set queue length and drop algorithm based on the interface */
 	if (sch->alloc_flag & DP_F_GPON) {
+		q_parms_enable(sch, &q_cfg);
 		q_cfg.wred_max_allowed = WRED_RED_TH;
 		q_cfg.drop = DP_QUEUE_DROP_WRED;
 	} else if (sch->alloc_flag & DP_F_FAST_ETH_LAN) {

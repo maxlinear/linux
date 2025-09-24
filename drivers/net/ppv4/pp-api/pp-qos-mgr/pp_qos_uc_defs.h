@@ -21,7 +21,7 @@
 
 /* UC version */
 #define UC_VERSION_MAJOR (1)
-#define UC_VERSION_MINOR (34)
+#define UC_VERSION_MINOR (35)
 
 #define QOS_MAX_PREDECESSORS            (6)
 #define QOS_MAX_CHILDREN                (8)

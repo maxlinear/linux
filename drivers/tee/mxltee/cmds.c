@@ -38,15 +38,18 @@ static atomic_t icc_msg_read = ATOMIC_INIT(SCSA_ICC_MSG_READ);
 typedef s32 (*invoke_tee_function)(struct mxltee_driver *drv,
 		struct mxltee_session *session, u32 num_params, struct tee_param *param);
 static invoke_tee_function invoke_tee_func[] = {
-	handle_sign_command,
-	handle_verify_command,
-	NULL,
-	NULL,
-	handle_keyload_command,
-	handle_keygen_command,
-	handle_wrap_command,
-	handle_unwrap_command,
-	handle_macgen_command,
+	[TA_SECURE_CRYPTO_SIGN] = handle_sign_command,
+	[TA_SECURE_CRYPTO_VERIFY] = handle_verify_command,
+	[TA_SECURE_CRYPTO_SIGN_DIGEST] = handle_signdgst_command,
+	[TA_SECURE_CRYPTO_VERIFY_DIGEST] = handle_verifydgst_command,
+	[TA_SECURE_CRYPTO_LOAD_KEY] = handle_keyload_command,
+	[TA_SECURE_CRYPTO_GEN_KEYPAIR] = handle_keygen_command,
+	[TA_SECURE_CRYPTO_WRAP] = handle_wrap_command,
+	[TA_SECURE_CRYPTO_UNWRAP] = handle_unwrap_command,
+	[TA_SECURE_CRYPTO_GEN_MAC_SINGLE] = handle_macgen_command,
+	[TA_SECURE_CRYPTO_INIT_PIN] = handle_initpin_command,
+	[TA_SECURE_CRYPTO_AUTH_PIN] = handle_authpin_command,
+	[TA_SECURE_CRYPTO_SET_PIN] = handle_setpin_command,
 };
 
 int get_hash_algo(enum sec_alg algo)

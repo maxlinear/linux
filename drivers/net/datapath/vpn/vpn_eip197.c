@@ -46,8 +46,10 @@
 #define CONTEXT_CRYPTO_ALG_SHA384	(0x6 << 23)
 #define CONTEXT_CRYPTO_ALG_SHA512	(0x5 << 23)
 #define CONTEXT_SPI			BIT(27)
-#define CONTEXT_SEQ			BIT(28)
+#define CONTEXT_SEQ0			BIT(28)
+#define CONTEXT_SEQ1			BIT(29)
 #define CONTEXT_MASK0			BIT(30)
+#define CONTEXT_MASK1			BIT(31)
 
 /* control1 */
 #define CONTEXT_CRYPTO_MODE_ECB		(0 << 0)
@@ -67,8 +69,6 @@
 
 /* token configuration */
 #define EIP197_MAX_TOKENS 4
-#define TOKEN_WORDS_SIZE_OUTBOUND 6
-#define TOKEN_WORDS_SIZE_INBOUND 5
 
 /* null identifier */
 #define CONTEXT_CRYPTO_ALG_NULL (-1)
@@ -110,6 +110,7 @@ enum token_instructions {
 	INS_HASH_RESULT = 0x1c,
 	INS_INSERT_SPI = 0x12,
 	INS_SEQ_NUM = 0xa,
+	INS_ESN = 0x9,
 	INS_SEQ_NUM_INBOUND = 0x5,
 	INS_IPSEC_PADDING = 0x04,
 	INS_TYPE_OUTPUT = BIT(5),
@@ -479,12 +480,22 @@ static int vpn_eip197_context_control(struct vpn_data *priv,
 	int ctrl_size = params->key_len / sizeof(u32);
 	u32 cw0 = 0, cw1 = 0;
 
-	cw0 |= CONTEXT_SPI | CONTEXT_SEQ;
+	cw0 |= CONTEXT_SPI | CONTEXT_SEQ0;
 	ctrl_size += 2;
+
+	if (params->esn) {
+		cw0 |= CONTEXT_SEQ1;
+		ctrl_size += 1;
+	}
 
 	if (params->direction == VPN_DIRECTION_IN) {
 		cw0 |= CONTEXT_MASK0;
 		ctrl_size += 2;
+
+		if (params->esn) {
+			cw0 |= CONTEXT_MASK1;
+			ctrl_size += 2;
+		}
 	}
 
 	if (params->direction == VPN_DIRECTION_OUT)
@@ -577,9 +588,15 @@ static int vpn_eip197_ctx(struct vpn_data *priv,
 	p += 2 * params->ipad_size / sizeof(u32);
 	*p++ = params->spi;
 	*p++ = 0; /* seq0 */
+	if (params->esn)
+		*p++ = 0; /* seq1 */
 	if (params->direction == VPN_DIRECTION_IN) {
 		*p++ = 1; /* seqmask0 */
 		*p++ = 0; /* seqmask1 */
+		if (params->esn) {
+			*p++ = 0; /* seqmask2 */
+			*p++ = 0; /* seqmask3 */
+		}
 	}
 
 	/* cw0/cw1 */
@@ -589,93 +606,130 @@ static int vpn_eip197_ctx(struct vpn_data *priv,
 	return 0;
 }
 
-static int vpn_eip197_tkn(struct vpn_data *priv, struct vpn_sa_params *params)
+static int vpn_eip197_tkn(struct vpn_data *priv, struct vpn_sa_params *params,
+			  u32 *tkn_size)
 {
 	const u32 seq_no_offset = 2 * sizeof(u32) /* cw0/1 */ +
 				  params->key_len + 2 * params->ipad_size +
 				  sizeof(u32) /* SPI */;
-	const u32 seq_mask_size = 2 * sizeof(u32);
-	const u32 seq_no_size = sizeof(u32);
+	u32 seq_mask_size = 2 * sizeof(u32);
+	u32 seq_no_size = sizeof(u32);
 	struct token_desc *tkn;
+	int i = 0;
 
 	tkn = params->token_buffer;
 	if (!tkn)
 		return -EINVAL;
 
+	if (params->esn) {
+		seq_mask_size += 2 * sizeof(u32);
+		seq_no_size += sizeof(u32);
+	}
+
 	memset(tkn, 0, sizeof(struct token_desc));
 
 	if (params->direction == VPN_DIRECTION_OUT) {
-		tkn[0].opcode = OPCODE_INSERT;
-		tkn[0].instructions = INS_TYPE_HASH | INS_TYPE_OUTPUT |
+		tkn[i].opcode = OPCODE_INSERT;
+		tkn[i].instructions = INS_TYPE_HASH | INS_TYPE_OUTPUT |
 				      INS_INSERT_SPI;
-		tkn[0].packet_length = sizeof(struct ip_esp_hdr) +
+		tkn[i].packet_length = sizeof(struct ip_esp_hdr) +
 				       params->iv_size;
+		i++;
 
 		 /* actual length will be set by fw */
-		tkn[1].opcode = OPCODE_DIRECTION;
-		tkn[1].instructions = INS_TYPE_CRYPTO | INS_TYPE_HASH |
+		tkn[i].opcode = OPCODE_DIRECTION;
+		tkn[i].instructions = INS_TYPE_CRYPTO | INS_TYPE_HASH |
 				      INS_TYPE_OUTPUT;
-		tkn[1].packet_length = 0;
+		tkn[i].packet_length = 0;
+		i++;
 
 		/* next header & pad will be set by fw */
-		tkn[2].opcode = OPCODE_INSERT;
-		tkn[2].instructions = INS_LAST | INS_TYPE_CRYPTO |
+		tkn[i].opcode = OPCODE_INSERT;
+		tkn[i].instructions = INS_LAST | INS_TYPE_CRYPTO |
 				      INS_TYPE_HASH | INS_TYPE_OUTPUT |
 				      INS_IPSEC_PADDING;
-		tkn[2].stat = STAT_LAST_HASH;
-		tkn[2].packet_length = 0;
+		if (!params->esn)
+			tkn[i].stat = STAT_LAST_HASH;
+		tkn[i].packet_length = 0;
+		i++;
 
-		tkn[3].opcode = OPCODE_INSERT;
-		tkn[3].instructions = INS_TYPE_OUTPUT | INS_HASH_RESULT;
-		tkn[3].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
-		tkn[3].packet_length = params->icv_size;
+		if (params->esn) {
+			tkn[i].opcode = OPCODE_INSERT;
+			tkn[i].instructions = INS_TYPE_HASH | INS_ESN;
+			tkn[i].stat = STAT_LAST_HASH;
+			tkn[i].packet_length = sizeof(u32);
+			i++;
+		}
 
-		tkn[4].opcode = OPCODE_VERIFY;
-		tkn[4].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].opcode = OPCODE_INSERT;
+		tkn[i].instructions = INS_TYPE_OUTPUT | INS_HASH_RESULT;
+		tkn[i].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].packet_length = params->icv_size;
+		i++;
 
-		tkn[5].ctx.opcode = OPCODE_CTX_ACCESS;
-		tkn[5].ctx.length = seq_no_size / sizeof(u32);
-		tkn[5].ctx.seq_num = SEQ_NUM_OUTBOUND;
-		tkn[5].ctx.stat = STAT_LAST_PACKET | STAT_LAST_HASH;
-		tkn[5].ctx.d = true;
-		tkn[5].ctx.offset = seq_no_offset / sizeof(u32);
+		tkn[i].opcode = OPCODE_VERIFY;
+		tkn[i].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		i++;
+
+		tkn[i].ctx.opcode = OPCODE_CTX_ACCESS;
+		tkn[i].ctx.length = seq_no_size / sizeof(u32);
+		tkn[i].ctx.seq_num = SEQ_NUM_OUTBOUND;
+		tkn[i].ctx.stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].ctx.d = true;
+		tkn[i].ctx.offset = seq_no_offset / sizeof(u32);
+		i++;
 	} else {
-		tkn[0].opcode = OPCODE_RETRIEVE;
-		tkn[0].instructions = INS_TYPE_HASH | INS_INSERT_SPI;
-		tkn[0].packet_length = sizeof(struct ip_esp_hdr) +
+		tkn[i].opcode = OPCODE_RETRIEVE;
+		tkn[i].instructions = INS_TYPE_HASH | INS_INSERT_SPI;
+		tkn[i].packet_length = sizeof(struct ip_esp_hdr) +
 				       params->iv_size;
+		i++;
 
 		/* payload length will be set by fw */
-		tkn[1].opcode = OPCODE_DIRECTION;
-		tkn[1].instructions = INS_LAST | INS_TYPE_CRYPTO |
+		tkn[i].opcode = OPCODE_DIRECTION;
+		tkn[i].instructions = INS_LAST | INS_TYPE_CRYPTO |
 				      INS_TYPE_HASH | INS_TYPE_OUTPUT;
-		tkn[1].stat = STAT_LAST_HASH;
-		tkn[1].packet_length = 0;
+		tkn[i].stat = STAT_LAST_HASH;
+		tkn[i].packet_length = 0;
+		i++;
 
-		tkn[2].opcode = OPCODE_RETRIEVE;
-		tkn[2].instructions = INS_HASH_RESULT;
-		tkn[2].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
-		tkn[2].packet_length = params->icv_size;
+		if (params->esn) {
+			tkn[i].opcode = OPCODE_INSERT;
+			tkn[i].instructions = INS_TYPE_HASH | INS_ESN;
+			tkn[i].stat = STAT_LAST_HASH;
+			tkn[i].packet_length = sizeof(u32);
+			i++;
+		}
 
-		tkn[3].opcode = OPCODE_VERIFY;
-		tkn[3].instructions = INS_LAST | INS_TYPE_CRYPTO |
+		tkn[i].opcode = OPCODE_RETRIEVE;
+		tkn[i].instructions = INS_HASH_RESULT;
+		tkn[i].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].packet_length = params->icv_size;
+		i++;
+
+		tkn[i].opcode = OPCODE_VERIFY;
+		tkn[i].instructions = INS_LAST | INS_TYPE_CRYPTO |
 				      INS_TYPE_OUTPUT;
-		tkn[3].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
-		tkn[3].packet_length = BIT(16) /* header */ | params->icv_size;
+		tkn[i].stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].packet_length = BIT(16) /* header */ | params->icv_size;
+		i++;
 
-		tkn[4].ctx.opcode = OPCODE_CTX_ACCESS;
-		tkn[4].ctx.length = (seq_no_size + seq_mask_size) / sizeof(u32);
-		tkn[4].ctx.seq_num = SEQ_NUM_INBOUND;
-		tkn[4].ctx.stat = STAT_LAST_PACKET | STAT_LAST_HASH;
-		tkn[4].ctx.p = true;
-		tkn[4].ctx.d = true;
-		tkn[4].ctx.offset = seq_no_offset / sizeof(u32);
+		tkn[i].ctx.opcode = OPCODE_CTX_ACCESS;
+		tkn[i].ctx.length = (seq_no_size + seq_mask_size) / sizeof(u32);
+		tkn[i].ctx.seq_num = SEQ_NUM_INBOUND;
+		tkn[i].ctx.stat = STAT_LAST_PACKET | STAT_LAST_HASH;
+		tkn[i].ctx.p = true;
+		tkn[i].ctx.d = true;
+		tkn[i].ctx.offset = seq_no_offset / sizeof(u32);
+		i++;
 	}
 
+	*tkn_size = i;
 	return 0;
 }
 
-static int vpn_eip197_cdr(struct vpn_data *priv, struct vpn_sa_params *params)
+static int vpn_eip197_cdr(struct vpn_data *priv, struct vpn_sa_params *params,
+			  u32 tkn_size)
 {
 	struct command_desc *cdr;
 
@@ -685,27 +739,19 @@ static int vpn_eip197_cdr(struct vpn_data *priv, struct vpn_sa_params *params)
 
 	memset(cdr, 0, sizeof(struct command_desc));
 
-	if (params->direction == VPN_DIRECTION_OUT) {
-		cdr->additional_cdata_size = TOKEN_WORDS_SIZE_OUTBOUND;
-		cdr->first_seg = true;
-		cdr->last_seg = true;
+	cdr->additional_cdata_size = tkn_size;
+	cdr->first_seg = true;
+	cdr->last_seg = true;
 
-		cdr->control_data.type = TYPE_TOKEN_FETCH_AUTO;
-		cdr->control_data.input_pointer = true;
-		cdr->control_data.context_pointer = true;
-		cdr->control_data.context_type = true;
-		cdr->control_data.reuse_context = REUSE_CONTEXT_AUTO;
+	cdr->control_data.type = TYPE_TOKEN_FETCH_AUTO;
+	cdr->control_data.input_pointer = true;
+	cdr->control_data.context_pointer = true;
+	cdr->control_data.context_type = true;
+	cdr->control_data.reuse_context = REUSE_CONTEXT_AUTO;
+
+	if (params->direction == VPN_DIRECTION_OUT) {
 		cdr->control_data.iv_option = IV_OPT_PRNG;
 	} else {
-		cdr->additional_cdata_size = TOKEN_WORDS_SIZE_INBOUND;
-		cdr->first_seg = true;
-		cdr->last_seg = true;
-
-		cdr->control_data.type = TYPE_TOKEN_FETCH_AUTO;
-		cdr->control_data.input_pointer = true;
-		cdr->control_data.context_pointer = true;
-		cdr->control_data.context_type = true;
-		cdr->control_data.reuse_context = REUSE_CONTEXT_AUTO;
 		cdr->control_data.type_of_output = OUTPUT_PAD_REMOVE |
 						   OUTPUT_HEADER_UPDATE;
 		cdr->control_data.iv_option = IV_OPT_PACKET;
@@ -767,6 +813,7 @@ void *vpn_eip197_create_sa(struct vpn_data *priv,
 	struct cipher_algo *cipher;
 	struct auth_algo *auth;
 	struct vpn_sa *sa;
+	u32 tkn_size;
 
 	dev_dbg(priv->dev, "create sa for spi 0x%x enc %s auth %s\n",
 		params->spi, params->enc_algo, params->auth_algo);
@@ -816,12 +863,12 @@ void *vpn_eip197_create_sa(struct vpn_data *priv,
 		return NULL;
 	}
 
-	if (vpn_eip197_tkn(priv, params)) {
+	if (vpn_eip197_tkn(priv, params, &tkn_size)) {
 		dev_err(priv->dev, "Failed to construct token\n");
 		return NULL;
 	}
 
-	if (vpn_eip197_cdr(priv, params)) {
+	if (vpn_eip197_cdr(priv, params, tkn_size)) {
 		dev_err(priv->dev, "Failed to construct cdr\n");
 		return NULL;
 	}

@@ -460,6 +460,7 @@ static int qos_tc_parse_skbedit(struct flow_cls_offload *f,
 	netdev_dbg(skbedit->dev, "skbedit rule created: %p\n", *rule);
 
 	(*rule)->skbedit_act.pref = f->common.prio;
+
 	qos_tc_pattern_init(&((*rule)->vlan.outer));
 	qos_tc_pattern_init(&((*rule)->vlan.inner));
 	(*rule)->skbedit_act.tc = tc;

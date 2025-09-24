@@ -3103,7 +3103,7 @@ GSW_return_t GSW_RMON_Route_Get(void *cdev, GSW_RMON_Route_cnt_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_CountGet(void *cdev, GSW_PMAC_Cnt_t *parm);
+int GSW_PMAC_CountGet(void *cdev, GSW_PMAC_Cnt_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3138,7 +3138,7 @@ GSW_return_t GSW_PMAC_CountGet(void *cdev, GSW_PMAC_Cnt_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
+int GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3156,7 +3156,7 @@ GSW_return_t GSW_PMAC_BM_CfgSet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
+int GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3174,7 +3174,7 @@ GSW_return_t GSW_PMAC_BM_CfgGet(void *cdev, GSW_PMAC_BM_Cfg_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
+int GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3192,7 +3192,7 @@ GSW_return_t GSW_PMAC_IG_CfgSet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
+int GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3210,7 +3210,7 @@ GSW_return_t GSW_PMAC_IG_CfgGet(void *cdev, GSW_PMAC_Ig_Cfg_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_EG_CfgSet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm);
+int GSW_PMAC_EG_CfgSet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for
@@ -3228,7 +3228,7 @@ GSW_return_t GSW_PMAC_EG_CfgSet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm);
    - GSW_statusOk: if successful
    - An error code in case an error occurs
 */
-GSW_return_t GSW_PMAC_EG_CfgGet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm);
+int GSW_PMAC_EG_CfgGet(void *cdev, GSW_PMAC_Eg_Cfg_t *parm);
 
 /**
    This is the switch API low-level function for

@@ -397,7 +397,9 @@ static int vuni_open(struct net_device *dev)
 {
 	struct mxl_vuni_priv *priv;
 	struct net_device *vani_dev;
-	struct net_device *vuni_dev;
+	struct net_device *vuni_dev0_0;
+	struct net_device *vuni_dev0_1;
+	struct net_device *vuni_dev0_2;
 	bool flags = true;
 	int ret;
 
@@ -414,9 +416,12 @@ static int vuni_open(struct net_device *dev)
 	 */
 	if (priv->vani == 0) {
 		vani_dev = vuni_if[priv->id][SUBIF_VANI0_0];
-		vuni_dev = vuni_if[priv->id][SUBIF_VUNI0_0];
-		if (vuni_dev == dev) {
-			netif_carrier_on(vuni_dev);
+		vuni_dev0_0 = vuni_if[priv->id][SUBIF_VUNI0_0];
+		vuni_dev0_1 = vuni_if[priv->id][SUBIF_VUNI0_1];
+		vuni_dev0_2 = vuni_if[priv->id][SUBIF_VUNI0_2];
+
+		if (vani_dev != dev) {
+			netif_carrier_on(dev);
 			/* Setting of IFF_UP flag is not working from vuni_init, as link
 			 * is not present yet (__LINK_STATE_PRESENT is not set).
 			 * So, for now setting the flag from vuni_open.

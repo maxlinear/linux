@@ -25,7 +25,7 @@
  * the version here
  */
 #define EGRESS_VER_MAJOR  1
-#define EGRESS_VER_MINOR  51
+#define EGRESS_VER_MINOR  52
 
 #define INGRESS_VER_MAJOR 1
 #define INGRESS_VER_MINOR 28

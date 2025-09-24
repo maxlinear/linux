@@ -663,7 +663,7 @@ int xgmac_get_tstamp_status(void *pdev)
 	u32 mac_tscr, val;
 	u64 time;
 
-	mac_tscr = XGMAC_RGRD(pdata, MAC_TSTAMP_STSR);
+	mac_tscr = pdata->tstamp_status;
 
 	mac_printf("XGMAC %d: Timestamp Status\n", pdata->mac_idx);
 

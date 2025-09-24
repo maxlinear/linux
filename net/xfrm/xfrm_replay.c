@@ -17,6 +17,9 @@ u32 xfrm_replay_seqhi(struct xfrm_state *x, __be32 net_seq)
 	if (!(x->props.flags & XFRM_STATE_ESN))
 		return 0;
 
+	if (!replay_esn->replay_window)
+		return replay_esn->seq_hi;
+
 	seq = ntohl(net_seq);
 	seq_hi = replay_esn->seq_hi;
 	bottom = replay_esn->seq - replay_esn->replay_window + 1;

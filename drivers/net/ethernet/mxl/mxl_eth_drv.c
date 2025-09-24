@@ -176,6 +176,7 @@ static struct xfrmdev_ops xfrm_ops = {
 	.xdo_dev_state_add = dp_xdo_dev_state_add,
 	.xdo_dev_state_delete = dp_xdo_dev_state_delete,
 	.xdo_dev_offload_ok = dp_xdo_dev_offload_ok,
+	.xdo_dev_state_advance_esn = dp_xdo_dev_state_advance_esn,
 };
 #endif
 
@@ -1429,6 +1430,13 @@ static int eth_thermal_set_cur_state(struct thermal_cooling_device *cdev,
 			pr_debug("%s: %s: skipping no active link ", __func__,
 				 netdev_name(dev));
 			continue;  /* phy puts hw in sleep if no link */
+		}
+
+		/* Skip if this is a 10GKR interface(10G_Lan) */
+		if (priv->phy_mode == PHY_INTERFACE_MODE_10GKR) {
+			pr_debug("%s: %s: skipping 10GKR interface", __func__,
+				netdev_name(dev));
+			continue; 
 		}
 
 		if (!priv->has_phy)
