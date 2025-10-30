@@ -1500,7 +1500,7 @@ int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_3K;
 		q_cfg.codel = DP_CODEL_EN;
 	} else if (sch->alloc_flag & DP_F_VUNI) {
-		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_3K;
+		q_cfg.wred_max_allowed = WRED_RED_TH;
 	} else if (sch->alloc_flag & DP_F_FAST_WLAN) {
 		q_cfg.wred_max_allowed = MAX_QUEUE_LENGTH_1K;
 	} else {
