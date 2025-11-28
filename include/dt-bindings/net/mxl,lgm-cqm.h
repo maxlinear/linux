@@ -41,6 +41,7 @@
 #define SSB_NIOC_SHARED		3
 #define SSB_LROUC_NIOC_SHARED	4
 #define SSB_LROUC_NIOC_ISOLATED	5
+#define LROUC_IOC_ISOLATED	6
 
 /* CQM resource direction in bitmap format.
  * Bit 0 is for CQM_RX

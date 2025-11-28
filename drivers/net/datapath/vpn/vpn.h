@@ -132,6 +132,7 @@ struct vpn_sa_params {
 	enum mxl_vpn_mode mode;
 	enum mxl_vpn_ip_mode ip_mode;
 	enum mxl_vpn_direction direction;
+	bool esn;
 
 	u8 *key;
 	u32 key_len;

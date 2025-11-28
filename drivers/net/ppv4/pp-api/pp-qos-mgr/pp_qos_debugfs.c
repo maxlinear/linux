@@ -1193,6 +1193,140 @@ PP_DEFINE_DEBUGFS(queues_stats, pp_qos_dbg_queues_stats_show,
 		  pp_qos_dbg_queues_stats_reset);
 
 /**
+ * @brief dump queue drop statistics
+ */
+void pp_qos_dbg_queues_drop_stats_show(struct seq_file *s)
+{
+	struct pp_qos_dev *qdev;
+
+	qdev = pp_qos_dev_open((unsigned long)s->private);
+	if (unlikely(!qdev)) {
+		seq_puts(s, "qdev Null\n");
+		return;
+	}
+
+	if (unlikely(!qos_device_ready(qdev))) {
+		seq_puts(s, "Device is not ready\n");
+		return;
+	}
+
+	pp_stats_show_seq(s, sizeof(struct pp_qos_queue_drop_stats),
+			  WRED_QUEUE_DROP_COUNTER_MAX,
+			  qos_queues_drop_stats_get, qos_queues_drop_stats_show,
+			  qdev);
+}
+
+/**
+ * @brief reset queues drop statistics
+ */
+void pp_qos_dbg_queues_drop_stats_clear(char *cmd_buf, void *data)
+{
+	struct pp_qos_dev *qdev;
+	struct pp_qos_queue_drop_stats stats;
+	u32 is_reset;
+	u32 counter;
+	s32 ret;
+
+	if ((sscanf(cmd_buf, "%u ", &is_reset) == 1) && (is_reset == 0)) {
+		qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+		if (unlikely(ptr_is_null(qdev)))
+			return;
+
+		for (counter = 0; counter < WRED_QUEUE_DROP_COUNTER_MAX;
+		     counter++) {
+			ret = pp_qos_queue_drop_stat_get(qdev, counter, true,
+							 &stats);
+			if (unlikely(ret)) {
+				QOS_LOG_ERR(
+					"get queue %u stats failed, ret %d\n",
+					counter, ret);
+				return;
+			}
+		}
+		return;
+	}
+
+	QOS_LOG_INFO("\nqueues_drop_stats help:\n");
+	QOS_LOG_INFO("cat queues_drop_stats      : Display statistics\n");
+	QOS_LOG_INFO("echo 0 > queues_drop_stats : Reset statistics\n");
+}
+
+PP_DEFINE_DEBUGFS(drop_queues_stats, pp_qos_dbg_queues_drop_stats_show,
+		  pp_qos_dbg_queues_drop_stats_clear);
+
+/**
+ * @brief set counter and queue help function
+ */
+void pp_qos_dbg_queues_drop_stats_set_help(struct seq_file *f)
+{
+	struct pp_qos_dev *qdev;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return;
+
+	QOS_LOG_INFO("\nqueues_drop_stats_set help:\n");
+	QOS_LOG_INFO("echo <counter> <queue|all> > queues_drop_stats_set\n");
+	QOS_LOG_INFO(" first parameter - counter index (0-%u)\n",
+		     WRED_QUEUE_DROP_COUNTER_MAX - 1);
+	QOS_LOG_INFO(" second parameter - queue index (0-%u) or 'all'\n",
+		     qdev->init_params.max_queues - 1);
+}
+
+/**
+ * @brief set counter and queue for drop statistics
+ */
+void pp_qos_dbg_queues_drop_stats_set(char *cmd_buf, void *data)
+{
+	struct pp_qos_dev *qdev;
+	u32 counter = 0;
+	u32 queue = 0;
+	char queue_str[16] = { 0 };
+	s32 ret;
+
+	/* get counter and queue (queue may be "all") */
+	if (sscanf(cmd_buf, "%u %15s", &counter, queue_str) == 2) {
+		qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+		if (unlikely(ptr_is_null(qdev)))
+			return;
+
+		if (counter >= WRED_QUEUE_DROP_COUNTER_MAX) {
+			QOS_LOG_ERR("Invalid counter\n");
+			return;
+		}
+
+		if (!strncmp(queue_str, "all", sizeof("all") - 1)) {
+			/* set to max_queues to indicate all queues */
+			queue = qdev->init_params.max_queues;
+		} else {
+			if (kstrtou32(queue_str, 10, &queue)) {
+				QOS_LOG_ERR("Invalid queue value\n");
+				return;
+			}
+			if (queue >= qdev->init_params.max_queues) {
+				QOS_LOG_ERR(
+					"Queue out of range (0-%u or 'all')\n",
+					qdev->init_params.max_queues - 1);
+				return;
+			}
+		}
+
+		ret = pp_qos_queues_drop_stats_set(qdev, counter, queue);
+		if (unlikely(ret)) {
+			QOS_LOG_ERR("Set queue %u stats failed, ret %d\n",
+				    counter, ret);
+		}
+
+		return;
+	}
+
+	pp_qos_dbg_queues_drop_stats_set_help(NULL);
+}
+
+PP_DEFINE_DEBUGFS(drop_queues_stats_set, pp_qos_dbg_queues_drop_stats_set_help,
+		  pp_qos_dbg_queues_drop_stats_set);
+
+/**
  * @brief dump queue statistics in bytes
  */
 void pp_qos_dbg_queues_stats_bytes_show(struct seq_file *s)
@@ -1264,6 +1398,32 @@ void pp_qos_dbg_queues_pps_show(struct seq_file *s)
 }
 
 PP_DEFINE_DEBUGFS(queues_pps, pp_qos_dbg_queues_pps_show, NULL);
+
+/**
+ * @brief dump queues drop pps statistics
+ */
+void pp_qos_dbg_queues_drop_pps_show(struct seq_file *s)
+{
+	struct pp_qos_dev *qdev;
+
+	qdev = pp_qos_dev_open((unsigned long)s->private);
+	if (unlikely(!qdev)) {
+		seq_puts(s, "qdev Null\n");
+		return;
+	}
+
+	if (unlikely(!qos_device_ready(qdev))) {
+		seq_puts(s, "Device is not ready\n");
+		return;
+	}
+
+	pp_pps_show_seq(s, sizeof(struct queue_stats),
+			WRED_QUEUE_DROP_COUNTER_MAX, qos_queues_drop_stats_get,
+			qos_queues_drop_stats_diff, qos_queues_drop_stats_show,
+			qdev);
+}
+
+PP_DEFINE_DEBUGFS(drop_queues_pps, pp_qos_dbg_queues_drop_pps_show, NULL);
 
 /**
  * @brief dump queues pps statistics
@@ -2769,8 +2929,11 @@ static struct debugfs_file qos_debugfs_files[] = {
 	{"nodeinfo", &PP_DEBUGFS_FOPS(node_show)},
 	{"read_table_entry", &PP_DEBUGFS_FOPS(table_entry)},
 	{"queues_stats", &PP_DEBUGFS_FOPS(queues_stats)},
+	{"drop_queues_stats", &PP_DEBUGFS_FOPS(drop_queues_stats)},
+	{"drop_queues_stats_set", &PP_DEBUGFS_FOPS(drop_queues_stats_set)},
 	{"qstat", &PP_DEBUGFS_FOPS(qm_stats)},
 	{"queues_pps", &PP_DEBUGFS_FOPS(queues_pps)},
+	{"queues_drop_pps", &PP_DEBUGFS_FOPS(drop_queues_pps)},
 	{"stat", &PP_DEBUGFS_FOPS(stats)},
 	{"tree", &PP_DEBUGFS_FOPS(tree)},
 	{"full_tree", &PP_DEBUGFS_FOPS(full_tree)},
@@ -2856,7 +3019,7 @@ s32 qos_dbg_module_init(struct pp_qos_dev *qdev)
 	db->qdev_id = qdev->id;
 	db->dbg_aqm_context_id = 0;
 
-	/* Create main dps dir under port_mgr dir */
+	/* Create main aqm dir under qos0 dir */
 	ret = pp_debugfs_create(qdev->dbgfs, "aqm", NULL,
 				aqm_debugfs_files,
 				ARRAY_SIZE(aqm_debugfs_files), db);

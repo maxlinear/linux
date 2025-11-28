@@ -264,6 +264,9 @@ bool qos_tc_is_iphost_dev(struct net_device *dev);
 bool qos_tc_is_gpon_dev(struct net_device *dev);
 bool qos_tc_is_first_subif(struct net_device *dev);
 bool qos_tc_is_vuni_dev(struct net_device *dev);
+bool qos_tc_subif_cmp_to_val(struct net_device *dev,
+			     bool (*cmp)(u32, u32), u32 lim);
+
 int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx);
 
 u64 psched_ns_t2l(const struct psched_ratecfg *r, u64 time_in_ns);

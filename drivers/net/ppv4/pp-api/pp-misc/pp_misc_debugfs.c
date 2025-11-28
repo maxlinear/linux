@@ -1559,7 +1559,7 @@ static void sf_set_write(char *args_str, void *data)
 		cfg.cfg.lld_cfg.vq_ewma_alpha = 7;
 	}
 
-	ret = pp_misc_sf_set(sf_id, &cfg);
+	ret = pp_misc_sf_set(sf_id, &cfg, true);
 	if (ret)
 		pr_err("failed to configure SF, ret %d\n", ret);
 }
@@ -1715,10 +1715,8 @@ static void sf_conf_dump(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 	}
 	pr_info("buffer_size %u [B]\n", sf_cfg->buffer_size);
 	pr_info("coupled SF %u\n", sf_cfg->coupled_sf);
-	pr_info("amsr %u [b]\n", sf_cfg->amsr);
-	pr_info("msr_l %u [b]\n", sf_cfg->msr_l);
-	pr_info("coupling factor %u\n", sf_cfg->coupling_factor);
-	pr_info("weight %u\n", sf_cfg->weight);
+	if (sf_cfg->coupled_sf != PP_QOS_MAX_SERVICE_FLOWS)
+		pr_info("amsr %u [b/s]\n", sf_cfg->amsr);
 	pr_info("num bins %u\n", sf_cfg->num_hist_bins);
 	pr_info("aqm_mode %u, %s\n", sf_cfg->aqm_mode,
 		pp_qos_aqm_mode_str[sf_cfg->aqm_mode]);
@@ -1738,11 +1736,17 @@ static void sf_conf_dump(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 			sf_cfg->cfg.lld_cfg.critical_ql_score_us);
 		pr_info("VQ interval %u\n", sf_cfg->cfg.lld_cfg.vq_interval);
 		pr_info("VQ Alpha %u\n", sf_cfg->cfg.lld_cfg.vq_ewma_alpha);
+		pr_info("msr_l %u [b/s]\n", sf_cfg->msr_l);
 	} else {
+		if (sf_cfg->coupled_sf != PP_QOS_MAX_SERVICE_FLOWS) {
+			pr_info("coupling factor %u\n", sf_cfg->coupling_factor);
+			pr_info("weight %u\n", sf_cfg->weight);
+		}
 		pr_info("latency_target %u [ms]\n",
 			sf_cfg->cfg.aqm_cfg.latency_target_ms);
-		pr_info("peak_rate %u\n", sf_cfg->cfg.aqm_cfg.peak_rate);
-		pr_info("msr %u [B] / %u [b]\n", sf_cfg->cfg.aqm_cfg.msr,
+		pr_info("peak_rate %u [B/s] / %u [b/s]\n",
+			sf_cfg->cfg.aqm_cfg.peak_rate, sf_cfg->cfg.aqm_cfg.peak_rate * 8);
+		pr_info("msr %u [B/s] / %u [b/s]\n", sf_cfg->cfg.aqm_cfg.msr,
 			sf_cfg->cfg.aqm_cfg.msr * 8);
 		pr_info("\n");
 	}

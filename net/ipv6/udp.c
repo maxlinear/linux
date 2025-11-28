@@ -1337,6 +1337,349 @@ out:
 	return err;
 }
 
+static inline __wsum
+csum_page(struct page *page, int offset, int copy)
+{
+	char *kaddr;
+	__wsum csum;
+
+	kaddr = kmap(page);
+	csum = csum_partial(kaddr + offset, copy, 0);
+	kunmap(page);
+	return csum;
+}
+
+#define HDR_SZ 40
+ssize_t __udp6_append_page(struct sock *sk, struct flowi6 *fl6, struct page *page,
+			   int offset, size_t size, int flags)
+{
+	struct inet_sock *inet = inet_sk(sk);
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	struct inet6_cork *v6_cork = &np->cork;
+	struct sk_buff *skb;
+	struct rt6_info *rt;
+	struct ipv6_txoptions *opt = v6_cork->opt;
+	struct inet_cork *cork;
+	int hh_len;
+	int mtu, pmtu;
+	int len;
+	int err;
+	unsigned int maxfraglen, fragheaderlen, fraggap, maxnonfragsize, headersize;
+
+	if (inet->hdrincl)
+		return -EPERM;
+
+	if (flags & MSG_PROBE)
+		return 0;
+
+	if (skb_queue_empty(&sk->sk_write_queue))
+		return -EINVAL;
+
+	cork = &inet->cork.base;
+	rt = (struct rt6_info *)cork->dst;
+
+	hh_len = LL_RESERVED_SPACE(rt->dst.dev);
+	mtu = cork->gso_size ? IP6_MAX_MTU : cork->fragsize;
+
+	fragheaderlen = sizeof(struct ipv6hdr) + rt->rt6i_nfheader_len + (opt ? opt->opt_nflen : 0);
+	headersize = HDR_SZ;
+
+	if (mtu <= fragheaderlen ||
+	    ((mtu - fragheaderlen) & ~7) + fragheaderlen <= sizeof(struct frag_hdr)) {
+		return -EOPNOTSUPP;
+	}
+
+	maxfraglen = ((mtu - fragheaderlen) & ~7) + fragheaderlen - sizeof(struct frag_hdr);
+	maxnonfragsize = mtu;
+	if (cork->length + size > maxnonfragsize - headersize) {
+		pmtu = max_t(int, mtu - headersize + sizeof(struct ipv6hdr), 0);
+		ipv6_local_error(sk, EMSGSIZE, fl6, pmtu);
+		return -EMSGSIZE;
+	}
+
+	skb = skb_peek_tail(&sk->sk_write_queue);
+	if (!skb)
+		return -EINVAL;
+
+	cork->length += size;
+
+	while (size > 0) {
+		/* Check if the remaining data fits into current packet. */
+		len = mtu - skb->len;
+		if (len < size)
+			len = maxfraglen - skb->len;
+
+		if (len <= 0) {
+			struct sk_buff *skb_prev;
+			int alloclen;
+
+			skb_prev = skb;
+			fraggap = skb_prev->len - maxfraglen;
+
+			alloclen = fragheaderlen + hh_len + fraggap + 15;
+			skb = sock_wmalloc(sk, alloclen, 1, sk->sk_allocation);
+			if (unlikely(!skb)) {
+				err = -ENOBUFS;
+				goto error;
+			}
+
+			 /* Fill in the control structures */
+			skb->protocol = htons(ETH_P_IPV6);
+			skb->ip_summed = CHECKSUM_NONE;
+			skb->csum = 0;
+			skb_reserve(skb, hh_len + sizeof(struct frag_hdr));
+
+			/* Find where to start putting bytes */
+			skb_put(skb, fragheaderlen + fraggap);
+			skb_reset_network_header(skb);
+			skb->transport_header = (skb->network_header +
+					fragheaderlen);
+			if (fraggap) {
+				skb->csum = skb_copy_and_csum_bits(skb_prev,
+								   maxfraglen,
+								   skb_transport_header(skb),
+								   fraggap);
+				skb_prev->csum = csum_sub(skb_prev->csum, skb->csum);
+				pskb_trim_unique(skb_prev, maxfraglen);
+			}
+
+			/* Put the packet on the pending queue. */
+			__skb_queue_tail(&sk->sk_write_queue, skb);
+			continue;
+		}
+
+		if (len > size)
+			len = size;
+
+		if (skb_append_pagefrags(skb, page, offset, len)) {
+			err = -EMSGSIZE;
+			goto error;
+		}
+
+		if (skb->ip_summed == CHECKSUM_NONE) {
+			__wsum csum;
+
+			csum = csum_page(page, offset, len);
+			skb->csum = csum_block_add(skb->csum, csum, skb->len);
+		}
+
+		skb->len += len;
+		skb->data_len += len;
+		skb->truesize += len;
+		refcount_add(len, &sk->sk_wmem_alloc);
+		offset += len;
+		size -= len;
+	}
+	return 0;
+
+error:
+	cork->length -= size;
+	return err;
+}
+
+int udp6_sendpage(struct sock *sk, struct page *page, int offset,
+		  size_t size, int flags)
+{
+	struct inet_sock *inet = inet_sk(sk);
+	struct udp_sock *up = udp_sk(sk);
+	int ret;
+
+	if (flags & MSG_SENDPAGE_NOTLAST)
+		flags |= MSG_MORE;
+
+	if (!up->pending) {
+		struct msghdr msg = {   .msg_flags = flags | MSG_MORE };
+
+		/* Call udp_sendmsg to specify destination address which
+		 * sendpage interface can't pass.
+		 * This will succeed only when the socket is connected.
+		 */
+		ret = udpv6_sendmsg(sk, &msg, 0);
+		if (ret < 0) {
+			net_dbg_ratelimited("udpv6_sendmsg ret %d\n", ret);
+			return ret;
+		}
+	}
+
+	lock_sock(sk);
+
+	if (unlikely(!up->pending)) {
+		release_sock(sk);
+		net_dbg_ratelimited("unexpected up->pending(%d)!!\n", up->pending);
+		return -EINVAL;
+	}
+
+	ret = __udp6_append_page(sk, &inet->cork.fl.u.ip6,
+				 page, offset, size, flags);
+	if (ret == -EOPNOTSUPP) {
+		release_sock(sk);
+		return sock_no_sendpage(sk->sk_socket, page, offset,
+				size, flags);
+	}
+	if (ret < 0) {
+		udp_v6_flush_pending_frames(sk);
+		goto out;
+	}
+
+	up->len += size;
+	if (!(READ_ONCE(up->corkflag) || (flags & MSG_MORE)))
+		ret = udp_v6_push_pending_frames(sk);
+	if (!ret)
+		ret = size;
+out:
+	release_sock(sk);
+	return ret;
+}
+
+struct load_hdr {
+	u16 loadid;
+	u8 testaction;
+	u8 rx_stopped;
+	u32 pdu_seqno;
+	u16 hdr_payload;
+	u16 spduseqerr;
+	u32 spdutime_sec;
+	u32 spdutime_nsec;
+	u32 lpdutime_sec;
+	u32 lpdutime_nsec;
+	u16 rttrespdelay;
+	u16 checksum;
+};
+
+static inline void _populate_header(struct load_hdr *lhdr, struct load_hdr *initial_pdu,
+				    s32 payload_rem, u16 mtu)
+{
+	lhdr->loadid     = initial_pdu->loadid;
+	lhdr->testaction = initial_pdu->testaction;
+	lhdr->rx_stopped  = initial_pdu->rx_stopped;
+	lhdr->spduseqerr    = initial_pdu->spduseqerr;
+	lhdr->spdutime_sec  = initial_pdu->spdutime_sec;
+	lhdr->spdutime_nsec = initial_pdu->spdutime_nsec;
+	lhdr->lpdutime_sec  = initial_pdu->lpdutime_sec;
+	lhdr->lpdutime_nsec = initial_pdu->lpdutime_nsec;
+	lhdr->rttrespdelay  = initial_pdu->rttrespdelay;
+	lhdr->hdr_payload = htons(((payload_rem > mtu) ? mtu : payload_rem));
+	lhdr->pdu_seqno  = htonl((u32)initial_pdu->pdu_seqno++);
+	lhdr->checksum   = 0;
+}
+
+#define MTU_OFFSET 30
+#define PAYLOAD_OFFSET 8
+int udpst_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+{
+	char *data  = NULL;
+	struct load_hdr *lhdr, *initial_pdu;
+	u16 mtu;
+	u16 payload_sz;
+	s32 payload_rem;
+	u32 initial_seq;
+	struct udp_sock *up = udp_sk(sk);
+
+	/* page info */
+	void *page_ptr;
+	size_t size,
+	       vsize; /* Valid data size in the page */
+	s32 err = 0,
+		npdus;
+	s32 flags = MSG_SENDPAGE_NOTLAST;
+	struct page_frag *pfrag = NULL;
+	u16 frags = 0;
+
+	if (len < sizeof(struct load_hdr)) {
+		net_dbg_ratelimited("length err\n");
+		return -EFAULT;
+	}
+
+	data = kmalloc(len, GFP_KERNEL);
+	if (!copy_from_iter_full(data, len, &msg->msg_iter)) {
+		net_dbg_ratelimited("copy err\n");
+		return -EFAULT;
+	}
+
+	initial_pdu = (struct load_hdr *)data;
+	mtu = *(u16 *)(data + MTU_OFFSET);
+	payload_sz = *(u16 *)(data + PAYLOAD_OFFSET);
+	initial_seq =  initial_pdu->pdu_seqno;
+	payload_rem = payload_sz;
+
+	WRITE_ONCE(up->gso_size, mtu);
+
+	while (payload_rem > (int)(sizeof(struct load_hdr))) {
+		/* If sk-pfrags used, there is no need to handle error
+		 * case when udp_sendpae fails
+		 */
+		pfrag = sk_page_frag(sk);
+
+		if (!sk_page_frag_refill(sk, pfrag)) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+		size = pfrag->size - pfrag->offset;
+		if (size < mtu) {//Ignore the page having space less than mtu
+			/* TODO: Fix this for better optimization */
+			pfrag->offset += size;
+			continue;
+		}
+		size = min_t(int, payload_rem, size);
+
+		page_ptr = page_address(pfrag->page) + pfrag->offset;
+		if (payload_rem >= mtu) {
+			int rembytes;
+			/* Full PDUs that can be formed in this page */
+			npdus = size / mtu;
+			vsize = npdus * mtu;
+			rembytes = payload_rem - vsize;
+			if (rembytes && rembytes <= (size - vsize)) {
+				vsize += rembytes;
+				++npdus;
+			}
+		} else {
+			/* Last PDU */
+			vsize = payload_rem;
+			npdus = 1;
+		}
+		while (npdus) {
+			lhdr = (struct load_hdr *)page_ptr;
+			_populate_header(lhdr, initial_pdu, payload_rem, mtu);
+			page_ptr += mtu;
+			size -= mtu;
+			payload_rem -= mtu;
+			--npdus;
+		}
+		if (payload_rem <= (int)(sizeof(struct load_hdr)))
+			flags = 0;
+
+		switch (sk->sk_family) {
+		case AF_INET6:
+			err = udp6_sendpage(sk, pfrag->page, pfrag->offset, vsize, flags);
+			if (unlikely(err < 0)) {
+				frags--;
+				goto cleanup;
+			}
+			break;
+		case AF_INET:
+			err = udp_prot.sendpage(sk, pfrag->page, pfrag->offset, vsize, flags);
+			if (unlikely(err < 0)) {
+				frags--;
+				goto cleanup;
+			}
+			break;
+		default:
+			return -EINVAL;
+		}
+		pfrag->offset += vsize;
+		frags++;
+	}
+	if (sk->sk_family == AF_INET)
+		err = udp_push_pending_frames(sk);
+	else if (sk->sk_family == AF_INET6)
+		err = udp_v6_push_pending_frames(sk);
+cleanup:
+	kfree(data);
+	return err;
+}
+EXPORT_SYMBOL(udpst_sendmsg);
+
 int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 {
 	struct ipv6_txoptions opt_space;
@@ -1363,6 +1706,9 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	ipc6.gso_size = READ_ONCE(up->gso_size);
 	ipc6.sockc.tsflags = sk->sk_tsflags;
 	ipc6.sockc.mark = sk->sk_mark;
+
+	if (cmsg_udpst(msg))
+		return udpst_sendmsg(sk, msg, len);
 
 	/* destination address check */
 	if (sin6) {

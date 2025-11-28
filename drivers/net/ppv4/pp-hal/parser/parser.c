@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 MaxLinear, Inc.
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -1055,11 +1055,11 @@ static void prsr_hw_drop_flags_init(u32 *flags)
 	 */
 	*flags |= PP_FIELD_PREP(PP_PRSR_ABORT_CFG_DROP_MAX_HEADER_LEN_ERR_MSK,
 				1);
-	/* drop in case l3 len exceeds max imem header length
+	/* don't drop in case l3 len exceeds max imem header length
 	 * configured in ly3_config register
 	 */
 	*flags |= PP_FIELD_PREP(PP_PRSR_ABORT_CFG_DROP_PROTO_OVERFLOW_ERR_MSK,
-				1);
+				0);
 	/* don't drop if last ethertype wasn't identified */
 	*flags |= PP_FIELD_PREP(PP_PRSR_ABORT_CFG_DROP_NO_LAST_ETH_TYPE_ERR_MSK,
 				0);

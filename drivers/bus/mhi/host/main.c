@@ -24,7 +24,7 @@ int __must_check mhi_read_reg(struct mhi_controller *mhi_cntrl,
 
 int __must_check mhi_read_reg_field(struct mhi_controller *mhi_cntrl,
 				    void __iomem *base, u32 offset,
-				    u32 mask, u32 *out)
+				    u32 mask, u32 shift, u32 *out)
 {
 	u32 tmp;
 	int ret;
@@ -33,20 +33,21 @@ int __must_check mhi_read_reg_field(struct mhi_controller *mhi_cntrl,
 	if (ret)
 		return ret;
 
-	*out = (tmp & mask) >> __ffs(mask);
+	*out = (tmp & mask) >> shift;
 
 	return 0;
 }
 
 int __must_check mhi_poll_reg_field(struct mhi_controller *mhi_cntrl,
 				    void __iomem *base, u32 offset,
-				    u32 mask, u32 val, u32 delayus)
+				    u32 mask, u32 shift, u32 val, u32 delayus)
 {
 	int ret;
 	u32 out, retry = (mhi_cntrl->timeout_ms * 1000) / delayus;
 
 	while (retry--) {
-		ret = mhi_read_reg_field(mhi_cntrl, base, offset, mask, &out);
+		ret = mhi_read_reg_field(mhi_cntrl, base, offset, mask, shift,
+					 &out);
 		if (ret)
 			return ret;
 
@@ -65,22 +66,19 @@ void mhi_write_reg(struct mhi_controller *mhi_cntrl, void __iomem *base,
 	mhi_cntrl->write_reg(mhi_cntrl, base + offset, val);
 }
 
-int __must_check mhi_write_reg_field(struct mhi_controller *mhi_cntrl,
-				     void __iomem *base, u32 offset, u32 mask,
-				     u32 val)
+void mhi_write_reg_field(struct mhi_controller *mhi_cntrl, void __iomem *base,
+			 u32 offset, u32 mask, u32 shift, u32 val)
 {
 	int ret;
 	u32 tmp;
 
 	ret = mhi_read_reg(mhi_cntrl, base, offset, &tmp);
 	if (ret)
-		return ret;
+		return;
 
 	tmp &= ~mask;
-	tmp |= (val << __ffs(mask));
+	tmp |= (val << shift);
 	mhi_write_reg(mhi_cntrl, base, offset, tmp);
-
-	return 0;
 }
 
 void mhi_write_db(struct mhi_controller *mhi_cntrl, void __iomem *db_addr,
@@ -161,7 +159,8 @@ enum mhi_state mhi_get_mhi_state(struct mhi_controller *mhi_cntrl)
 {
 	u32 state;
 	int ret = mhi_read_reg_field(mhi_cntrl, mhi_cntrl->regs, MHISTATUS,
-				     MHISTATUS_MHISTATE_MASK, &state);
+				     MHISTATUS_MHISTATE_MASK,
+				     MHISTATUS_MHISTATE_SHIFT, &state);
 	return ret ? MHI_STATE_MAX : state;
 }
 EXPORT_SYMBOL_GPL(mhi_get_mhi_state);
@@ -431,24 +430,11 @@ irqreturn_t mhi_irq_handler(int irq_number, void *dev)
 {
 	struct mhi_event *mhi_event = dev;
 	struct mhi_controller *mhi_cntrl = mhi_event->mhi_cntrl;
-	struct mhi_event_ctxt *er_ctxt;
+	struct mhi_event_ctxt *er_ctxt =
+		&mhi_cntrl->mhi_ctxt->er_ctxt[mhi_event->er_index];
 	struct mhi_ring *ev_ring = &mhi_event->ring;
-	dma_addr_t ptr;
+	dma_addr_t ptr = le64_to_cpu(er_ctxt->rp);
 	void *dev_rp;
-
-	/*
-	 * If CONFIG_DEBUG_SHIRQ is set, the IRQ handler will get invoked during __free_irq()
-	 * and by that time mhi_ctxt() would've freed. So check for the existence of mhi_ctxt
-	 * before handling the IRQs.
-	 */
-	if (!mhi_cntrl->mhi_ctxt) {
-		dev_dbg(&mhi_cntrl->mhi_dev->dev,
-			"mhi_ctxt has been freed\n");
-		return IRQ_HANDLED;
-	}
-
-	er_ctxt = &mhi_cntrl->mhi_ctxt->er_ctxt[mhi_event->er_index];
-	ptr = le64_to_cpu(er_ctxt->rp);
 
 	if (!is_valid_ring_ptr(ev_ring, ptr)) {
 		dev_err(&mhi_cntrl->mhi_dev->dev,
@@ -494,8 +480,8 @@ irqreturn_t mhi_intvec_threaded_handler(int irq_number, void *priv)
 	ee = mhi_get_exec_env(mhi_cntrl);
 	dev_dbg(dev, "local ee: %s state: %s device ee: %s state: %s\n",
 		TO_MHI_EXEC_STR(mhi_cntrl->ee),
-		mhi_state_str(mhi_cntrl->dev_state),
-		TO_MHI_EXEC_STR(ee), mhi_state_str(state));
+		TO_MHI_STATE_STR(mhi_cntrl->dev_state),
+		TO_MHI_EXEC_STR(ee), TO_MHI_STATE_STR(state));
 
 	if (state == MHI_STATE_SYS_ERR) {
 		dev_dbg(dev, "System error detected\n");
@@ -548,13 +534,18 @@ irqreturn_t mhi_intvec_handler(int irq_number, void *dev)
 static void mhi_recycle_ev_ring_element(struct mhi_controller *mhi_cntrl,
 					struct mhi_ring *ring)
 {
+	dma_addr_t ctxt_wp;
+
 	/* Update the WP */
 	ring->wp += ring->el_size;
+	ctxt_wp = le64_to_cpu(*ring->ctxt_wp) + ring->el_size;
 
-	if (ring->wp >= (ring->base + ring->len))
+	if (ring->wp >= (ring->base + ring->len)) {
 		ring->wp = ring->base;
+		ctxt_wp = ring->iommu_base;
+	}
 
-	*ring->ctxt_wp = cpu_to_le64(ring->iommu_base + (ring->wp - ring->base));
+	*ring->ctxt_wp = cpu_to_le64(ctxt_wp);
 
 	/* Update the RP */
 	ring->rp += ring->el_size;
@@ -603,7 +594,7 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
 	{
 		dma_addr_t ptr = MHI_TRE_GET_EV_PTR(event);
 		struct mhi_ring_element *local_rp, *ev_tre;
-		void *dev_rp;
+		void *dev_rp, *next_rp;
 		struct mhi_buf_info *buf_info;
 		u16 xfer_len;
 
@@ -622,6 +613,19 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
 		result.dir = mhi_chan->dir;
 
 		local_rp = tre_ring->rp;
+
+		next_rp = local_rp + 1;
+		if (next_rp >= tre_ring->base + tre_ring->len)
+			next_rp = tre_ring->base;
+		/* Check if the event points to an unexpected TRE.
+		 * Chain flag is bit 0 of dword[1] in the TRE.
+		 */
+		if (dev_rp != next_rp && !(le32_to_cpu(local_rp->dword[1]) & 0x1)) {
+			dev_err(&mhi_cntrl->mhi_dev->dev,
+				"Event element points to an unexpected TRE\n");
+			break;
+		}
+
 		while (local_rp != dev_rp) {
 			buf_info = buf_ring->rp;
 			/* If it's the last TRE, get length from the event */
@@ -860,7 +864,7 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
 			new_state = MHI_TRE_GET_EV_STATE(local_rp);
 
 			dev_dbg(dev, "State change event to state: %s\n",
-				mhi_state_str(new_state));
+				TO_MHI_STATE_STR(new_state));
 
 			switch (new_state) {
 			case MHI_STATE_M0:
@@ -887,7 +891,7 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
 			}
 			default:
 				dev_err(dev, "Invalid state: %s\n",
-					mhi_state_str(new_state));
+					TO_MHI_STATE_STR(new_state));
 			}
 
 			break;
@@ -966,9 +970,7 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
 	}
 
 	read_lock_bh(&mhi_cntrl->pm_lock);
-
-	/* Ring EV DB only if there is any pending element to process */
-	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)) && count)
+	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)))
 		mhi_ring_er_db(mhi_event);
 	read_unlock_bh(&mhi_cntrl->pm_lock);
 
@@ -1038,9 +1040,7 @@ int mhi_process_data_event_ring(struct mhi_controller *mhi_cntrl,
 		count++;
 	}
 	read_lock_bh(&mhi_cntrl->pm_lock);
-
-	/* Ring EV DB only if there is any pending element to process */
-	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)) && count)
+	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)))
 		mhi_ring_er_db(mhi_event);
 	read_unlock_bh(&mhi_cntrl->pm_lock);
 
@@ -1083,7 +1083,7 @@ void mhi_ctrl_ev_task(unsigned long data)
 		return;
 	}
 
-	/* Process ctrl events */
+	/* Process ctrl events events */
 	ret = mhi_event->process_event(mhi_cntrl, mhi_event, U32_MAX);
 
 	/*
@@ -1456,7 +1456,7 @@ exit_unprepare_channel:
 }
 
 int mhi_prepare_channel(struct mhi_controller *mhi_cntrl,
-			struct mhi_chan *mhi_chan, unsigned int flags)
+			struct mhi_chan *mhi_chan)
 {
 	int ret = 0;
 	struct device *dev = &mhi_chan->mhi_dev->dev;
@@ -1481,9 +1481,6 @@ int mhi_prepare_channel(struct mhi_controller *mhi_cntrl,
 	if (ret)
 		goto error_pm_state;
 
-	if (mhi_chan->dir == DMA_FROM_DEVICE)
-		mhi_chan->pre_alloc = !!(flags & MHI_CH_INBOUND_ALLOC_BUFS);
-
 	/* Pre-allocate buffer for xfer ring */
 	if (mhi_chan->pre_alloc) {
 		int nr_el = get_nr_avail_ring_elements(mhi_cntrl,
@@ -1493,7 +1490,6 @@ int mhi_prepare_channel(struct mhi_controller *mhi_cntrl,
 		while (nr_el--) {
 			void *buf;
 			struct mhi_buf_info info = { };
-
 			buf = kmalloc(len, GFP_KERNEL);
 			if (!buf) {
 				ret = -ENOMEM;
@@ -1639,7 +1635,8 @@ void mhi_reset_chan(struct mhi_controller *mhi_cntrl, struct mhi_chan *mhi_chan)
 	read_unlock_bh(&mhi_cntrl->pm_lock);
 }
 
-static int __mhi_prepare_for_transfer(struct mhi_device *mhi_dev, unsigned int flags)
+/* Move channel to start state */
+int mhi_prepare_for_transfer(struct mhi_device *mhi_dev)
 {
 	int ret, dir;
 	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
@@ -1650,7 +1647,7 @@ static int __mhi_prepare_for_transfer(struct mhi_device *mhi_dev, unsigned int f
 		if (!mhi_chan)
 			continue;
 
-		ret = mhi_prepare_channel(mhi_cntrl, mhi_chan, flags);
+		ret = mhi_prepare_channel(mhi_cntrl, mhi_chan);
 		if (ret)
 			goto error_open_chan;
 	}
@@ -1668,18 +1665,7 @@ error_open_chan:
 
 	return ret;
 }
-
-int mhi_prepare_for_transfer(struct mhi_device *mhi_dev)
-{
-	return __mhi_prepare_for_transfer(mhi_dev, 0);
-}
 EXPORT_SYMBOL_GPL(mhi_prepare_for_transfer);
-
-int mhi_prepare_for_transfer_autoqueue(struct mhi_device *mhi_dev)
-{
-	return __mhi_prepare_for_transfer(mhi_dev, MHI_CH_INBOUND_ALLOC_BUFS);
-}
-EXPORT_SYMBOL_GPL(mhi_prepare_for_transfer_autoqueue);
 
 void mhi_unprepare_from_transfer(struct mhi_device *mhi_dev)
 {
@@ -1696,3 +1682,18 @@ void mhi_unprepare_from_transfer(struct mhi_device *mhi_dev)
 	}
 }
 EXPORT_SYMBOL_GPL(mhi_unprepare_from_transfer);
+
+int mhi_poll(struct mhi_device *mhi_dev, u32 budget)
+{
+	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
+	struct mhi_chan *mhi_chan = mhi_dev->dl_chan;
+	struct mhi_event *mhi_event = &mhi_cntrl->mhi_event[mhi_chan->er_index];
+	int ret;
+
+	spin_lock_bh(&mhi_event->lock);
+	ret = mhi_event->process_event(mhi_cntrl, mhi_event, budget);
+	spin_unlock_bh(&mhi_event->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mhi_poll);

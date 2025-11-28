@@ -316,6 +316,7 @@ int qos_tc_pce_rule_create(struct net_device *dev,
 	return 0;
 }
 
+
 int qos_tc_pce_rule_delete(unsigned long cookie, int pref)
 {
 	struct pce_node *p, *n;
@@ -332,7 +333,7 @@ int qos_tc_pce_rule_delete(unsigned long cookie, int pref)
 	}
 
 	if (!deletion) {
-		pr_debug("%s: Nothing to delete\n", __func__);
+		pr_warn("%s: Nothing to delete\n", __func__);
 		return -ENOENT;
 	}
 	tc_pce_entry = p->entry;

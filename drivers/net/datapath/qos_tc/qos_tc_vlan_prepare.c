@@ -315,12 +315,16 @@ static void dscp_parse(struct net_device *dev,
 		   dscp_value, act->dscp_pcp_map[dscp_value]);
 }
 
-static int vlan_action_source(enum tc_flower_vlan_tag tag)
+static int vlan_action_source(struct dp_act_vlan *act,
+			      enum tc_flower_vlan_tag tag)
 {
 	if (tag == TC_VLAN_SINGLE_TAGGED)
 		return CP_FROM_INNER;
+	else if (tag == TC_VLAN_DOUBLE_TAGGED && act->pop_n == 2)
+		return CP_FROM_INNER;
 	else if (tag == TC_VLAN_DOUBLE_TAGGED)
 		return CP_FROM_OUTER;
+
 	return 0;
 }
 
@@ -376,12 +380,14 @@ int vlan_action_parse(struct net_device *dev,
 			if (flags & ACTVLAN_PUSH_F_PRIO)
 				act->prio[act->push_n] = a->vlan.prio;
 			else
-				act->prio[act->push_n] = vlan_action_source(tag);
+				act->prio[act->push_n] =
+					vlan_action_source(act, tag);
 
 			if (flags & ACTVLAN_PUSH_F_PROTO)
 				act->tpid[act->push_n] = ntohs(a->vlan.proto);
 			else
-				act->tpid[act->push_n] = vlan_action_source(tag);
+				act->tpid[act->push_n] =
+					vlan_action_source(act, tag);
 			netdev_dbg(dev, "MODIFY action detected, push_n: %d, pop_n: %d, act: %x\n",
 				   act->push_n + 1, act->pop_n, act->act);
 		}
@@ -389,7 +395,7 @@ int vlan_action_parse(struct net_device *dev,
 		if (flags & ACTVLAN_PUSH_F_ID)
 			act->vid[act->push_n] = a->vlan.vid;
 		else
-			act->vid[act->push_n] = vlan_action_source(tag);
+			act->vid[act->push_n] = vlan_action_source(act, tag);
 		act->dei[act->push_n] = 0;
 
 		netdev_dbg(dev, "PUSH action parsed, vid: %d, tpid: %x, prio: %d, dei: %d\n",
@@ -411,6 +417,7 @@ static void default_prio_parse(struct net_device *dev,
 			       int *prio)
 {
 	*prio = f->common.prio;
+
 	netdev_dbg(dev, "Default prio: %d\n", *prio);
 }
 

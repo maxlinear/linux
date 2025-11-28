@@ -17,6 +17,7 @@
  */
 
 #include <dt-bindings/power/lgm-power.h>
+#include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
@@ -24,12 +25,28 @@
 #include <linux/platform_device.h>
 #include <linux/sys_soc.h>
 
+#define MPS_MANID	0x0
 #define MPS_CHIPID	0x4
+#define MPS_CHIP_LOC0	0xC
+#define MPS_CHIP_LOC1	0x10
 #define ID_CFG		0x14
+#define FAB_LOT_ID(x)	(0x18 + ((x) * 4))
 #define FAB_PVT		0x28
 #define CIP_FUSE	0x50
 
 #define CIP_MASK	0x20
+
+/* CHIP LOC0 */
+#define CHIP_YEAR	GENMASK(30, 26)
+#define CHIP_MONTH	GENMASK(25, 22)
+#define CHIP_DAY	GENMASK(21, 17)
+#define LGM_YEAR_BASE	2000
+
+/* CHIP LOC1 */
+#define WAFER_ID	GENMASK(4, 0)
+#define CHIP_X		GENMASK(11, 5)
+#define CHIP_Y		GENMASK(18, 12)
+#define CODING_T	GENMASK(31, 29)
 
 enum {
 	LGM_A2 = 0x1,
@@ -53,13 +70,28 @@ enum {
 
 #define PN_NAME(a)	#a
 
-struct lgm_soc_priv {
-	struct platform_device *pdev;
-	struct device *dev;
-	void __iomem *membase;
-	unsigned int ver;
-	unsigned int pnum;
-	unsigned int cip;
+static const char *efuse_names[32] = {
+	[0]  = "eJtag",
+	[1]  = "Vault 130",
+	[3]  = "DDR scrambler",
+	[4]  = "Network Performance Half",
+	[5]  = "Debug SPI slave",
+	[15] = "PIP for HSIOL",
+	[16] = "STD production speed",
+	[17] = "PIP for HSIOR",
+	[18] = "EIP197",
+	[20] = "ARC SEM",
+	[21] = "EMMC",
+	[22] = "SDXC",
+	[23] = "CPU freq limited to 1.2Ghz",
+	[24] = "PON",
+	[25] = "USB Port 0",
+	[26] = "USB Port 1",
+	[27] = "HSIO 0",
+	[28] = "HSIO 1",
+	[29] = "HSIO 2",
+	[30] = "HSIO 3",
+	[31] = "CPU Module num limited to 1"
 };
 
 static const unsigned int epu_fuse[32] = {
@@ -82,10 +114,74 @@ enum {
 	CHIP_SPEED_FAST,
 };
 
+struct lgm_soc_priv {
+	struct platform_device *pdev;
+	struct device *dev;
+	void __iomem *membase;
+	unsigned int ver;
+	unsigned int pnum;
+	unsigned int cip;
+	u32 efuse;
+	u32 wafer;
+	u32 date;
+};
+
+static ssize_t date_show(struct device *dev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct lgm_soc_priv *priv = dev_get_drvdata(dev);
+
+	return sprintf(buf, "Manufacture date(DD/MM/YYYY): %02ld-%02ld-%04ld\n",
+		       FIELD_GET(CHIP_DAY, priv->date),
+		       FIELD_GET(CHIP_MONTH, priv->date),
+		       FIELD_GET(CHIP_YEAR, priv->date) + LGM_YEAR_BASE);
+}
+static DEVICE_ATTR_RO(date);
+
+static ssize_t wafer_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct lgm_soc_priv *priv = dev_get_drvdata(dev);
+
+	return sprintf(buf, "WaferID: %lu, CHIP_X: %lu, CHIP_Y: %lu, coding_t: %lu\n",
+		       FIELD_GET(WAFER_ID, priv->wafer),
+		       FIELD_GET(CHIP_X, priv->wafer),
+		       FIELD_GET(CHIP_Y, priv->wafer),
+		       FIELD_GET(CODING_T, priv->wafer));
+}
+static DEVICE_ATTR_RO(wafer);
+
+static ssize_t efuse_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct lgm_soc_priv *priv = dev_get_drvdata(dev);
+	int i, en;
+	ssize_t len = 0;
+
+	for (i = 0; i < ARRAY_SIZE(efuse_names); i++) {
+		if (efuse_names[i]) {
+			en = priv->efuse & BIT(i);
+			len += sprintf(buf + len, "%-30s:\t%s\n",
+				       efuse_names[i], en ? "Disabled" : "Enabled");
+		}
+	}
+
+	return len;
+}
+static DEVICE_ATTR_RO(efuse);
+
+static struct attribute *lgm_soc_attrs[] = {
+	&dev_attr_date.attr,
+	&dev_attr_wafer.attr,
+	&dev_attr_efuse.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(lgm_soc);
+
 static int lgm_chip_speed(unsigned long speed, int cip)
 {
 	const unsigned long slow_speed = 290000000UL;
-	const unsigned long fast_speed = cip == 1 ? 310000000UL: 305000000UL;
+	const unsigned long fast_speed = cip == 1 ? 310000000UL : 305000000UL;
 
 	if (speed < slow_speed)
 		return CHIP_SPEED_SLOW;
@@ -144,10 +240,9 @@ static const char *lgm_print_ver(struct lgm_soc_priv *priv)
 		dev_info(priv->dev, "LGM SoC Verion: %s\n", soc_ver[ver]);
 		return soc_ver[ver];
 	}
-	else {
-		dev_err(priv->dev, "LGM SoC Verion: %u not supported\n", ver);
-		return "Unknown Revision";
-	}
+
+	dev_err(priv->dev, "LGM SoC Verion: %u not supported\n", ver);
+	return "Unknown Revision";
 }
 
 static char *lgm_print_pnum(struct lgm_soc_priv *priv)
@@ -200,6 +295,7 @@ static void lgm_notify_epu_fused_domain(struct lgm_soc_priv *priv)
 	u32 fuse = readl(priv->membase + ID_CFG);
 	int i;
 
+	priv->efuse = fuse;
 	for (i = 0; i < sizeof(fuse) * BITS_PER_BYTE; i++)
 		if ((BIT(i) & fuse) && epu_fuse[i])
 			epu_notifier_blocking_chain(SOC_PD_ID(epu_fuse[i]), 0);
@@ -218,12 +314,58 @@ static const char *lgm_print_dt_model_name(struct lgm_soc_priv *priv)
 	}
 
 	cnt = of_property_count_strings(np, "model");
-	dev_info(priv->dev, "model: \n");
+	dev_info(priv->dev, "model:\n");
 	for (i = 0; i < cnt; i++) {
 		of_property_read_string_index(np, "model", i, &val);
 		dev_info(priv->dev, "\t%s\n", val);
 	}
 	return val;
+}
+
+static void lgm_print_wafer_id_xy(struct lgm_soc_priv *priv)
+{
+	u32 wafer;
+
+	wafer = readl(priv->membase + MPS_CHIP_LOC1);
+	priv->wafer = wafer;
+	dev_info(priv->dev, "Wafer ID: %lu, chip_x: %lu, chip_y: %lu, coding_t: %lu\n",
+		 FIELD_GET(WAFER_ID, wafer),
+		 FIELD_GET(CHIP_X, wafer),
+		 FIELD_GET(CHIP_Y, wafer),
+		 FIELD_GET(CODING_T, wafer));
+}
+
+static void lgm_print_chip_date(struct lgm_soc_priv *priv)
+{
+	u32 date;
+
+	date = readl(priv->membase + MPS_CHIP_LOC0);
+	priv->date = date;
+	dev_info(priv->dev, "Manufacture date(DD/MM/YYYY): %02ld-%02ld-%04ld\n",
+		 FIELD_GET(CHIP_DAY, date),
+		 FIELD_GET(CHIP_MONTH, date),
+		 FIELD_GET(CHIP_YEAR, date) + LGM_YEAR_BASE);
+}
+
+static void lgm_print_chip_misc(struct lgm_soc_priv *priv)
+{
+	int i;
+
+	dev_info(priv->dev, "MAN_ID: 0x%x\n",
+		 readl(priv->membase + MPS_MANID));
+	dev_info(priv->dev, "CHIP_ID: 0x%x\n",
+		 readl(priv->membase + MPS_CHIPID));
+	dev_info(priv->dev, "ID_CFG: 0x%x\n",
+		 readl(priv->membase + ID_CFG));
+	dev_info(priv->dev, "CHIP LOC0: 0x%x\n",
+		 readl(priv->membase + MPS_CHIP_LOC0));
+	dev_info(priv->dev, "CHIP LOC1: 0x%x\n",
+		 readl(priv->membase + MPS_CHIP_LOC1));
+
+	for (i = 0; i < 4; i++) {
+		dev_info(priv->dev, "FAB_LOT_ID%i: 0x%x\n",
+			 i, readl(priv->membase + FAB_LOT_ID(i)));
+	}
 }
 
 static int lgm_soc_probe(struct platform_device *pdev)
@@ -262,6 +404,7 @@ static int lgm_soc_probe(struct platform_device *pdev)
 	soc_dev_attr->revision = lgm_print_ver(priv);
 	soc_dev_attr->soc_id = lgm_print_pnum(priv);
 	soc_dev_attr->machine = lgm_print_dt_model_name(priv);
+	soc_dev_attr->custom_attr_group = lgm_soc_groups[0];
 	lgm_notify_epu_fused_domain(priv);
 	lgm_print_chip_speed(priv);
 
@@ -272,6 +415,10 @@ static int lgm_soc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, soc_dev);
 	dev_set_drvdata(soc_device_to_device(soc_dev), priv);
+
+	lgm_print_wafer_id_xy(priv);
+	lgm_print_chip_date(priv);
+	lgm_print_chip_misc(priv);
 
 	return 0;
 }

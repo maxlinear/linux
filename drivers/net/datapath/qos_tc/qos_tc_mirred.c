@@ -218,6 +218,13 @@ static bool is_type_mirred_ingress_redirect(struct flow_cls_offload *f)
 	return has_action_id(f, FLOW_ACTION_REDIRECT_INGRESS);
 }
 
+#define MAX_VUNI_SUBIF 3
+
+static bool cmp_subif(u32 lim, u32 val)
+{
+	return val > lim;
+}
+
 static bool force_port_forwarding(struct net_device *dev,
 				  struct net_device *mirr_dev,
 				  struct flow_cls_offload *f)
@@ -226,6 +233,13 @@ static bool force_port_forwarding(struct net_device *dev,
 		return true;
 
 	if (qos_tc_is_iphost_dev(mirr_dev))
+		return true;
+
+	/* In urx iphost bridge port is attached to the VUNI port
+	 * after the additional VUNI devices.
+	 */
+	if (qos_tc_is_vuni_dev(mirr_dev) &&
+	    qos_tc_subif_cmp_to_val(dev, cmp_subif, MAX_VUNI_SUBIF))
 		return true;
 
 	return false;
@@ -238,7 +252,7 @@ int qos_tc_mirred_offload(struct net_device *dev,
 	struct qos_tc_mirr_filter flt = {0};
 	struct net_device *mirr_dev;
 	GSW_PCE_rule_t *pce_rule = NULL;
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	u16 nForwardPortMap[16] = {0,};
 	int ret = 0;
 
@@ -326,7 +340,7 @@ int qos_tc_mirred_unoffload(struct net_device *dev,
 			    struct flow_cls_offload *f,
 			    unsigned long cookie)
 {
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret = 0;
 
 	ret = qos_tc_pce_rule_delete(cookie, pref);

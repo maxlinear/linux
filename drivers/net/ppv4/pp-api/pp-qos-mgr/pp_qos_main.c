@@ -1114,6 +1114,10 @@ static s32 __qos_queue_stat_get(struct pp_qos_dev *qdev, u32 id,
 				struct pp_qos_queue_stat *stat,
 				bool reset_stats);
 
+static s32 __qos_queue_drop_stat_get(struct pp_qos_dev *qdev, u32 counter,
+				     bool reset_stats,
+				     struct pp_qos_queue_drop_stats *stat);
+
 static void node_queue_init(struct pp_qos_dev *qdev, struct qos_node *node)
 {
 	node_init(qdev, node, 1, 0, 1);
@@ -2856,6 +2860,90 @@ out:
 }
 
 /**
+ * __qos_queue_drop_stat_get() - Get drop statistics for a specific counter
+ * @qdev: handle to qos device instance obtained previously from qos_dev_init
+ * @counter: drop counter index
+ * @reset_stats: reset stats after reading if true
+ * @stat: pointer to struct to be filled with drop statistics
+ *
+ * Return: 0 on success
+ */
+static s32 __qos_queue_drop_stat_get(struct pp_qos_dev *qdev, u32 counter,
+				     bool reset_stats,
+				     struct pp_qos_queue_drop_stats *stat)
+{
+	s32 rc;
+	struct pp_qos_queue_drop_stats_s qstat;
+
+	memset(&qstat, 0, sizeof(qstat));
+	create_get_queue_drop_stats_cmd(qdev, counter, reset_stats, &qstat);
+
+	update_cmd_id(&qdev->drvcmds);
+	rc = transmit_cmds(qdev);
+	if (unlikely(rc)) {
+		QOS_LOG_ERR("%s : counter (%u) failed\n", __func__, counter);
+		goto out;
+	}
+	stat->queue_id = qstat.queue_id;
+	stat->inactive_q = qstat.inactive_q;
+	stat->red_packets = qstat.red_packets;
+	stat->yellow_drop = qstat.yellow_drop;
+	stat->green_drop = qstat.green_drop;
+	stat->min_max_drop = qstat.min_max_drop;
+	stat->wred_qm_full = qstat.wred_qm_full;
+	stat->aqm_drop = qstat.aqm_drop;
+	stat->any_drop = qstat.any_drop;
+
+out:
+	return rc;
+}
+
+/**
+ * @brief Sets the queue for a drop counter
+ *
+ * @param qdev Pointer to PP QoS device structure
+ * @param counter Counter value to set
+ * @param queue_id Queue identifier
+ *
+ * @return Status of the operation (negative value on error)
+ */
+static s32 __qos_queue_drop_stat_set(struct pp_qos_dev *qdev, u32 counter,
+				     u32 queue_id)
+{
+	s32 rc;
+	const struct qos_node *node;
+	u32 rlm = qdev->init_params.max_queues;
+
+	/* HW counter uses rlm index for queue id, and max_queues value for
+	 * mode where stats are collected for all queues.
+	 * If requested queue is not collect all queues then need 
+	 * to convert queue id to rlm from the node info.
+	 */
+	if (queue_id != qdev->init_params.max_queues) {
+		node = get_conform_node(qdev, queue_id, node_queue);
+		if (!node) {
+			rc = -EINVAL;
+			QOS_LOG_ERR("%s : queue_id (%u) failed\n", __func__,
+				    queue_id);
+			goto out;
+		}
+		rlm = node->data.queue.rlm;
+	}
+
+	create_set_queue_drop_stats_cmd(qdev, counter, rlm);
+
+	update_cmd_id(&qdev->drvcmds);
+	rc = transmit_cmds(qdev);
+	if (unlikely(rc)) {
+		QOS_LOG_ERR("%s : queue_id (%u) failed\n", __func__, queue_id);
+		goto out;
+	}
+
+out:
+	return rc;
+}
+
+/**
  * pp_qos_queue_stat_get() - Get queue's statistics
  * @qos_dev: handle to qos device instance obtained previously from qos_dev_init
  * @id:	  queue's id obtained from queue_allocate
@@ -2888,6 +2976,33 @@ out:
 	return rc;
 }
 EXPORT_SYMBOL(pp_qos_queue_stat_get);
+
+/**
+ * pp_qos_queue_drop_stat_get() - Get queue's drop statistics
+ * @qos_dev: handle to qos device instance obtained previously from qos_dev_init
+ * @counter: drop counter index
+ * @reset:  if true, reset the statistics
+ * @stat: pointer to struct to be filled with queue's statistics
+ *
+ * Return: 0 on success
+ */
+s32 pp_qos_queue_drop_stat_get(struct pp_qos_dev *qdev, u32 counter, bool reset,
+			       struct pp_qos_queue_drop_stats *stat)
+{
+	s32 rc;
+
+	QOS_LOCK(qdev);
+	PP_QOS_ENTER_FUNC();
+	if (!qos_device_ready(qdev)) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	rc = __qos_queue_drop_stat_get(qdev, counter, reset, stat);
+out:
+	QOS_UNLOCK(qdev);
+	return rc;
+}
 
 s32 qos_clock_update(struct pp_qos_dev *qdev)
 {
@@ -3072,6 +3187,17 @@ s32 __qos_aqm_rlms_attach_get(struct pp_qos_dev *qdev, u8 sf_id, u32 *rlms,
 				/* set queue bw limit from sf in kbit */
 				conf.common_prop.bandwidth_limit =
 								(sf_cfg->cfg.aqm_cfg.msr * 8) / 1024;
+			} else if (qdev->init_params.aqm_engine == PP_AQM_HW && 
+				   sf_cfg->queue[queue_idx].type != PP_QOS_SF_QUEUE_TYPE_MGMT) {
+				/* for regular AQM, put WRED configuration to be
+				 * the same as AQM buffer size to apply buff
+				 * control
+				 */
+				conf.wred_enable = 1;
+				conf.wred_max_avg_green = sf_cfg->buffer_size;
+				conf.wred_min_avg_green = sf_cfg->buffer_size;
+				conf.wred_max_avg_yellow = sf_cfg->buffer_size;
+				conf.wred_min_avg_yellow = sf_cfg->buffer_size;
 			}
 		}
 
@@ -4281,6 +4407,32 @@ out:
 	return rc;
 }
 EXPORT_SYMBOL(pp_qos_stats_reset);
+
+/**
+ * pp_qos_queues_drop_stats_set() - set drop counter for a specific queue
+ * @qos_dev: handle to qos device instance obtained previously from qos_dev_init
+ * @counter: drop counter index
+ * @queue_id: queue id to get drop statistics for
+ *
+ * Return: 0 on success
+ */
+s32 pp_qos_queues_drop_stats_set(struct pp_qos_dev *qdev, u32 counter,
+				 u32 queue_id)
+{
+	s32 rc;
+
+	QOS_LOCK(qdev);
+	PP_QOS_ENTER_FUNC();
+	if (!qos_device_ready(qdev)) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	rc = __qos_queue_drop_stat_set(qdev, counter, queue_id);
+out:
+	QOS_UNLOCK(qdev);
+	return rc;
+}
 
 struct pp_qos_dev *pp_qos_dev_open(u32 id)
 {

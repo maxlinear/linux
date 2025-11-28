@@ -12,5 +12,6 @@ mxltee-objs += keygenload.o
 mxltee-objs += signing.o
 mxltee-objs += wrap_unwrap.o
 mxltee-objs += macgen.o
+mxltee-objs += pin.o
 
 ccflags-y := -I $(srctree)/drivers/tee/mxltee/

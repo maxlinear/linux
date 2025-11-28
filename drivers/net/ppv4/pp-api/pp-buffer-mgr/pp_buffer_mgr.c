@@ -1251,6 +1251,42 @@ free_memory:
 	return ret;
 }
 
+/**
+ * @brief Get the policy id that has a pool with a specific type
+ * @param policy the policy
+ * @param pool_type the type of the pool must be one of pool_flags_bitmap
+ * @return 0 on success, other error code on failure
+ */
+static s32 __bmgr_policy_get_by_type(u32 *policy_id, u16 pool_type)
+{
+	struct pp_bmgr_policy_params *policy;
+	struct pp_bmgr_pool_params *pool;
+	u32 id, i;
+	u8  pool_id;
+
+	if (unlikely(!__bmgr_is_ready()))
+		return -EPERM;
+
+	if (!policy_id)
+		return -EINVAL;
+
+	BM_FOR_EACH_POLICY(db, id) {
+		policy = &db->policies[id].params;
+		for (i = 0; i < policy->num_pools_in_policy; i++) {
+			pool_id = policy->pools_in_policy[i].pool_id;
+			pool = &db->pools[pool_id].params;
+			if (pool->flags & pool_type)
+				goto found;
+		}
+	}
+
+	return -EINVAL;
+
+found:
+	*policy_id = id;
+	return 0;
+}
+
 s32
 pp_bmgr_pool_configure(const struct pp_bmgr_pool_params * const pool_params,
 		       u8 *pool_id)
@@ -2209,32 +2245,12 @@ reset_cfg_db:
 
 s32 pp_bmgr_ssb_policy_get(u32 *policy_id)
 {
-	struct pp_bmgr_policy_params *policy;
-	struct pp_bmgr_pool_params *pool;
-	u32 id, i;
-	u8  pool_id;
+	return __bmgr_policy_get_by_type(policy_id, POOL_SSB);
+}
 
-	if (unlikely(!__bmgr_is_ready()))
-		return -EPERM;
-
-	if (!policy_id)
-		return -EINVAL;
-
-	BM_FOR_EACH_POLICY(db, id) {
-		policy = &db->policies[id].params;
-		for (i = 0; i < policy->num_pools_in_policy; i++) {
-			pool_id = policy->pools_in_policy[i].pool_id;
-			pool = &db->pools[pool_id].params;
-			if (pool->flags & POOL_SSB)
-				goto found;
-		}
-	}
-
-	return -EINVAL;
-
-found:
-	*policy_id = id;
-	return 0;
+s32 pp_bmgr_lro_policy_get(u32 *policy_id)
+{
+	return __bmgr_policy_get_by_type(policy_id, POOL_LRO);
 }
 
 s32 pp_bmgr_config_get(struct pp_bmgr_init_param * const cfg)

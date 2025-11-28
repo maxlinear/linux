@@ -126,6 +126,12 @@
 #define MAC_TSTAMP_IG_CORR_NS		0x0d58
 #define MAC_TSTAMP_EG_CORR_NS		0x0d60
 
+#define MAC_PPS_CTRL			0x0d70
+#define MAC_PPS0_TTIME_SEC		0x0d80
+#define MAC_PPS0_TTIME_NANO_SEC		0x0d84
+#define MAC_PPS0_INTERVAL 		0x0d88
+#define MAC_PPS0_WIDTH			0x0d8c
+
 /* MTL register offsets */
 #define MTL_OMR				0x1000
 #define MTL_DBG_CTL			0x1008
@@ -517,6 +523,9 @@
 
 #define MAC_TXTSTAMP_STS_PKTID_POS        0
 #define MAC_TXTSTAMP_STS_PKTID_WIDTH      10
+
+#define MAC_PPS0_TTIME_NANO_SEC_TRGTBUSY0_POS        31
+#define MAC_PPS0_TTIME_NANO_SEC_TRGTBUSY0_WIDTH      1
 
 #define MAC_VR_SNPSVER_POS              0
 #define MAC_VR_SNPSVER_WIDTH            8
@@ -992,6 +1001,7 @@ int xgmac_set_all_multicast_mode(void *pdev, u32 val);
 int xgmac_set_mac_address(void *pdev, u8 *mac_addr);
 int xgmac_set_checksum_offload(void *pdev, u32 val);
 int xgmac_set_tstamp_addend(void *pdev, u32 tstamp_addend);
+int xgmac_ptp_per_out_en(void *pdev, u64 interval, u64 width, u64 start, u64 phase);
 int xgmac_init_systime(void *pdev, u64 sec, u32 nsec);
 int xgmac_adjust_systime(void *pdev, u32 sec, u32 nsec, u32 add_sub,
 			 u32 one_nsec_accuracy);

@@ -1102,6 +1102,8 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	if (len > 0xFFFF)
 		return -EMSGSIZE;
 
+	if (cmsg_udpst(msg))
+		return udpst_sendmsg(sk, msg, len);
 	/*
 	 *	Check the flags.
 	 */

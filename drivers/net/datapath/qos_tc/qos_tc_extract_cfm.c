@@ -190,7 +190,7 @@ static struct dp_oam_args convert_flower_to_oam_args(struct net_device *dev,
 
 	set_oam_args_cfm_mdl(f, &p);
 
-	p.prio = f->common.prio >> 16;
+	p.prio = f->common.prio;
 
 	return p;
 }

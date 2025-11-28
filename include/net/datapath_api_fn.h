@@ -172,6 +172,8 @@ extern int (*dp_xdo_dev_state_add_fn)(struct xfrm_state *x);
 extern void (*dp_xdo_dev_state_delete_fn)(struct xfrm_state *x);
 extern bool (*dp_xdo_dev_offload_ok_fn)(struct sk_buff *skb,
 	     struct xfrm_state *x);
+extern void (*dp_xdo_dev_state_advance_esn_fn)(struct xfrm_state *x);
+
 /* xfrm dev capability update */
 extern int (*dp_dev_update_xfrm_fn)(struct net_device *dev);
 /* ptp */
@@ -180,6 +182,10 @@ extern int dp_get_ts_info_fn(struct net_device *dev,
 extern int dp_ndo_do_ioctl_fn(struct net_device *dev, struct ifreq *ifr, int cmd);
 extern int dp_get_netif_stats_fn(struct net_device *dev, dp_subif_t *subif_id,
 				 struct rtnl_link_stats64 *path_stats, uint32_t flags);
+
+extern int dp_qos_get_q_global_parms_fn(int inst, int dp_port,
+					int alloc_flag, u32 qos_id,
+					struct dp_qos_q_parms *parms);
 
 int dp_late_register_ops(void);
 int dp_late_register_event_cb(void);

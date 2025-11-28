@@ -54,11 +54,11 @@ s32 qos_queues_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 
 	pr_buf(buf, sz, *n, "\n");
 	pr_buf_cat(buf, sz, *n,
-		   "+------------------+-------------+-------------+-------------+-------------+\n");
+		"+-------------------+-------------+-------------+-------------+-------------+\n");
 	pr_buf_cat(buf, sz, *n,
-		   "|       Qnum       | Q Occupancy |   Forward   |  WRED Drop  | CoDel Drop  |\n");
+		"|       Q num       | Q Occupancy |   Forward   |  WRED Drop  | CoDel Drop  |\n");
 	pr_buf_cat(buf, sz, *n,
-		   "+------------------+-------------+-------------+-------------+-------------+\n");
+		"+-------------------+-------------+-------------+-------------+-------------+\n");
 
 	num  = min(qdev->init_params.max_queues, num_stats);
 	for_each_arr_entry(it, stats, num) {
@@ -75,7 +75,7 @@ s32 qos_queues_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 		}
 
 		pr_buf_cat(buf, sz, *n,
-			   "| %-3u(%-3u)-rlm-%-3u | %-10u  | %-10u  | %-10u  | %-10u  |\n",
+			   "| %-3u(%-4u)-rlm-%-3u | %-10u  | %-10u  | %-10u  | %-10u  |\n",
 			   node_id, node_phy, node->data.queue.rlm,
 			   it->wred.queue_packets_occupancy,
 			   it->total_fwd_pkts,
@@ -102,11 +102,11 @@ s32 qos_queues_stats_bytes_show(char *buf, size_t sz, size_t *n, void *stats,
 
 	pr_buf(buf, sz, *n, "\n");
 	pr_buf_cat(buf, sz, *n,
-		"+------------------+-------------+-------------+-------------+-------------+\n");
+		"+-------------------+-------------+-------------+-------------+-------------+\n");
 	pr_buf_cat(buf, sz, *n,
-		"|       Qnum       | Q Occupancy |   Forward   |  WRED Drop  | CoDel Drop  |\n");
+		"|       Q num       | Q Occupancy |   Forward   |  WRED Drop  | CoDel Drop  |\n");
 	pr_buf_cat(buf, sz, *n,
-		"+------------------+-------------+-------------+-------------+-------------+\n");
+		"+-------------------+-------------+-------------+-------------+-------------+\n");
 
 	num  = min(qdev->init_params.max_queues, num_stats);
 	for_each_arr_entry(it, stats, num) {
@@ -123,7 +123,7 @@ s32 qos_queues_stats_bytes_show(char *buf, size_t sz, size_t *n, void *stats,
 		}
 
 		pr_buf_cat(buf, sz, *n,
-			"| %-3u(%-3u)-rlm-%-3u | %-10u  | %-10llu  | %-10llu  | %-10u  |\n",
+			"| %-3u(%-4u)-rlm-%-3u | %-10u  | %-10llu  | %-10llu  | %-10u  |\n",
 			node_id, node_phy, node->data.queue.rlm,
 			it->wred.queue_bytes_occupancy,
 			it->total_fwd_bytes,
@@ -132,6 +132,62 @@ s32 qos_queues_stats_bytes_show(char *buf, size_t sz, size_t *n, void *stats,
 	}
 	pr_buf_cat(buf, sz, *n,
 		"+------------------+-------------+-------------+-------------+-------------+\n");
+
+	return 0;
+}
+
+s32 qos_queues_drop_stats_show(char *buf, size_t sz, size_t *n, void *stats,
+			  u32 num_stats, void *data)
+{
+	const struct pp_qos_queue_drop_stats *it;
+	struct pp_qos_dev *qdev = data;
+	u32 node_id, node_phy, num, counter = 0;
+
+	if (unlikely(ptr_is_null(buf) || ptr_is_null(n) || ptr_is_null(stats) ||
+		     ptr_is_null(data)))
+		return -EINVAL;
+
+	pr_buf(buf, sz, *n, "\n");
+	pr_buf_cat(buf, sz, *n,
+		"+-----+-------------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+\n");
+	pr_buf_cat(buf, sz, *n,
+		"| Cnt |       Q num       | Inactive Q  | Red Packet  | Yellow drop | Green drop  | Min/Max drop|   QM Full   |  AQM Drop   |  Any Drop   |\n");
+	pr_buf_cat(buf, sz, *n,
+		"+-----+-------------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+\n");
+
+	num = min(WRED_QUEUE_DROP_COUNTER_MAX, num_stats);
+	for_each_arr_entry(it, stats, num)
+	{
+		node_id = 0;
+		node_phy = 0;
+		/* In case queue id is not value of max_queues (which mean all queues)
+		 *	get also phy/queue id to display with rlm
+		 */
+		if (it->queue_id == qdev->init_params.max_queues) {
+			pr_buf_cat(buf, sz, *n, "| %-3u |    all queues     ",
+				   counter);
+		} else if (it->queue_id < qdev->init_params.max_queues) {
+			node_id = get_id_from_phy(qdev->rlm_mapping,
+						  it->queue_id);
+			node_phy = get_phy_from_id(qdev->mapping, node_id);
+			pr_buf_cat(buf, sz, *n, "| %-3u | %-3u(%-3u)-rlm-%-4u ",
+				   counter, node_id, node_phy,
+				   it->queue_id);
+		} else {
+			pr_buf_cat(buf, sz, *n, "| %-3u | invalid q (%-4u)  ",
+				   counter, it->queue_id);
+		}
+		pr_buf_cat(
+			buf, sz, *n,
+			"| %-10u  | %-10u  | %-10u  | %-10u  | %-10u  | %-10u  | %-10u  | %-10u  |\n",
+			it->inactive_q, it->red_packets, it->yellow_drop,
+			it->green_drop, it->min_max_drop, it->wred_qm_full,
+			it->aqm_drop, it->any_drop);
+
+		counter++;
+	}
+	pr_buf_cat(buf, sz, *n,
+		"+-----+-------------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+-------------+\n");
 
 	return 0;
 }
@@ -265,15 +321,79 @@ s32 qos_queues_stats_get(void *stats, u32 num_stats, void *data)
 			return ret;
 		}
 		it->total_fwd_pkts = it->wred.total_packets_accepted -
-		it->wred.queue_packets_occupancy - it->codel.packets_dropped;
+				     it->wred.queue_packets_occupancy -
+				     it->codel.packets_dropped;
 		it->total_fwd_bytes = it->wred.total_bytes_accepted -
-		it->wred.queue_bytes_occupancy - it->codel.bytes_dropped;
+				      it->wred.queue_bytes_occupancy -
+				      it->codel.bytes_dropped;
 		it->queue_id = node_id;
 
 		it++;
 		cnt++;
 		if (cnt == num_stats)
 			break;
+	}
+
+	return 0;
+}
+
+static void __queue_drop_stats_diff(const struct pp_qos_queue_drop_stats *pre,
+				    const struct pp_qos_queue_drop_stats *post,
+				    struct pp_qos_queue_drop_stats *delta)
+{
+	delta->inactive_q = post->inactive_q - pre->inactive_q;
+	delta->red_packets = post->red_packets - pre->red_packets;
+	delta->yellow_drop = post->yellow_drop - pre->yellow_drop;
+	delta->green_drop = post->green_drop - pre->green_drop;
+	delta->min_max_drop = post->min_max_drop - pre->min_max_drop;
+	delta->wred_qm_full = post->wred_qm_full - pre->wred_qm_full;
+	delta->aqm_drop = post->aqm_drop - pre->aqm_drop;
+	delta->any_drop = post->any_drop - pre->any_drop;
+}
+
+s32 qos_queues_drop_stats_diff(void *pre, u32 num_pre, void *post, u32 num_post,
+			       void *delta, u32 num_delta, void *data)
+{
+	const struct pp_qos_queue_drop_stats *pre_it, *post_it;
+	struct pp_qos_queue_drop_stats *delta_it;
+	u32 num;
+
+	if (unlikely(ptr_is_null(pre) || ptr_is_null(post) ||
+		     ptr_is_null(delta) || ptr_is_null(data)))
+		return -EINVAL;
+
+	if (num_pre != num_post || num_pre != num_delta)
+		return -EINVAL;
+
+	post_it = post;
+	delta_it = delta;
+	num = min(WRED_QUEUE_DROP_COUNTER_MAX, num_pre);
+
+	for_each_arr_entry(pre_it, pre, num, post_it++, delta_it++)
+		__queue_drop_stats_diff(pre_it, post_it, delta_it);
+
+	return 0;
+}
+
+s32 qos_queues_drop_stats_get(void *stats, u32 num_stats, void *data)
+{
+	struct pp_qos_dev *qdev = data;
+	struct pp_qos_queue_drop_stats *it =
+		(struct pp_qos_queue_drop_stats *)stats;
+	s32 ret;
+	u32 counter;
+
+	if (unlikely(ptr_is_null(stats) || ptr_is_null(data)))
+		return -EINVAL;
+
+	for (counter = 0; counter < WRED_QUEUE_DROP_COUNTER_MAX; counter++) {
+		ret = pp_qos_queue_drop_stat_get(qdev, counter, false, it);
+		if (unlikely(ret)) {
+			QOS_LOG_ERR("get queue %u stats failed, ret %d\n",
+				    counter, ret);
+			return ret;
+		}
+		it++;
 	}
 
 	return 0;

@@ -36,6 +36,7 @@ struct udphdr {
 #define UDP_GRO		104	/* This socket can receive UDP GRO packets */
 #define OB_UDPST	105	/* This socket is for the UDPST GRO packets */
 #define OB_UDPST6	106	/* This socket is for the UDPST6 GRO packets */
+#define OB_UDPST_GSO	107	/* This socket is for the UDPST GSO packets */
 
 /* UDP encapsulation types */
 #define UDP_ENCAP_ESPINUDP_NON_IKE	1 /* draft-ietf-ipsec-nat-t-ike-00/01 */

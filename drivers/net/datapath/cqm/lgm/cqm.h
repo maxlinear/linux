@@ -933,6 +933,10 @@ struct cqm_ctrl {
 	int max_queues;
 	int total_pool_entries;
 	int num_sys_pools;
+	int num_sys_policy;
+	int num_cpu_pools;
+	int num_cpu_policy;
+	int num_lrouc_pools;
 	int num_dt_entries;
 	int num_intrs;
 	int sys_type;
@@ -987,7 +991,12 @@ struct cqm_ctrl {
 	u32 max_mem_alloc_cpu;
 	u32 max_mem_alloc;
 	u8 cpu_base_pool;
+	u8 cpu_last_pool;
 	u8 cpu_base_policy;
+	u8 sys_last_pool;
+	u16 ioc_2k_pool_sz;
+	u16 nioc_2k_pool_sz;
+	u8 lrouc_ddr_pool;
 	dma_addr_t dma_hndl_qos;
 	dma_addr_t dma_hndl_p[TOT_DMA_HNDL];
 	struct dentry *debugfs;
@@ -995,6 +1004,7 @@ struct cqm_ctrl {
 	unsigned long lgm_pool_ptrs[CQM_LGM_TOTAL_BM_POOLS];
 	unsigned long lgm_pool_size[CQM_LGM_TOTAL_BM_POOLS];
 	unsigned long lgm_pool_type[CQM_LGM_TOTAL_BM_POOLS];
+	u8 cpu_pool_policy[CQM_LGM_TOTAL_BM_POOLS];
 	struct cqm_bm_policy_params cqm_bm_policy_dts[CQM_LGM_NUM_BM_POLICY];
 	struct cqm_dpdk_setting cqm_dpdk[DPDK_MAX_CPU];
 	u32 cpu_owner[CQM_MAX_CPU];

@@ -1004,8 +1004,6 @@ struct pp_lld_stats {
 	u64 rx_ce_pkt;
 	/*! TX packet counter */
 	u64 tx_pkt;
-	/*! error packet counter */
-	u64 error_pkt;
 	/*! mark packet counter */
 	u64 mark_pkt;
 	/*! saction packet counter */
@@ -1104,9 +1102,10 @@ struct pp_desc *pp_pkt_desc_get(struct sk_buff *skb);
  * @brief Set Aqm & LLD service flow
  * @param sf_id service flow id
  * @param sf_cfg service flow configuration
+ * @param reset_sf_lld_cnt whether to reset LLD counters of the SF
  * @return 0 on success
  */
-s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg);
+s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg, bool reset_sf_lld_cnt);
 
 /**
  * @brief Remove Aqm & LLD service flow

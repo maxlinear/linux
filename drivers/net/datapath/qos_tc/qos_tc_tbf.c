@@ -167,6 +167,9 @@ static int move_tbf_to_sched(struct qos_tc_port *port,
 	struct qos_tc_tbf_data *tbf;
 	int idx = TC_H_MIN(parent) - 1;
 
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
+		return -EINVAL;
+
 	/* get parent scheduler */
 	q = qos_tc_qdisc_find(port, parent);
 	WARN(!q, "%s: qdisc not found but one should exist", __func__);
@@ -512,6 +515,9 @@ static int tbf_replace_qid(struct net_device *dev,
 	struct qos_tc_q_data *qid = NULL;
 	int idx = TC_H_MIN(opt->parent) - 1;
 	int ret;
+
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
+		return -EINVAL;
 
 	ret = qos_tc_get_sch_by_handle(dev, opt->parent, &qdisc);
 	if (ret) {

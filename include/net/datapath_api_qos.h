@@ -1852,5 +1852,31 @@ static inline int gpon_example3(void)
 int dp_hostif_update(int inst, int dpid, int vap, struct dp_hif_datapath *new_dp);
 int dp_qos_codel_cfg_set(struct dp_qos_codel_cfg *cfg, int flag);
 int dp_qos_codel_cfg_get(struct dp_qos_codel_cfg *cfg, int flag);
-#endif
 
+/*!
+ * @struct dp_qos_q_parms
+ *
+ * Structure for the global queue parameters
+ *
+ */
+struct dp_qos_q_parms {
+	u32 wred_en;
+	u32 codel_en;
+	u32 qlen;
+};
+
+/*!< dp_qos_get_q_global_parms: get global queue parameters
+ *
+ *   @param [in] inst
+ *   @param [in] dp_port
+ *   @param [in] alloc_flag
+ *   @param [in] qos_id
+ *   @param [out] parms
+ *   @return failure DP_FAILURE
+ *           succeed DP_SUCCESS
+ */
+int dp_qos_get_q_global_parms(int inst, int dp_port,
+			int alloc_flag, u32 qos_id,
+			struct dp_qos_q_parms *parms);
+
+#endif

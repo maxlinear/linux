@@ -227,11 +227,65 @@ static void tdox_rec_remove(struct smgr_tdox_db *db, struct tdox_entry *ent)
 		pr_err("UC_CMD_TDOX_REMOVE %u cmd failed\n", ent->info.supp_id);
 }
 
+/**
+ * @brief Updating the subif for docsis session
+ * for docsis, need to update the subif reside in ps0, the lsb for low 
+ * queue/subif should be 1, and 0 for high queue/subif
+ */
+static s32 tdox_switch_subif_for_docsis(struct smgr_tdox_db *db,
+					const struct tdox_entry *ent, bool high)
+{
+	struct pp_hw_si hw_si = { 0 };
+	struct pp_si si = { 0 };
+
+	if (!ent->info.is_docsis)
+		return 0;
+
+	/* no need to update the subif */
+	if (ent->info.high_queue == ent->info.low_queue)
+		return 0;
+
+	if (smgr_session_si_get(ent->info.sess_id, &si)) {
+		pr_err("couldn't get si for session %u", ent->info.sess_id);
+		return -EINVAL;
+	}
+	if (!si.si_ps_sz) { /* verify psi exist */
+		pr_err("session %u has no si_ps_sz\n", ent->info.sess_id);
+		return -EINVAL;
+	}
+	if (high)
+		si.ud[0] &= ~1;
+	else
+		si.ud[0] |= 1;
+
+	/* encode si to hw si */
+	if (pp_si_encode(&hw_si, &si)) {
+		pr_err("couldn't encode si for session %u",
+			ent->info.sess_id);
+		return -EINVAL;
+	}
+	/* update session with new hw si */
+	if (__smgr_session_update(ent->info.sess_id, &hw_si)) {
+		pr_err("couldn't update hw si for session %u",
+			ent->info.sess_id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static void tdox_switch_dst_q(struct smgr_tdox_db *db,
-			      struct tdox_entry *ent, bool high)
+			      const struct tdox_entry *ent, bool high)
 {
 	u16 q;
 
+	pr_debug("entry id=%u, switch to %s\n", ent->id,
+		 high ? "high" : "low");
+
+	if (tdox_switch_subif_for_docsis(db, ent, high)) {
+		pr_err("failed to switch subif for docsis\n");
+		return;
+	}
 	q = high ? ent->info.high_queue : ent->info.low_queue;
 	chk_session_dsi_q_update(ent->info.sess_id, q);
 	db->stats.dbg.switch_q++;
@@ -301,15 +355,15 @@ static void tdox_del_from_list(struct smgr_tdox_db *db, struct tdox_entry *ent)
 	case TDOX_PEND:
 		return;
 	case TDOX_FREE:
-		pr_debug("remove from free list\n");
+		pr_debug("entry %d remove from free list\n", ent->id);
 		db->stats.free_list_cnt--;
 		break;
 	case TDOX_INIT:
-		pr_debug("remove from init list\n");
+		pr_debug("entry %d remove from init list\n", ent->id);
 		db->stats.init_list_cnt--;
 		break;
 	case TDOX_SUPP:
-		pr_debug("remove from supp list\n");
+		pr_debug("entry %d remove from supp list\n", ent->id);
 		db->stats.supp_list_cnt--;
 		/* in session deletion, no need to switch the queue */
 		if (ent->info.revert_q)
@@ -318,7 +372,7 @@ static void tdox_del_from_list(struct smgr_tdox_db *db, struct tdox_entry *ent)
 		tdox_supp_id_free(db, ent);
 		break;
 	case TDOX_PRIO:
-		pr_debug("remove from prio list\n");
+		pr_debug("entry %d remove from prio list\n", ent->id);
 		db->stats.prio_list_cnt--;
 		/* in session deletion, no need to switch the queue */
 		if (ent->info.revert_q)
@@ -326,17 +380,17 @@ static void tdox_del_from_list(struct smgr_tdox_db *db, struct tdox_entry *ent)
 		ent->info.prio_en = 0;
 		break;
 	case TDOX_CAND:
-		pr_debug("remove from cand list\n");
+		pr_debug("entry %d remove from cand list\n", ent->id);
 		db->stats.cand_list_cnt--;
 		break;
 	case TDOX_LRO:
-		pr_debug("remove from lro list\n");
+		pr_debug("entry %d remove from lro list\n", ent->id);
 		db->stats.lro_list_cnt--;
 		tdox_rec_remove(db, ent);
 		tdox_supp_id_free(db, ent);
 		break;
 	default:
-		pr_err("invalid src list\n");
+		pr_err("entry %d invalid src list\n", ent->id);
 		return;
 	}
 
@@ -346,6 +400,8 @@ static void tdox_del_from_list(struct smgr_tdox_db *db, struct tdox_entry *ent)
 
 static void tdox_ent_free(struct smgr_tdox_db *db, struct tdox_entry *ent)
 {
+	pr_debug("entry %d free\n", ent->id);
+
 	tdox_del_from_list(db, ent);
 	tdox_supp_id_free(db, ent);
 	db->stats.free_list_cnt++;
@@ -412,7 +468,9 @@ static bool is_supp_pps_qualify(struct smgr_tdox_db *db, u32 pps)
 	pr_debug("pps=%u\n", pps);
 
 	/* in supp_full state, pps threshold is enforced, to utilize suppressed
-		entries with entries which has higher ack rate and can better benefite tdox */
+	 * entries with entries which has higher ack rate and can better
+	 * benefite tdox
+	 */
 	if (db->supp_full && pps < TDOX_SUPP_PPS_LO_THR)
 		return false;
 
@@ -422,7 +480,7 @@ static bool is_supp_pps_qualify(struct smgr_tdox_db *db, u32 pps)
 static s32 tdox_supp_add(struct smgr_tdox_db *db, struct tdox_entry *ent,
 			 u32 pps)
 {
-	pr_debug("add to supp list\n");
+	pr_debug("entry %d add to supp list\n", ent->id);
 
 	if (!ent->info.supp_id_alloc || !db->nf_enabled)
 		return -EPERM;
@@ -448,10 +506,7 @@ static s32 tdox_supp_add(struct smgr_tdox_db *db, struct tdox_entry *ent,
 
 static s32 tdox_prio_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 {
-	struct pp_hw_si hw_si = { 0 };
-	struct pp_si si = { 0 };
-
-	pr_debug("add to prio list\n");
+	pr_debug("entry %d add to prio list\n", ent->id);
 
 	if (!ent->info.prio_en)
 		return -EPERM;
@@ -460,31 +515,6 @@ static s32 tdox_prio_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 		return -EPERM;
 	}
 	
-	/* 	entry which moves to prioriy state, needs to update the session info
-		with dest queue to high queue by turning off the psi bit in case of docsis */
-	if (ent->info.is_docsis) {
-		/* Get session SI */
-		if (unlikely(smgr_session_si_get(ent->info.sess_id, &si))) {
-			pr_err("couldn't get si for session %u", ent->info.sess_id);
-			return -EINVAL;
-		}
-		
-		if (si.si_ps_sz) /* verify psi exist */
-		{
-			si.ud[0] &= ~1;
-			/* encode si to hw si */
-			if (unlikely(pp_si_encode(&hw_si, &si))) {
-				pr_err("couldn't encode si for session %u", ent->info.sess_id);
-				return -EINVAL;
-			}
-			/* update session with new hw si */
-			if (unlikely(__smgr_session_update(ent->info.sess_id, &hw_si))) {
-				pr_err("couldn't update hw si for session %u", ent->info.sess_id);
-				return -EINVAL;
-			}
-		}
-	}
-
 	tdox_switch_dst_q(db, ent, true);
 	ent->info.revert_q = false; /* queue already updated above */
 	tdox_del_from_list(db, ent);
@@ -498,7 +528,7 @@ static s32 tdox_prio_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 
 static s32 tdox_cand_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 {
-	pr_debug("add to cand list\n");
+	pr_debug("entry %d add to cand list\n", ent->id);
 	if (db->stats.cand_list_cnt >= TDOX_CAND_MAX) {
 		db->stats.dbg.cand_list_full++;
 		return -EPERM;
@@ -522,7 +552,7 @@ static s32 tdox_cand_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 
 static s32 tdox_lro_add(struct smgr_tdox_db *db, struct tdox_entry *ent)
 {
-	pr_debug("add to lro list\n");
+	pr_debug("entry %d add to lro list\n", ent->id);
 
 	if (tdox_rec_create(db, ent)) {
 		pr_info("failed to create record\n");

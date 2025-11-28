@@ -61,13 +61,12 @@
 #define BYTES_IN_SEL0_3	4
 #define BYTES_IN_SEL4	1
 #define LAN_10G_DP_PORT 4
-#define IOC_2K_POLICY_BUF_SIZE 2048
+#define IS_2K_POOL(x) (((x) / 2048 == 1))
+#define SOFFSET_DIFF 32
 DEFINE_PER_CPU(struct cbm_desc, cqm_enq_desc);
 DEFINE_PER_CPU(struct cbm_desc, cqm_deq_desc);
 
 static struct cqm_cpubuff *cpubuff;
-static unsigned long CPUBUFF_SZ[CQM_LGM_TOTAL_POOLS];
-static u8 CPUBUFF_SHF[CQM_LGM_TOTAL_POOLS];
 static struct cqm_buf_dbg_cnt (*cqm_dbg_ptr)[CQM_MAX_POLICY_NUM][CQM_MAX_POOL_NUM];
 struct cqm_buf_dbg_cnt cqm_dbg_cntrs[CQM_MAX_POLICY_NUM][CQM_MAX_POOL_NUM] = {0};
 /*HW design accepts only ALLOW_CNT - 1 packets to be enqueued*/
@@ -362,8 +361,11 @@ static int is_txin_64(void)
 
 static inline bool is_cpu_iso_pool(int pool)
 {
-	return ((pool >= cqm_ctrl->cpu_base_pool) &&
-		(pool <= (cqm_ctrl->cpu_base_pool + 3)));
+	return (((pool >= cqm_ctrl->cpu_base_pool) &&
+		(pool < (cqm_ctrl->cpu_base_pool +
+			 cqm_ctrl->num_cpu_pools))) ||
+		(pool == cqm_ctrl->lrouc_ddr_pool &&
+		 cqm_ctrl->lrouc_ddr_pool != INVALID_POOL_ID));
 }
 
 int cqm_get_version(void)
@@ -391,7 +393,7 @@ static int get_policy_stats(u16 policy_id, int type, u32 *alloc_buff)
 	}
 
 	dev_info(cqm_ctrl->dev, "%s policy %d, pop %d null cntrs %d\n",
-		 (type ? "Tx" : "Rx"),
+		 (type == CQM_TX ? "Tx" : "Rx"),
 		 policy_id,
 		 pp_stats.policy_alloc_buff,
 		 pp_stats.policy_null_ctr);
@@ -400,49 +402,28 @@ static int get_policy_stats(u16 policy_id, int type, u32 *alloc_buff)
 }
 
 /* Based on intended BM buffer size, get the corresponding bit value in policy map.
- * The bit value is based on two sources:
- * 1. Bit value of buffer size in array buffer_pool_size, which is defined in
+ * The bit value is based on:
+ * Bit value of buffer size in array bm_buf_sizes, which is defined in
  *    device tree and shared between CQM and BM.
- * 2. Whether the intended buffer size is defined in system/cpu pool. If
- *    system/cpu pool does not include the buffer size, 0 wll be returned.
  *
- * For example, if buffer_pool_size = {256, 512, 1024, 2048, 10240}, buffer
- * size 1024 will return BIT(2) and buffer size 2048 will return BIT(3), if
- * system/cpu pool has pools with these sizes.
- * If system/cpu pool does not have pools with these buffer sizes, 0 will be
- * returned.
+ * For example, if bm_buf_sizes = {256, 512, 1024, 2048, 10240}, buffer
+ * size 1000 will return BIT(2) and buffer size 2048 will return BIT(3).
+ * If buf_size does not fit into these buffer sizes, 0 will be returned.
  */
-static u32 _policymap_bit(enum BM_BUF_SIZES bm_buf_size, enum E_GEN_POOL_TYPE type)
+static u32 _policymap_bit(u16 buf_size)
 {
-	u32 policy_map = 0;
-	int idx;
+	u8 i;
 
-	for (idx = 0; idx < BM_BUF_SIZE_MAX; idx++) {
-		if (bm_buf_size == cqm_ctrl->bm_buf_sizes[idx]) {
-			int pidx;
-			if (type == GEN_SYS_POOL) {
-				for (pidx = 0; pidx < cqm_ctrl->num_sys_pools; pidx++) {
-					if (cqm_ctrl->lgm_pool_size[pidx] == bm_buf_size) {
-						policy_map |= BIT(idx);
-						break;
-					}
-				}
-			} else if (type == GEN_CPU_POOL) {
-				for (pidx = cqm_ctrl->cpu_base_pool;
-				     pidx < cqm_ctrl->cpu_base_pool + 4; pidx++) {
-					if (cqm_ctrl->lgm_pool_size[pidx] == bm_buf_size ||
-					    (bm_buf_size == SIZE_10K &&
-					     cqm_ctrl->lgm_pool_size[pidx] >= SIZE_10K)) {
-						policy_map |= BIT(idx);
-						break;
-					}
-				}
-			}
-			break;
+	if (!buf_size)
+		return 0;
+
+	for (i = 0; i < BM_BUF_SIZE_MAX; i++) {
+		if (buf_size <= cqm_ctrl->bm_buf_sizes[i]) {
+			return BIT(i);
 		}
 	}
 
-	return policy_map;
+	return 0;
 }
 
 static s32
@@ -458,23 +439,38 @@ NO_OPTIMIZE get_policymap_from_syspool(int inst, int policy_base,
 		  "%s: policy_base %d, policy_range %d, alloc_flags 0x%x, flags 0x%x\n",
 		  __func__, policy_base, policy_range, alloc_flags, flags);
 
-	/* Special GPID and Memory Port policy is 0x1E */
+	/* Special GPID and Memory Port policy excluding system SSB */
 	if (flags & SP_GPID_POLICYMAP &&
 	    (!is_stream_port(alloc_flags) || !(alloc_flags & DP_F_VUNI))) {
-		policy_map = _policymap_bit(SIZE_512, GEN_SYS_POOL) |
-			     _policymap_bit(SIZE_1024, GEN_SYS_POOL) |
-			     _policymap_bit(SIZE_2048, GEN_SYS_POOL)|
-			     _policymap_bit(SIZE_10K, GEN_SYS_POOL);
+		for (i = 1; i < CQM_LGM_NUM_SYS_POLICY; i++) {
+			pool = get_pool_from_policy(i);
+			if (cqm_ctrl->lgm_pool_type[pool] != CQM_NIOC_SHARED)
+				break;
+			policy_map |= 
+				_policymap_bit(cqm_ctrl->lgm_pool_size[pool]);
+		}
 		CQM_DEBUG(CQM_DBG_FLAG_API,
 			  "%s: SP GPID policy_map 0x%x\n", __func__, policy_map);
 		return policy_map;
 	}
 
-	if ((alloc_flags & DP_F_CPU) || (alloc_flags & DP_F_DIRECT)) {
-		policy_map = _policymap_bit(SIZE_512, GEN_CPU_POOL) |
-			     _policymap_bit(SIZE_1024, GEN_CPU_POOL) |
-			     _policymap_bit(SIZE_2048, GEN_CPU_POOL )|
-			     _policymap_bit(SIZE_10K, GEN_CPU_POOL);
+	if (((alloc_flags & DP_F_CPU) || (alloc_flags & DP_F_DIRECT)) &&
+	    policy_base == cqm_ctrl->cpu_base_policy) {
+		for (i = cqm_ctrl->cpu_base_policy;
+		     i < cqm_ctrl->cpu_base_policy + CQM_LGM_NUM_CPU_POLICY;
+		     i++) {
+			pool = get_pool_from_policy(i);
+			if (cqm_ctrl->lgm_pool_type[pool] != CQM_CPU_ISOLATED)
+				break;
+			/* CPU pool size can be larger than the bm pool size,
+			   e.g. 64k pool used for LRO */
+			if (cqm_ctrl->lgm_pool_size[pool] >
+			    cqm_ctrl->bm_buf_sizes[BM_BUF_SIZE_MAX-1])
+				policy_map |= BIT(BM_BUF_SIZE_MAX-1);
+			else
+				policy_map |=
+					_policymap_bit(cqm_ctrl->lgm_pool_size[pool]);
+		}
 		CQM_DEBUG(CQM_DBG_FLAG_API,
 			  "%s: CPU policy_map 0x%x\n", __func__, policy_map);
 		return policy_map;
@@ -484,14 +480,13 @@ NO_OPTIMIZE get_policymap_from_syspool(int inst, int policy_base,
 		/* For all other cases policy_map is from system pool */
 		for (i = policy_base; i < policy_base + policy_range; i++) {
 			pool = get_pool_from_policy(i);
-			if (pool == INVALID_POOL_ID) {
-				dev_warn(cqm_ctrl->dev, "%s: invalid poolid for policy %d\n",
-					 __func__, i);
+			if (pool == INVALID_POOL_ID)
 				continue;
-			}
 			for (j = 0; j < BM_BUF_SIZE_MAX; j++) {
-				if (cqm_ctrl->bm_buf_sizes[j] ==
-				    bm_pool_conf[pool].buf_frm_size) {
+				if (!cqm_ctrl->lgm_pool_size[pool])
+					break;
+				if (cqm_ctrl->lgm_pool_size[pool] <=
+				    cqm_ctrl->bm_buf_sizes[j]) {
 					policy_map |= BIT(j);
 					break;
 				}
@@ -505,13 +500,18 @@ NO_OPTIMIZE get_policymap_from_syspool(int inst, int policy_base,
 			if (flags & RX_POLICYMAP) {
 				policy_map = 0;
 				CQM_DEBUG(CQM_DBG_FLAG_API,
-					  "%s: RX policy_map 0x%x\n", __func__, policy_map);
+					  "%s: RX policy_map 0x%x\n",
+					  __func__, policy_map);
 				return policy_map;
 			} else {
-				policy_map = _policymap_bit(SIZE_512, GEN_SYS_POOL) |
-					     _policymap_bit(SIZE_1024, GEN_SYS_POOL) |
-					     _policymap_bit(SIZE_2048, GEN_SYS_POOL )|
-					     _policymap_bit(SIZE_10K, GEN_SYS_POOL);
+				for (i = 1; i < CQM_LGM_NUM_SYS_POLICY; i++) {
+					pool = get_pool_from_policy(i);
+					if (cqm_ctrl->lgm_pool_type[pool] !=
+					    CQM_NIOC_SHARED)
+						break;
+					policy_map |=
+						_policymap_bit(cqm_ctrl->lgm_pool_size[pool]);
+				}
 				CQM_DEBUG(CQM_DBG_FLAG_API,
 					  "%s: TX policy_map 0x%x\n", __func__, policy_map);
 				return policy_map;
@@ -534,21 +534,57 @@ NO_OPTIMIZE get_policymap_from_syspool(int inst, int policy_base,
 	return policy_map;
 }
 
+/*!< select buffer size based on pool from preconfigured register */
+static inline u32 get_buf_size_from_cbm(u16 pool)
+{
+	void *cqm_base = cqm_ctrl->cqm;
+	u32 buf_select = 0;
+	u32 config = 0;
+
+	if (pool < CBM_BUF_SIZE0_7_SIZE2_POS)
+		config = cbm_r32(cqm_base + CBM_BUF_SIZE0_7);
+	else
+		config = cbm_r32(cqm_base + CBM_BUF_SIZE8_15);
+
+	buf_select = (config >>
+		      (CBM_BUF_SIZE0_7_SIZE1_POS *
+		      (pool % CBM_BUF_SIZE0_7_SIZE2_POS)))
+		      & CBM_BUF_SIZE0_7_SIZE0_MASK;
+
+	return buf_size_table[buf_select];
+}
+
+/* Check the soffset value so that it does not exceed the buffer size.
+ * We must make sure that soffset value < buffer sizeX. 
+ * Smallest buffer sizeX will be 128B.
+ */
 static void enable_buf_alloc_soffet(const u32 val)
 {
 	void *base = cqm_get_dmadesc_64();
 	u8 i, id;
 	struct eqm_pid_s *enq_pid_p = &cqm_ctrl->eqm_pid_cfg;
+	u32 buf_sz;
 
 	for (id = enq_pid_p->cpu_start; id <= enq_pid_p->cpu_end; id++) {
-		for (i = 0; i < CQM_LGM_NUM_CPU_POLICY; i++)
-			cbm_w32(bufreq[i] + (id * 0x1000), val);
+		for (i = 0; i < CQM_LGM_NUM_CPU_POLICY; i++) {
+			buf_sz = get_buf_size_from_cbm(i);
+
+			if (buf_sz < val)
+				cbm_w32(bufreq[i] + (id * CFG_CPU_IGP_0), buf_sz - SOFFSET_DIFF);
+			else
+				cbm_w32(bufreq[i] + (id * CFG_CPU_IGP_0), val);
+		}
 	}
+	buf_sz = get_buf_size_from_cbm(CQM_SIZE2_BUF_SIZE);
+	if (buf_sz >= val)
+		buf_sz = val;
+	else
+		buf_sz -= SOFFSET_DIFF;
 	for (id = enq_pid_p->vm_start; id <= enq_pid_p->qosbp_end; id++)
-		cbm_w32(bufreq[CQM_SIZE2_BUF_SIZE] + (id * 0x1000), val);
+		cbm_w32(bufreq[CQM_SIZE2_BUF_SIZE] + (id * CFG_CPU_IGP_0), buf_sz);
 	for (id = enq_pid_p->aca_start; id <= enq_pid_p->aca_end; id++) {
 		for (i = 0; i < LGM_CQM_ACA_DESC_MAX; i++)
-			cbm_w32(base + CQM_EQM_DC_BUF_ALLOC(id, i), val);
+			cbm_w32(base + CQM_EQM_DC_BUF_ALLOC(id, i), buf_sz);
 	}
 }
 
@@ -606,11 +642,24 @@ static bool is_system_pool(const u8 id)
 		return false;
 }
 
+static bool is_cpu_pool(const u8 id)
+{
+	if (id < CQM_LGM_TOTAL_BM_POOLS)
+		return (cqm_ctrl->lgm_pool_type[id] ==
+			CQM_CPU_ISOLATED);
+	else
+		return false;
+}
+
 static bool is_lrouc_pool(const u8 id)
 {
 	if (id < CQM_LGM_TOTAL_BM_POOLS)
-		return (cqm_ctrl->lgm_pool_type[id] == SSB_LROUC_NIOC_SHARED) ||
-		       (cqm_ctrl->lgm_pool_type[id] == SSB_LROUC_NIOC_ISOLATED);
+		return (cqm_ctrl->lgm_pool_type[id] ==
+			SSB_LROUC_NIOC_SHARED) ||
+		       (cqm_ctrl->lgm_pool_type[id] ==
+		        SSB_LROUC_NIOC_ISOLATED) ||
+		       (cqm_ctrl->lgm_pool_type[id] ==
+		        LROUC_IOC_ISOLATED);
 
 	else
 		return false;
@@ -1443,6 +1492,8 @@ NO_OPTIMIZE get_bm_info(struct cqm_bm_pool_config *tmp_bm, unsigned long size,
 		tmp_bm->buf_type = buf_type;
 		return;
 	}
+	pr_err("get_bm_info failed to find size %ld type %d",
+	       size, buf_type);
 }
 
 static void store_bufreq_baseaddr(void)
@@ -2735,29 +2786,30 @@ static bool buf_in_pool(void *va, const struct cqm_bm_pool_config *cfg)
 
 static int get_buf_pool(void *va, const struct cqm_bm_pool_config *cfgs, u8 *pool_p)
 {
-	int pool, base_pool;
+	int pool;
 
 	if (!cqm_ctrl || !cfgs)
 		return CBM_FAILURE;
 
 	*pool_p = 0;
-	base_pool = cqm_ctrl->cpu_base_pool;
-	/* higher chance to find the buffer in the below pool first */
-	for (pool = base_pool + 3; pool >= base_pool; pool--) {
+	/* higher chance to find the buffer in the last cpu pool first */
+	for (pool = cqm_ctrl->cpu_last_pool;
+	     pool >= cqm_ctrl->cpu_base_pool; pool--) {
 		if (buf_in_pool(va, cfgs + pool)) {
 			*pool_p = (u8)pool;
 			return CBM_SUCCESS;
 		}
 	}
 
-	for (pool = 0; pool < base_pool; pool++) {
+	for (pool = 0; pool < cqm_ctrl->cpu_base_pool; pool++) {
 		if (buf_in_pool(va, cfgs + pool)) {
 			*pool_p = (u8)pool;
 			return CBM_SUCCESS;
 		}
 	}
 
-	for (pool = base_pool + 4; pool < CQM_LGM_TOTAL_BM_POOLS; pool++) {
+	for (pool = cqm_ctrl->cpu_base_pool + cqm_ctrl->num_cpu_pools;
+	     pool < CQM_LGM_TOTAL_BM_POOLS; pool++) {
 		if (buf_in_pool(va, cfgs + pool)) {
 			*pool_p = (u8)pool;
 			return CBM_SUCCESS;
@@ -2965,13 +3017,12 @@ NO_OPTIMIZE cqm_cpu_enqueue(u32 pid, struct cbm_desc *desc,
 static inline int check_ptr_validation_lgm(void *v_buf)
 {
 	unsigned long buf = (unsigned long)v_buf;
-	u8 id = cqm_ctrl->cpu_base_pool;
 
 	if (!buf)
 		return 0;
 
-	return (buf >= bm_pool_conf[id].pool_start_low &&
-		buf < bm_pool_conf[id + 3].pool_end_low);
+	return (buf >= bm_pool_conf[cqm_ctrl->cpu_base_pool].pool_start_low &&
+		buf < bm_pool_conf[cqm_ctrl->cpu_last_pool].pool_end_low);
 }
 
 #ifdef MODULE_TEST
@@ -2995,7 +3046,7 @@ static void NO_OPTIMIZE *cqm_fsqm_buff_alloc(u32 pid, u32 policy)
 	local_irq_save(sys_flag);
 	preempt_disable();
 	do {
-		buf_addr = cbm_r32(bufreq[CQM_FSQM_BUF_SIZE] + (pid * 0x1000));
+		buf_addr = cbm_r32(bufreq[CQM_FSQM_BUF_SIZE] + (pid * CFG_CPU_IGP_0));
 	} while (((buf_addr & segment_mask) == segment_mask) &&
 		 ((wait++) < DEFAULT_WAIT_CYCLES));
 	if ((buf_addr & segment_mask) == segment_mask) {
@@ -3005,7 +3056,7 @@ static void NO_OPTIMIZE *cqm_fsqm_buff_alloc(u32 pid, u32 policy)
 		local_irq_restore(sys_flag);
 		return NULL;
 	}
-	buf_addr1 = cbm_r32(bufreq_1[CQM_FSQM_BUF_SIZE] + (pid * 0x1000));
+	buf_addr1 = cbm_r32(bufreq_1[CQM_FSQM_BUF_SIZE] + (pid * CFG_CPU_IGP_0));
 	buf_addr1 = ((buf_addr1 & NEW_PBPTR1_CPU_IGP_0_SA_MASK) >>
 		NEW_PBPTR1_CPU_IGP_0_SA_POS);
 	buf_addr |= buf_addr1 << 32;
@@ -3038,19 +3089,19 @@ NO_OPTIMIZE *cqm_buffer_alloc(u32 pid, u32 flag, u32 size,
 		dev_err(cqm_ctrl->dev, "illegal pid: %d\n", pid);
 		return NULL;
 	}
-	if (new_size >
-	    bm_pool_conf[cqm_ctrl->num_sys_pools - 1].buf_frm_size) {
+
+	if (new_size > bm_pool_conf[cqm_ctrl->cpu_last_pool].buf_frm_size) {
 		dev_err(cqm_ctrl->dev, "Invalid size requested: %d\n", size);
 		return NULL;
 	}
 	/*A0:	For any packet size <= 2048, allocate IOC 2k policy buffer
 	 *	For any packet size > 2048, print failure and return
 	 * B0:	For any packet size <= 2048, allocate IOC 2k policy buffer
-	 *	For jumbo packets, use NIOC policy of 10K buffers are used,
+	 *	For jumbo packets, use NIOC policy of largest buffers are used,
 	 *	do cache flush operations(No clflush issue is expected)
 	 */
-	if (new_size <= IOC_2K_POLICY_BUF_SIZE) {
-		new_size = IOC_2K_POLICY_BUF_SIZE;
+	if (new_size <= cqm_ctrl->ioc_2k_pool_sz) {
+		new_size = cqm_ctrl->ioc_2k_pool_sz;
 	} else {
 		if (!v2_flag) {
 			dev_err(cqm_ctrl->dev,
@@ -3061,9 +3112,11 @@ NO_OPTIMIZE *cqm_buffer_alloc(u32 pid, u32 flag, u32 size,
 
 	while (req_idx < BYTES_IN_SEL0_3 + BYTES_IN_SEL4) {
 		bm_idx = bufreq_bm_pool_conf_lut[req_idx];
+		if (bm_idx == CQM_LGM_TOTAL_BM_POOLS)
+			continue;
 		if (new_size <= bm_pool_conf[bm_idx].buf_frm_size &&
 		    bm_pool_conf[bm_idx].buf_type ==
-		    (new_size == IOC_2K_POLICY_BUF_SIZE ?
+		    (new_size == cqm_ctrl->ioc_2k_pool_sz ?
 		    BUF_TYPE_CPU_ISOLATED :
 		    BUF_TYPE_NIOC_SHARED)) {
 			*buf_size = bm_pool_conf[bm_idx].buf_frm_size;
@@ -3083,8 +3136,8 @@ NO_OPTIMIZE *cqm_buffer_alloc(u32 pid, u32 flag, u32 size,
 	while (req_idx < BYTES_IN_SEL0_3) {
 		i = 0;
 		do {
-			buf_addr = cbm_r32(bufreq[req_idx] + (pid * 0x1000));
-			buf_addr1 = cbm_r32(bufreq_1[req_idx] + (pid * 0x1000));
+			buf_addr = cbm_r32(bufreq[req_idx] + (pid * CFG_CPU_IGP_0));
+			buf_addr1 = cbm_r32(bufreq_1[req_idx] + (pid * CFG_CPU_IGP_0));
 		} while (((buf_addr & segment_mask) == segment_mask) &&
 			 ((i++) < DEFAULT_WAIT_CYCLES));
 		if ((buf_addr & segment_mask) == segment_mask) {
@@ -3787,7 +3840,7 @@ static u32 _get_policy_from_type_dir_size(enum CQM_SUP_DEVICE type,
 {
 	struct cqm_bm_policy_params *info = NULL;
 	int idx;
-	u32 policy = 0;
+	u32 policy = CQM_LGM_NUM_BM_POLICY - 1;
 
 	for (idx = 0; idx < CQM_LGM_NUM_BM_POLICY; idx++) {
 		info = &cqm_ctrl->cqm_bm_policy_dts[idx];
@@ -3795,7 +3848,7 @@ static u32 _get_policy_from_type_dir_size(enum CQM_SUP_DEVICE type,
 		    info->direction == dir) {
 			u32 pool = info->pp_policy_cfg.pools_in_policy[0].pool_id;
 			if (pool < CQM_LGM_TOTAL_POOLS &&
-			    bm_pool_conf[pool].buf_frm_size == buf_size) {
+			    bm_pool_conf[pool].buf_frm_size >= buf_size) {
 				policy = idx;
 				break;
 			}
@@ -3806,21 +3859,24 @@ static u32 _get_policy_from_type_dir_size(enum CQM_SUP_DEVICE type,
 
 static u32 _config_policy_sel(void)
 {
-	u32 policy;
-	u32 val = 0;
-
-	policy = _get_policy_from_type_dir_size(SYS, INGRESS | EGRESS, SIZE_512);
+	u32 policy, val = 0;
+	enum DIRECTION dir = INGRESS | EGRESS;
+	policy = _get_policy_from_type_dir_size(SYS, dir, SIZE_512);
 	val = policy;
-	policy = _get_policy_from_type_dir_size(SYS, INGRESS | EGRESS, SIZE_2048);
+	policy = _get_policy_from_type_dir_size(SYS, dir,
+					cqm_ctrl->nioc_2k_pool_sz);
 	val |= policy << CBM_POLICY_SEL0_3_POLICY1_POS;
-	policy = _get_policy_from_type_dir_size(CPU_DEV, INGRESS | EGRESS, SIZE_2048);
+	policy = _get_policy_from_type_dir_size(CPU_DEV, dir,
+					cqm_ctrl->ioc_2k_pool_sz);
 	val |= policy << CBM_POLICY_SEL0_3_POLICY2_POS;
-	policy = _get_policy_from_type_dir_size(SYS, INGRESS | EGRESS, SIZE_10K);
+	policy = _get_policy_from_type_dir_size(SYS, dir,
+			cqm_ctrl->lgm_pool_size[cqm_ctrl->sys_last_pool]);
 	val |= policy << CBM_POLICY_SEL0_3_POLICY3_POS;
 	pr_debug("CBM_POLICY_SEL0_3: 0x%x\n", val);
 	cbm_w32(cqm_ctrl->cqm + CBM_POLICY_SEL0_3, val);
 
-	policy = _get_policy_from_type_dir_size(SYS, EGRESS, SIZE_2048);
+	policy = _get_policy_from_type_dir_size(LROUC, INGRESS,
+					cqm_ctrl->nioc_2k_pool_sz);
 	pr_debug("CBM_POLICY_SEL4: 0x%x\n", policy);
 	cbm_w32(cqm_ctrl->cqm + CBM_POLICY_SEL4, policy);
 
@@ -3905,7 +3961,8 @@ NO_OPTIMIZE cqm_cpu_port_get(struct cbm_cpu_port_data *data, u32 flags)
 		/* prepare this port for size2 dma enq */
 		case EQM_DMA_SIZE2:
 			p_info->dma_dt_init_type = ENQ_DMA_SIZE2_CHNL;
-			cqm_dma_port_enable(i, 0, IOC_2K_POLICY_BUF_SIZE,
+			cqm_dma_port_enable(i, 0,
+					    cqm_ctrl->nioc_2k_pool_sz,
 					    BUF_TYPE_NIOC_SHARED);
 			break;
 		/* prepare the rxdma port with no buf */
@@ -4882,22 +4939,6 @@ NO_OPTIMIZE cqmport_deq_bpress(enum DP_BPRESS bpress_in, enum DP_BPRESS bpress_f
 	return deq_bpress;
 }
 
-/*!< select buffer size based on pool from preconfigured register */
-static inline u32 get_buf_size_from_cqmtop(u16 pool, void *cqm_base)
-{
-	u32 buf_select = 0;
-	u32 config = 0;
-
-	if (pool < 8)
-		config = cbm_r32(cqm_base + CBM_BUF_SIZE0_7);
-	else
-		config = cbm_r32(cqm_base + CBM_BUF_SIZE8_15);
-
-	buf_select = (config >> (4 * (pool % 8))) & 0x7;
-
-	return buf_size_table[buf_select];
-}
-
 static s32
 NO_OPTIMIZE fill_dp_alloc_complete_tx(struct cbm_dp_alloc_complete_data *dp,
 				      const u32 i, u32 dp_port, u32 alloc_flags,
@@ -5029,7 +5070,6 @@ NO_OPTIMIZE fill_dp_alloc_complete_rx(struct cbm_dp_alloc_complete_data *dp,
 	void *v_dma = cqm_get_dmadesc_64();
 	struct cqm_dqm_port_info *dqp_info;
 	struct cqm_eqm_port_info *eqp_info;
-	void *cqm_base = cqm_ctrl->cqm;
 	u8 dma_ctrl[DMA_CH_STR_LEN];
 	void *enq = cqm_ctrl->enq;
 	u32 req_rxring_size;
@@ -5072,7 +5112,7 @@ NO_OPTIMIZE fill_dp_alloc_complete_rx(struct cbm_dp_alloc_complete_data *dp,
 		  policy->ingress_cnt,
 		  policy->pool);
 	dp->rx_ring[i]->rx_pkt_size =
-		get_buf_size_from_cqmtop(policy->pool, cqm_base);
+		cqm_ctrl->lgm_pool_size[policy->pool];
 	dp->rx_ring[i]->in_alloc_ring_size = eqp_info->eq_info.num_alloc_desc;
 
 	if (dqp_info->dma_dt_init_type == DEQ_DMA_CHNL) {
@@ -6379,7 +6419,7 @@ static s32 NO_OPTIMIZE cqm_toe_reg_interface(struct dp_spl_cfg *conn)
 		conn->igp[i].igp_ring_size = eqp_info->eq_info.num_desc;
 		/*Both IGPs share the same intermediate DMA port*/
 		conn->igp[i].egp = &conn->egp[1];
-		cqm_dma_port_enable(enqport, 0, IOC_2K_POLICY_BUF_SIZE,
+		cqm_dma_port_enable(enqport, 0, cqm_ctrl->nioc_2k_pool_sz,
 				    BUF_TYPE_NIOC_SHARED);
 		eqp_info->allocated = P_ALLOCATED;
 	}
@@ -6526,9 +6566,9 @@ static s32 NO_OPTIMIZE cqm_dp_spl_conn(int inst, struct dp_spl_cfg *conn)
 	/* system policy info*/
 	policy_ptr = &conn->policy[0];
 	policy_ptr->rx_policy_base = 1;
-	policy_ptr->rx_policy_num = 4;
+	policy_ptr->rx_policy_num = cqm_ctrl->num_sys_policy - 1;
 	policy_ptr->tx_policy_base = 1;
-	policy_ptr->tx_policy_num = 4;
+	policy_ptr->tx_policy_num = cqm_ctrl->num_sys_policy - 1;
 
 	conn->num_igp = 0;
 	conn->num_egp = 0;
@@ -6544,9 +6584,9 @@ static s32 NO_OPTIMIZE cqm_dp_spl_conn(int inst, struct dp_spl_cfg *conn)
 		conn->num_egp = 2;
 #ifdef CONFIG_IOC_POOL
 		policy_ptr->rx_policy_base = bm_pool_conf[base_pool].policy;
-		policy_ptr->rx_policy_num = 4;
+		policy_ptr->rx_policy_num = cqm_ctrl->num_cpu_policy;
 		policy_ptr->tx_policy_base = bm_pool_conf[base_pool].policy;
-		policy_ptr->tx_policy_num = 4;
+		policy_ptr->tx_policy_num = cqm_ctrl->num_cpu_policy;
 #endif
 		if (cqm_toe_reg_interface(conn) != CBM_SUCCESS)
 			return CBM_FAILURE;
@@ -6570,9 +6610,9 @@ static s32 NO_OPTIMIZE cqm_dp_spl_conn(int inst, struct dp_spl_cfg *conn)
 	case DP_SPL_PP_DUT:
 #ifdef CONFIG_IOC_POOL
 		policy_ptr->rx_policy_base = bm_pool_conf[base_pool].policy;
-		policy_ptr->rx_policy_num = 4;
+		policy_ptr->rx_policy_num = cqm_ctrl->num_cpu_policy;
 		policy_ptr->tx_policy_base = bm_pool_conf[base_pool].policy;
-		policy_ptr->tx_policy_num = 4;
+		policy_ptr->tx_policy_num = cqm_ctrl->num_cpu_policy;
 #endif
 		break;
 	case DP_SPL_PP_NF:
@@ -6787,7 +6827,7 @@ static s32 NO_OPTIMIZE dp_enable(struct module *owner, u32 port_id,
 			glbl_cfg.nBslThreshold[0] = BSL_THRESHOLD_0;
 			glbl_cfg.nBslThreshold[1] = BSL_THRESHOLD_1;
 			glbl_cfg.nBslThreshold[2] = BSL_THRESHOLD_1;
-			glbl_cfg.nMaxJumboLen = cqm_ctrl->lgm_pool_size[3];
+			glbl_cfg.nMaxJumboLen = cqm_ctrl->lgm_pool_size[cqm_ctrl->sys_last_pool];
 			if (ops)
 				ops->gsw_pmac_ops.Pmac_Gbl_CfgSet(ops,
 								  &glbl_cfg);
@@ -7307,7 +7347,7 @@ int is_fsqm(u32 desc2)
 static inline bool is_bm(unsigned long buf)
 {
 	return (buf >= bm_pool_conf[cqm_ctrl->cpu_base_pool].pool_start_low &&
-		buf < bm_pool_conf[cqm_ctrl->cpu_base_pool + 3].pool_end_low);
+		buf < bm_pool_conf[cqm_ctrl->cpu_last_pool].pool_end_low);
 }
 
 static int NO_OPTIMIZE cqm_poll_dp(struct napi_struct *napi, int budget)
@@ -7965,33 +8005,12 @@ static int NO_OPTIMIZE init_cqm_basic(struct platform_device *pdev)
 
 static int get_bufsize(int size)
 {
-	switch (size) {
-	case 128:
-		return 0;
-	break;
-	case 256:
-		return 1;
-	break;
-	case 512:
-		return 2;
-	break;
-	case 1024:
-		return 3;
-	break;
-	case 2048:
-		return 4;
-	break;
-	case 4096:
-		return 5;
-	break;
-	case 8192:
-	case 65536:
-		return 6;
-	break;
-	case 10240:
-		return 7;
-	break;
-	};
+	int i = ARRAY_SIZE(buf_size_table) - 1;
+
+	for (; i >= 0; i--) {
+		if (!(size % buf_size_table[i]))
+			return i;
+	}
 	return 0;
 }
 
@@ -8205,7 +8224,7 @@ static bool
 cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 {
 	unsigned long head, cpu_base_pool, voice_pool, id, offset, head_cpu = 0;
-	unsigned long lrouc_pool;
+	unsigned long lrouc_pool, bm_buf_base = 0, bm_buf_phy = 0;
 	dma_addr_t *phy = &cqm_ctrl->dma_hndl_p[0];
 	dma_addr_t *phy_cpu;
 	u8 total = cqm_ctrl->total_pool_entries;
@@ -8238,21 +8257,24 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 
 	for (id = 0; id < total; id++) {
 		cqm_ctrl->max_mem_alloc +=
-			pdata->pool_ptrs[id] * pdata->pool_size[id];
-		if (id >= cpu_base_pool && (id <= cpu_base_pool + 3)) {
+			cqm_ctrl->lgm_pool_ptrs[id] * cqm_ctrl->lgm_pool_size[id];
+		if ((id >= cpu_base_pool && (id < cpu_base_pool + cqm_ctrl->num_cpu_pools)) ||
+		    cqm_ctrl->lgm_pool_type[id] == LROUC_IOC_ISOLATED) {
 			cqm_ctrl->max_mem_alloc_cpu +=
-				pdata->pool_ptrs[id] * pdata->pool_size[id];
+				cqm_ctrl->lgm_pool_ptrs[id] *
+				cqm_ctrl->lgm_pool_size[id];
 		} else if (id == voice_pool) {
 			continue;
 		} else if (id == lrouc_pool) {
 			continue;
 		} else {
-			if (pdata->pool_type[id] != SSB_NIOC_SHARED &&
-			    pdata->pool_type[id] != SSB_LROUC_NIOC_SHARED &&
-			    pdata->pool_type[id] != SSB_LROUC_NIOC_ISOLATED)
+			if (cqm_ctrl->lgm_pool_type[id] != SSB_NIOC_SHARED &&
+			    cqm_ctrl->lgm_pool_type[id] != SSB_LROUC_NIOC_SHARED &&
+			    cqm_ctrl->lgm_pool_type[id] != SSB_LROUC_NIOC_ISOLATED) {
 				cqm_ctrl->max_mem_alloc_sys +=
-					pdata->pool_ptrs[id] *
-					pdata->pool_size[id];
+					cqm_ctrl->lgm_pool_ptrs[id] *
+					cqm_ctrl->lgm_pool_size[id];
+			}
 		}
 	}
 
@@ -8322,21 +8344,30 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 	if (!cqm_get_first_system_pool_idx(&system_pool_start_idx)) {
 		cqm_ctrl->bm_buf_base[system_pool_start_idx] = head;
 		cqm_ctrl->bm_buf_phy[system_pool_start_idx] = *phy;
+		bm_buf_base = head;
+		bm_buf_phy = *phy;
 	}
 	for (id = system_pool_start_idx + 1; id < total; id++) {
-		offset = pdata->pool_ptrs[id - 1] * pdata->pool_size[id - 1];
+		offset = cqm_ctrl->lgm_pool_ptrs[id - 1] *
+			 cqm_ctrl->lgm_pool_size[id - 1];
 		if (id == cpu_base_pool) {
 			cqm_ctrl->bm_buf_base[id] = head_cpu;
 			cqm_ctrl->bm_buf_phy[id] = *phy_cpu;
+			bm_buf_base = cqm_ctrl->bm_buf_base[id];
+			bm_buf_phy = cqm_ctrl->bm_buf_phy[id];
 		} else if (id == voice_pool) {
 			continue;
 		} else if (id == lrouc_pool) {
 			continue;
 		} else {
-			cqm_ctrl->bm_buf_base[id] +=
-				offset + cqm_ctrl->bm_buf_base[id - 1];
-			cqm_ctrl->bm_buf_phy[id] +=
-				offset + cqm_ctrl->bm_buf_phy[id - 1];
+			if (cqm_ctrl->lgm_pool_ptrs[id] && cqm_ctrl->lgm_pool_size[id]) {
+				cqm_ctrl->bm_buf_base[id] =
+					offset + bm_buf_base;
+				cqm_ctrl->bm_buf_phy[id] =
+					offset + bm_buf_phy;
+			}
+			bm_buf_base += offset;
+			bm_buf_phy += offset;
 		}
 	}
 
@@ -8346,14 +8377,14 @@ cqm_dma_buf_alloc(struct platform_device *pdev, const struct cqm_data *pdata)
 }
 
 static s32
-NO_OPTIMIZE cqm_pool_config(const u32 pool, const struct cqm_data *pdata)
+NO_OPTIMIZE cqm_pool_config(const u8 pool, const struct cqm_data *pdata)
 {
 	struct cqm_bm_pool_config *cfg = &bm_pool_conf[pool];
 	unsigned long size;
 	u8 voice_pool;
 
-	cfg->buf_frm_size = pdata->pool_size[pool];
-	cfg->buf_frm_num = pdata->pool_ptrs[pool];
+	cfg->buf_frm_size = cqm_ctrl->lgm_pool_size[pool];
+	cfg->buf_frm_num = cqm_ctrl->lgm_pool_ptrs[pool];
 	size = cfg->buf_frm_size * cfg->buf_frm_num;
 	voice_pool = get_matching_pool(VOICE, INGRESS);
 	if (voice_pool == INVALID_POOL_ID) {
@@ -8367,12 +8398,13 @@ NO_OPTIMIZE cqm_pool_config(const u32 pool, const struct cqm_data *pdata)
 		cfg->pool_start_low = (unsigned long)pdata->voice_buf_start;
 		cfg->pool_end_low =
 			(unsigned long)(pdata->voice_buf_start + size);
-		cfg->buf_frm_size_reg = get_bufsize(cfg->buf_frm_size);
 	} else {
 		cfg->pool_start_low = cqm_ctrl->bm_buf_base[pool];
 		cfg->pool_end_low = cqm_ctrl->bm_buf_base[pool] + size;
-		cfg->buf_frm_size_reg = get_bufsize(cfg->buf_frm_size);
 	}
+	if (cfg->buf_frm_num)
+		cfg->buf_frm_size_reg = get_bufsize(cfg->buf_frm_size);
+
 	return CBM_SUCCESS;
 }
 
@@ -8481,6 +8513,8 @@ static s32 NO_OPTIMIZE cqm_pp_pool_setup(const struct cqm_data *pdata)
 	pp_bmgr_set_total_active_pools(total_pools);
 	for (pool = 0; pool < total_pools; pool++) {
 		cfg = &bm_pool_conf[pool];
+		if (!cfg->buf_frm_num || !cfg->buf_frm_size)
+			continue;
 		pp.num_buffers = cfg->buf_frm_num;
 		pp.size_of_buffer = cfg->buf_frm_size;
 		start = cfg->pool_start_low;
@@ -8510,11 +8544,16 @@ static s32 NO_OPTIMIZE cqm_pp_pool_setup(const struct cqm_data *pdata)
 		/* typically extended pools are isolated pools */
 		if (bm_pool_conf[pool].buf_type == BUF_TYPE_CPU_ISOLATED ||
 		    bm_pool_conf[pool].buf_type == BUF_TYPE_NIOC_ISOLATED ||
-		    bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC_ISOLATED)
+		    bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC_ISOLATED ||
+		    bm_pool_conf[pool].buf_type == BUF_TYPE_IOC_LROUC_ISOLATED)
 			pp.flags |= POOL_ISOLATED;
 		if (bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC ||
 		    bm_pool_conf[pool].buf_type == BUF_TYPE_SSB_LROUC_ISOLATED)
 			pp.flags |= POOL_SSB;
+		/* Need to config the 64K pool as POOL_LRO for pp to use it */
+		if (bm_pool_conf[pool].buf_type == BUF_TYPE_IOC_LROUC_ISOLATED ||
+		    bm_pool_conf[pool].buf_frm_size == SZ_64K)
+			pp.flags |= POOL_LRO;
 		if (pool != voice_pool)
 			pp_bmgr_pool_configure(&pp, &pool);
 	}
@@ -8623,15 +8662,10 @@ NO_OPTIMIZE cqm_pp_policy_setup(enum DIRECTION dir,
 	return start;
 }
 
-static s32
-NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
-				const struct cqm_data *pdata)
+static void
+NO_OPTIMIZE cqm_copy_pool(const struct cqm_data *pdata)
 {
-	struct cqm_bm_policy_params *db;
-	struct pp_bmgr_policy_params *pp_cfg;
 	u8 pool;
-	unsigned long id;
-	int cpu_pool_ioc = cqm_ctrl->is_cpu_pool_ioc;
 
 	memcpy(cqm_ctrl->lgm_pool_ptrs, pdata->pool_ptrs,
 	       sizeof(cqm_ctrl->lgm_pool_ptrs));
@@ -8639,15 +8673,39 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 	       sizeof(cqm_ctrl->lgm_pool_size));
 	memcpy(cqm_ctrl->lgm_pool_type, pdata->pool_type,
 	       sizeof(cqm_ctrl->lgm_pool_type));
-	memcpy(CPUBUFF_SZ, pdata->pool_size,
-	       sizeof(CPUBUFF_SZ));
 
-	for (id = 0; id < CQM_LGM_TOTAL_POOLS; id++)
-		CPUBUFF_SHF[id] = ffs(CPUBUFF_SZ[id]) - 1;
+	cqm_ctrl->total_pool_entries = pdata->num_sys_pools +
+				       pdata->num_bm_pools;
+	for (pool = 0; pool < cqm_ctrl->total_pool_entries; pool++) {
+		if (is_system_pool(pool)) {
+			cqm_ctrl->num_sys_pools++;
+			if (IS_2K_POOL(cqm_ctrl->lgm_pool_size[pool]))
+				cqm_ctrl->nioc_2k_pool_sz =
+					cqm_ctrl->lgm_pool_size[pool];
+			if (cqm_ctrl->lgm_pool_size[pool])
+				cqm_ctrl->sys_last_pool = pool;
+		} else if (is_cpu_pool(pool)) {
+			cqm_ctrl->num_cpu_pools++;
+			if (IS_2K_POOL(cqm_ctrl->lgm_pool_size[pool]))
+				cqm_ctrl->ioc_2k_pool_sz =
+					cqm_ctrl->lgm_pool_size[pool];
+			if (cqm_ctrl->lgm_pool_size[pool])
+				cqm_ctrl->cpu_last_pool = pool;
+		} else if (is_lrouc_pool(pool)) {
+			cqm_ctrl->num_lrouc_pools++;
+		}
+	}
+}
 
-	cqm_ctrl->total_pool_entries =
-		pdata->num_sys_pools + pdata->num_bm_pools;
-	cqm_ctrl->num_sys_pools = pdata->num_sys_pools;
+static s32
+NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
+				const struct cqm_data *pdata)
+{
+	struct cqm_bm_policy_params *db;
+	struct pp_bmgr_policy_params *pp_cfg;
+	u8 pool, policy;
+	unsigned long id;
+	int cpu_pool_ioc = cqm_ctrl->is_cpu_pool_ioc;
 
 	if (!cqm_dma_buf_alloc(pdev, pdata))
 		panic("cqm dma buf alloc failed\n");
@@ -8665,7 +8723,8 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 				pool = pp_cfg->pools_in_policy[0].pool_id;
 				if (id < cqm_ctrl->num_sys_pools ||
 				    (pool >= cqm_ctrl->cpu_base_pool &&
-				    (pool <= cqm_ctrl->cpu_base_pool + 3)))
+				    (pool < cqm_ctrl->cpu_base_pool +
+				     cqm_ctrl->num_cpu_pools)))
 					bm_pool_conf[pool].policy = id;
 				if (pool == cqm_ctrl->cpu_base_pool)
 					cqm_ctrl->cpu_base_policy = id;
@@ -8673,10 +8732,17 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 		}
 	}
 
+	id = cqm_ctrl->cpu_base_policy;
+	for (pool = cqm_ctrl->cpu_base_pool; pool <= cqm_ctrl->cpu_last_pool; pool++) {
+		if (cqm_ctrl->lgm_pool_size[pool])
+			cqm_ctrl->cpu_pool_policy[pool] = id++;
+	}
+
 	/* fill buffer type to all bm pools including idle pools */
 	for (pool = 0; pool < CQM_LGM_TOTAL_BM_POOLS; pool++) {
 		if (bm_pool_conf[pool].buf_frm_size == 0) {
 			bm_pool_conf[pool].buf_type = BUF_TYPE_INVALID;
+			bm_pool_conf[pool].policy = CQM_LGM_NUM_BM_POLICY - 1;
 			continue;
 		}
 		bm_pool_conf[pool].segment_mask = 0xFFFFFE00;
@@ -8702,11 +8768,22 @@ NO_OPTIMIZE cqm_prepare_pool_db(struct platform_device *pdev,
 		case SSB_LROUC_NIOC_ISOLATED:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_SSB_LROUC_ISOLATED;
 			break;
+		case LROUC_IOC_ISOLATED:
+			bm_pool_conf[pool].buf_type = BUF_TYPE_IOC_LROUC_ISOLATED;
+			break;
 		default:
 			bm_pool_conf[pool].buf_type = BUF_TYPE_INVALID;
 			break;
 		}
 	}
+
+	/* Config LROuC DDR pool and policy if available */
+	policy = _get_policy_from_type_dir_size(LROUC,
+					       INGRESS,
+					       SZ_64K);
+	cqm_ctrl->lrouc_ddr_pool = get_pool_from_policy(policy);
+	if (cqm_ctrl->lrouc_ddr_pool != INVALID_POOL_ID)
+		cqm_ctrl->cpu_pool_policy[cqm_ctrl->lrouc_ddr_pool] = policy;
 
 	for (pool = 0; pool < CQM_LGM_TOTAL_BM_POOLS; pool++) {
 		pr_debug("bm_pool_conf[%d]\n", pool);
@@ -8804,6 +8881,10 @@ static s32 NO_OPTIMIZE cqm_prepare_policy_db(struct cqm_data *pdata)
 		db->pp_policy_cfg.min_guaranteed = dts->min_guaranteed;
 		db->pp_policy_cfg.max_allowed = dts->max_allowed;
 		db->policy_type = dts->interface_type;
+		if (db->policy_type == DP_RES_ID_SYS)
+			cqm_ctrl->num_sys_policy++;
+		else if(db->policy_type == DP_RES_ID_CPU)
+			cqm_ctrl->num_cpu_policy++;
 		db->direction = (enum DIRECTION)dts->direction;
 		db->reserved = 1;
 		/* policy resource id is predefined in dts */
@@ -9583,30 +9664,18 @@ static int NO_OPTIMIZE conf_deq_dma_port(const struct dqm_dma_port *dma_ptr)
 	return CBM_SUCCESS;
 }
 
+/* Map buf size to sys pool */
 int port_idx_to_buf_size(int idx)
 {
 	int buf_size = 0;
 
-	switch (idx) {
-	case 0:
+	if (idx == 0) {
 		buf_size = fsqm_pool_conf[0].buf_frm_size;
-		break;
-	case 1:
-		buf_size = 512;
-		break;
-	case 2:
-		buf_size = 1024;
-		break;
-	case 3:
-		buf_size = 2048;
-		break;
-	case 4:
-		buf_size = 10240;
-		break;
-	default:
-		pr_err("Unable to find buf_size for index %d\n", idx);
-		buf_size = IOC_2K_POLICY_BUF_SIZE;
-		break;
+	} else {
+		if (idx <= cqm_ctrl->sys_last_pool)
+			buf_size = cqm_ctrl->lgm_pool_size[idx];
+		else
+			buf_size = cqm_ctrl->lgm_pool_size[cqm_ctrl->sys_last_pool];
 	}
 	return buf_size;
 }
@@ -9654,14 +9723,13 @@ static int NO_OPTIMIZE conf_enq_dma_port(const struct eqm_dma_port *eqp_conf)
 				eqp_info->buf_type = BUF_TYPE_FSQM;
 			else
 				eqp_info->buf_type = BUF_TYPE_NIOC_SHARED;
-			if (pid == 27)
-				continue;
-			if (pid == 26)
-				eqp_info->buf_size  = IOC_2K_POLICY_BUF_SIZE;
+			if (idx == 2 || idx == 3)
+				eqp_info->buf_size  =
+					cqm_ctrl->nioc_2k_pool_sz;
 			break;
 		/* prepare this port for size2 dma enq */
 		case EQM_DMA_SIZE2:
-			eqp_info->buf_size = IOC_2K_POLICY_BUF_SIZE;
+			eqp_info->buf_size = cqm_ctrl->nioc_2k_pool_sz;
 			eqp_info->buf_type = BUF_TYPE_NIOC_SHARED;
 			break;
 		default:
@@ -10085,11 +10153,14 @@ static int NO_OPTIMIZE cqm_get_mtu_size(struct cbm_mtu *mtu)
 
 	if ((mtu->alloc_flag & DP_F_CPU) || (mtu->alloc_flag & DP_F_DIRECT)) {
 		lgm_pool_size_start = cqm_ctrl->cpu_base_pool;
-		lgm_pool_size_end = lgm_pool_size_start + 4;
+		lgm_pool_size_end = lgm_pool_size_start + cqm_ctrl->num_cpu_pools;
 	} else {
 		lgm_pool_size_start = 0;
 		lgm_pool_size_end = lgm_pool_size_start + cqm_ctrl->num_sys_pools;
 	}
+	/* system buffer size may be smaller than bm buffer size */
+	if (largest_buf_size > cqm_ctrl->lgm_pool_size[cqm_ctrl->sys_last_pool])
+		largest_buf_size = cqm_ctrl->lgm_pool_size[cqm_ctrl->sys_last_pool];
 	if (lgm_pool_size_start >= CQM_LGM_TOTAL_BM_POOLS ||
 	    lgm_pool_size_end >= CQM_LGM_TOTAL_BM_POOLS) {
 		dev_err(cqm_ctrl->dev, "Invalid lgm_pool_size_start %d or lgm_pool_size_end %d\n",
@@ -10556,7 +10627,8 @@ static inline int cqm_get_metadata_policy(void *va, u8 pool, u8 *policy)
 
 	head = cqm_cpubuff_get_buffer_head(va, pool);
 	if (get_metadata((u8 *)head + BM_METADATA_OFFSET, &pool_loc, &policy_loc)) {
-		dev_err(cqm_ctrl->dev, "Invalid metadata for va: %p\n", va);
+		dev_err(cqm_ctrl->dev, "Invalid metadata for va: %lx, pool %d\n",
+			(unsigned long)va, pool);
 		return CBM_FAILURE;
 	}
 
@@ -10567,7 +10639,7 @@ static inline int cqm_get_metadata_policy(void *va, u8 pool, u8 *policy)
 static inline int cqm_get_policy(void *va, u8 pool, u8 *policy)
 {
 	if (is_cpu_iso_pool((int)pool)) {
-		*policy = cqm_ctrl->cpu_base_policy + pool - cqm_ctrl->cpu_base_pool;
+		*policy = cqm_ctrl->cpu_pool_policy[pool];
 		return CBM_SUCCESS;
 	} else {
 		return cqm_get_metadata_policy(va, pool, policy);
@@ -10728,7 +10800,7 @@ static inline int get_buf_idx(dma_addr_t pa, int pool_idx)
 {
 	u64 offset = (u64)pa - (u64)cpubuff->pool[pool_idx].start;
 
-	return offset / CPUBUFF_SZ[pool_idx];
+	return offset / cpubuff->pool[pool_idx].size;
 }
 
 static inline atomic_t *cqm_page_ref_cnt(int pool_idx, int idx)
@@ -10828,8 +10900,8 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 	int result, idx;
 	int skip[LS_PORT_NUM_LGM] = {0};
 	struct gen_pool *fsqm_pool;
-	dma_addr_t pool_phy;
-	void *pool_virt;
+	dma_addr_t pool_phy = 0;
+	void *pool_virt = NULL;
 	struct cqm_soc_data *soc_data = NULL;
 	u32 val = 0;
 	size_t sz, bm_ssb_pool_sz;
@@ -11007,6 +11079,9 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 		cbm_w32((cqm_ctrl->qid2ep + i * 4), 0x0);
 	spin_unlock_irqrestore(&cqm_qidt_lock[0], sys_flag);
 
+	/* Copy pool data before performing ports config */
+	cqm_copy_pool(pdata);
+
 	configure_ports(cqm_ctrl->cqm_cfg);
 
 	if (unlikely(cqm_bm_init(pdev, pdata))) {
@@ -11054,12 +11129,14 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 			 "FSQM allocating SRAM Size = %zu.\n",
 			 cqm_ctrl->fsqm_sz);
 
-		pool_virt = gen_pool_dma_alloc(fsqm_pool, cqm_ctrl->fsqm_sz,
-					       &pool_phy);
-		if (!pool_virt && cqm_ctrl->fsqm_sz) {
-			dev_err(&pdev->dev,
-				"Failed to get the requested size from pool!\n");
-			return -ENODEV;
+		if (cqm_ctrl->fsqm_sz) {
+			pool_virt = gen_pool_dma_alloc(fsqm_pool, cqm_ctrl->fsqm_sz,
+						       &pool_phy);
+			if (!pool_virt) {
+				dev_err(&pdev->dev,
+					"Failed to get the requested size from pool!\n");
+				return -ENODEV;
+			}
 		}
 		bm_pool_conf[CQM_LGM_TOTAL_POOLS - 1] = fsqm_pool_conf[0];
 		bm_pool_conf[CQM_LGM_TOTAL_POOLS - 1].pool_start_low =

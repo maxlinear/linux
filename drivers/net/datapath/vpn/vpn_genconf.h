@@ -20,7 +20,7 @@
 #ifndef __VPN_GENCONF_H_
 #define __VPN_GENCONF_H_
 
-#define FW_COMPATIBLE_ID    0xC
+#define FW_COMPATIBLE_ID    0xD
 
 #define MAX_VERSION_DESC_LEN 8 /*!< Maximum FW version description string
 				* length
@@ -55,16 +55,6 @@
 #define DBG_BUF_SIZE 1024
 
 #define GC_PART_SIZE 4096 /*!< Alignment partition size in SRAM */
-enum {
-	VPN_DBG_CNT0 = 0,
-	VPN_DBG_CNT1,
-	VPN_DBG_CNT2,
-	VPN_DBG_CNT3,
-	VPN_DBG_CNT4,
-	VPN_DBG_CNT5,
-	VPN_DBG_CNT6,
-	VPN_DBG_CNT7,
-};
 
 enum PROFILING_MACRO {
 	PROFILE_START = 1,		/*!<  Firmware profile starts */
@@ -887,7 +877,8 @@ struct genconf {
 			    * compilation or by post scripts. It is
 			    * readonly to VPN FW/HAL
 			    */
-	u32 res1[8]; /*!< Reserved spare 32 bytes */
+	u32 live_counter; /*!< live_counter */
+	u32 res1[7]; /*!< Reserved spare 28 bytes */
 
 	u32 fw_cur_state[MAX_RING]; /*!< FW current state per ring
 				     * based. Set by VPN FW, read only

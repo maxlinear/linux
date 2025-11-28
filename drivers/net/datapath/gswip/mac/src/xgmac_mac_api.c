@@ -1196,6 +1196,160 @@ int xgmac_set_tstamp_addend(void *pdev, u32 tstamp_addend)
 	return 0;
 }
 
+void xgmac_set_flex_train_start_time(void *pdev, u64 start_time64)
+{
+	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
+	u32 sec, nsec;
+
+	pdata->pps_last_start = start_time64;
+
+	sec = div_u64_rem(start_time64, NSEC_TO_SEC, &nsec);
+
+	while (XGMAC_RGRD_BITS(pdata, MAC_PPS0_TTIME_NANO_SEC, TRGTBUSY0)) {
+		/* Wait for TARGET registers' availability */
+	}
+	XGMAC_RGWR(pdata, MAC_PPS0_TTIME_NANO_SEC, nsec);
+	XGMAC_RGWR(pdata, MAC_PPS0_TTIME_SEC, sec);
+
+	XGMAC_RGWR(pdata, MAC_PPS_CTRL, 0x52);
+	while (XGMAC_RGRD(pdata, MAC_PPS_CTRL) & 0x0000000F) {
+		/* Wait for CTRL register availability */
+	}
+}
+
+void xgmac_set_flex_train_stop_time(void *pdev, u64 stop_time64)
+{
+	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
+	u32 sec, nsec;
+	u32 cmd = 0x55; /* default unconditional STOP cmd */
+
+	pdata->pps_last_stop = stop_time64;
+
+	if (stop_time64) {
+		sec = div_u64_rem(stop_time64, NSEC_TO_SEC, &nsec);
+
+		while (XGMAC_RGRD_BITS(pdata, MAC_PPS0_TTIME_NANO_SEC, TRGTBUSY0)) {
+			/* Wait for TARGET registers' availability */
+		}
+		XGMAC_RGWR(pdata, MAC_PPS0_TTIME_NANO_SEC, nsec);
+		XGMAC_RGWR(pdata, MAC_PPS0_TTIME_SEC, sec);
+		cmd = 0x54; /* scheduled STOP cmd */
+	} else {
+		/* Unconditinal train STOP here */
+		pdata->pps_last_start = pdata->pps_last_stop = 0ULL;
+	}
+
+	XGMAC_RGWR(pdata, MAC_PPS_CTRL, cmd);
+	while (XGMAC_RGRD(pdata, MAC_PPS_CTRL) & 0x0000000F) {
+		/* Wait for CTRL register availability */
+	}
+}
+
+void xgmac_start_flex_train(void *pdev)
+{
+	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
+	u64 stime_nsec64;
+	u64 target_stop_nsec64 = 0;
+	u64 target_start_nsec64;
+	const u32 system_latency = 100000; /* ns */
+	const u32 secure_gap = 100; /* Min gap between stop and start, ns */
+
+	stime_nsec64 = xgmac_get_systime(pdev);
+
+	if (pdata->pps_start) {
+		/* If the start time is specified,
+		 * use its value to start the train
+		 */
+		target_start_nsec64 = pdata->pps_start;
+		/* calculate phase shift for future
+		 * PTP system time set/adjust events.
+		 */
+		div64_u64_rem(pdata->pps_start, pdata->pps_interval,
+				&pdata->pps_phase);
+		/* Since the phase is calculated,
+		 * the start time is not needed anymore.*/
+		pdata->pps_start = 0;
+
+	} else {
+		target_start_nsec64 = 
+			((div_u64(stime_nsec64 + system_latency + secure_gap,
+				  pdata->pps_interval) + 1) *
+			pdata->pps_interval) + pdata->pps_phase;
+	}
+
+	if (stime_nsec64 > pdata->pps_last_start) {
+		if (pdata->pps_last_start != 0) {
+			/* Schedule the STOP time
+			 * only if the START time has changed and the
+			 * train has started once.
+			 * Otherwise the train gets stuck in stopped state.
+			 */
+			target_stop_nsec64 = ((target_start_nsec64  + stime_nsec64 +
+					system_latency) >> 1) - secure_gap;
+
+			xgmac_set_flex_train_stop_time(pdev, target_stop_nsec64);
+		}
+
+		/* Schedule START time */
+		xgmac_set_flex_train_start_time(pdev, target_start_nsec64);
+	}
+}
+
+/* Configure PPS interval and width.
+ */
+int xgmac_ptp_per_out_en(void *pdev, u64 interval, u64 width, u64 start, u64 phase)
+{
+	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
+	s32 sub_sec_inc, rem;
+	u32 ssinc, snsinc, intv_units, width_units;
+	s64 target_psec;
+
+	if (width == 0) {
+		/* if width not specified, set it to the half interval. */
+		width = interval >> 1;
+	}
+
+	pdata->pps_interval = interval;
+	pdata->pps_width = width;
+	pdata->pps_phase = phase;
+	pdata->pps_start = start;
+
+	mac_dbg("Flex-Train enable: interval: %llu ns, "\
+			"width %llu ns, start %llu, phase %llu ns\n",
+			pdata->pps_interval, pdata->pps_width, pdata->pps_start, pdata->pps_phase);
+
+	sub_sec_inc = XGMAC_RGRD(pdata, MAC_SUBSEC_INCR);
+	ssinc = (sub_sec_inc >> 16) & 0xFF;
+	snsinc = (sub_sec_inc & 0xFFFF) / 256;
+	sub_sec_inc = (ssinc * 1000) + (snsinc * 1000);
+
+	target_psec = interval * 1000;
+	intv_units = div_s64_rem(target_psec, sub_sec_inc, &rem);
+	if (rem != 0) {
+		mac_dbg("The supported interval value must"\
+				" be multiples of %u.%03u ns\n", ssinc, snsinc);
+		return -EINVAL;
+	}
+	XGMAC_RGWR(pdata, MAC_PPS0_INTERVAL, intv_units);
+
+	target_psec = width * 1000;
+	width_units = div_s64_rem(target_psec, sub_sec_inc, &rem);
+	if (rem != 0) {
+		mac_dbg("Width value truncated to"\
+				" a multiple of %u.%03u ns\n", ssinc, snsinc);
+	}
+	XGMAC_RGWR(pdata, MAC_PPS0_WIDTH, width_units - 1);
+
+	/* Unconditionally stop any running train on per_out config command*/
+	xgmac_set_flex_train_stop_time(pdev, 0ULL);
+	if (pdata->pps_interval != 0ULL) {
+		/* (Re-)Start the flexible PPS train at the next interval boundary */
+		xgmac_start_flex_train(pdev);
+	}
+
+	return 0;
+}
+
 /* This sequence is used to initialize the system time
  * TSINIT:
  * if 1, the system time is initialized (overwritten) with the
@@ -1225,8 +1379,14 @@ int xgmac_init_systime(void *pdev, u64 sec, u32 nsec)
 			break;
 	}
 
+	if (pdata->pps_interval != 0ul) {
+		/* (Re-)Start the flexible PPS train at the next interval boundary */
+		xgmac_start_flex_train(pdev);
+	}
+
 	return 0;
 }
+
 
 /* This sequence is used to adjust/update the system time
  * ADDSUB:Add or Subtract Time
@@ -1284,6 +1444,11 @@ int xgmac_adjust_systime(void *pdev, u32 sec, u32 nsec, u32 add_sub,
 			break;
 	}
 
+	if (pdata->pps_interval != 0ul) {
+		/* (Re-)Start the flexible PPS train at the next interval boundary */
+		xgmac_start_flex_train(pdev);
+	}
+
 	return 0;
 }
 
@@ -1292,13 +1457,18 @@ u64 xgmac_get_systime(void *pdev)
 {
 	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
 
-	u64 nsec;
+	u32 stime_sec1, stime_sec2; 
+	u32 stime_nsec;
 
-	nsec = XGMAC_RGRD(pdata, MAC_SYS_TIME_SEC);
-	nsec *= NSEC_TO_SEC;
-	nsec += XGMAC_RGRD(pdata, MAC_SYS_TIME_NSEC);
+	stime_sec1 = XGMAC_RGRD(pdata, MAC_SYS_TIME_SEC);
+	stime_nsec = XGMAC_RGRD(pdata, MAC_SYS_TIME_NSEC);
 
-	return nsec;
+	/* Check if a second overlapped */
+	stime_sec2 = XGMAC_RGRD(pdata, MAC_SYS_TIME_SEC);
+	if (stime_sec2 != stime_sec1)
+		stime_nsec = XGMAC_RGRD(pdata, MAC_SYS_TIME_NSEC);
+
+	return ((u64)stime_sec2 * NSEC_TO_SEC + stime_nsec);
 }
 
 /* This sequence is used to check whether a timestamp has been
@@ -1322,12 +1492,9 @@ u64 xgmac_get_tx_tstamp(void *pdev)
 int xgmac_get_txtstamp_cnt(void *pdev)
 {
 	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
-	u32 tx_sts;
 	u32 ttsns;
 
-	tx_sts = XGMAC_RGRD(pdata, MAC_TSTAMP_STSR);
-
-	ttsns = MAC_GET_VAL(tx_sts, MAC_TSTAMP_STSR, TTSNS);
+	ttsns = MAC_GET_VAL(pdata->tstamp_status, MAC_TSTAMP_STSR, TTSNS);
 	mac_dbg("\tTx Timestamp Fifo: %d\n", ttsns);
 
 	/* Max Fifo Value*/

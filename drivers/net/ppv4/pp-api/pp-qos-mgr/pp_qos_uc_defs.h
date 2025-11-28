@@ -21,7 +21,7 @@
 
 /* UC version */
 #define UC_VERSION_MAJOR (1)
-#define UC_VERSION_MINOR (34)
+#define UC_VERSION_MINOR (39)
 
 #define QOS_MAX_PREDECESSORS            (6)
 #define QOS_MAX_CHILDREN                (8)
@@ -386,25 +386,25 @@ enum wred_ctx_ops {
  **************************************************************************/
 typedef struct wred_aqm_conf_s {
 	u32	enable;
-	u32	peak_rate;
-	u32	msr;
-	u32	buffer_size;
+	u32	peak_rate; /* (Bytes/seconds) */
+	u32	msr; /* classic MSR (Bytes/seconds) */
+	u32	buffer_size; /* (Bytes) */
 	u32	num_queues;
 	u32	queue_id[8];
-	double	latency_target;
+	double	latency_target; /* (Seconds) */
 	u32	llsf;
 	u32	coupled_sf;
-	u32	coupling_factor;
-	u32	amsr;
-	u32	msr_l;
-	u32	weight; /*Scheduling Weight / 256 */
+	u32	coupling_factor; /* Coupling factor divided by 10 in FW per spec */
+	u32	amsr; /* Aggregated MSR (bits/seconds) */
+	u32	msr_l; /* Low latency MSR (bits/seconds) */
+	u32	weight; /* Scheduling Weight will be divided by 256 in FW per spec */
 	u32	num_hist_bins;
 	u32	bin_edges[QOS_AQM_MAX_BINS - 1];
 } __attribute__((packed)) wred_aqm_conf_t;
 
 typedef struct wred_aqm_dbg_s {
 	u32 prev_queue_length;
-	u32 prev_msrtokens;
+	int prev_msrtokens;
 	double prev_qdelay;
 	double prev_drop_prob;
 	double prev_accu_prob;
@@ -418,12 +418,23 @@ typedef struct wred_aqm_dbg_s {
 	u32 interrupt_count;
 } __attribute__((packed)) wred_aqm_dbg_t;
 
+typedef struct wred_aqm_stats_s {
+		u32 old_byte_accepts_low;
+		u32 old_byte_accepts_high;
+		u32 old_accept_packets;
+		u32 old_byte_drops_low;
+		u32 old_byte_drops_high;
+		u32 old_drop_packets;
+		u32 old_queue_occupancy_bytes;
+		u32 old_queue_occupancy_packets;
+} __attribute__((packed)) wred_aqm_stats_t;
+
 typedef struct wred_aqm_ctx_s {
 	wred_aqm_conf_t aqm_conf;
-	double drop_prob_;
-	double qdelay_old_;
+	double drop_prob_;	/* shadow copy of HW/SW value */
+	double qdelay_old_;	/* shadow copy of HW/SW value */
 	wred_aqm_dbg_t aqm_dbg;
-	u32 old_coupled_queue_length;
+	wred_aqm_stats_t stats;
 	u32 burst_reset_;
 
 	/* Histogram */
@@ -431,6 +442,7 @@ typedef struct wred_aqm_ctx_s {
 	u32    hist_updates;
 	u32    max_latency;
 	u32    last_total_accepts;
+	u32    last_total_forwarded_packets;
 } __attribute__((packed)) wred_aqm_ctx_t;
 
 typedef struct wred_aqm_db_s {
@@ -574,6 +586,18 @@ struct queue_stats_s {
 
 	/* Following stats can not be reset */
 	u32 qmgr_num_queue_entries;
+} __attribute__((packed));
+
+struct pp_qos_queue_drop_stats_s {
+	u32 queue_id;
+	u32 inactive_q;
+	u32 red_packets;
+	u32 yellow_drop;
+	u32 green_drop;
+	u32 min_max_drop;
+	u32 wred_qm_full;
+	u32 aqm_drop;
+	u32 any_drop;
 } __attribute__((packed));
 
 struct queue_stat_info {
@@ -851,6 +875,8 @@ enum uc_qos_command {
 	UC_QOS_CMD_MOVE_QUEUE,
 	UC_QOS_CMD_GET_PORT_STATS,
 	UC_QOS_CMD_GET_QUEUE_STATS,
+	UC_QOS_CMD_GET_QUEUE_DROP_STATS,
+	UC_QOS_CMD_SET_QUEUE_DROP_STATS,
 	UC_QOS_CMD_GET_SYSTEM_STATS,
 	UC_QOS_CMD_ADD_SHARED_BW_LIMIT_GROUP,
 	UC_QOS_CMD_REM_SHARED_BW_LIMIT_GROUP,
@@ -1237,6 +1263,19 @@ struct fw_cmd_get_queue_stats {
 	u32 reset; /*! Clear WRED stats after read */
 } __attribute__((packed));
 
+struct fw_cmd_get_queue_drop_stats {
+	struct uc_qos_cmd_base base;
+	u32 counter; /*! Drop counter index */
+	u32 addr;    /*! Address to write stats (#pp_qos_queue_drop_stats_t) */
+	u32 reset;   /*! Clear stats */
+} __attribute__((packed));
+
+struct fw_cmd_set_queue_drop_stats {
+	struct uc_qos_cmd_base base;
+	u32 counter; /*! Drop counter index */
+	u32 rlm;     /*! Physical Queue ID */
+} __attribute__((packed));
+
 struct fw_cmd_get_codel_stats {
 	struct uc_qos_cmd_base base;
 	u32 rlm; /*! Physical Queue ID */
@@ -1385,6 +1424,8 @@ union uc_qos_cmd_s {
 	struct fw_cmd_read_table_entry   read_tbl_entry;
 	struct fw_cmd_flush_queue        flush_queue;
 	struct fw_cmd_get_queue_stats    get_queue_stats;
+	struct fw_cmd_get_queue_drop_stats    get_queue_drop_stats;
+	struct fw_cmd_set_queue_drop_stats    set_queue_drop_stats;
 	struct fw_cmd_get_codel_stats    get_codel_stats;
 	struct fw_cmd_get_port_stats     get_port_stats;
 	struct fw_cmd_get_system_info    get_sys_info;

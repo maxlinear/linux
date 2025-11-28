@@ -140,6 +140,7 @@ extern u64 qos_wred_base_addr;
 #define MAX_MOVING_NODES 8
 #define MAX_WSP_CHILDREN 8
 
+#define WRED_QUEUE_DROP_COUNTER_MAX (2)
 
 /* define MSC stat1 fields here due to issue with the XML */
 #define UC_MSC_CLK_REQ0_OFF      0
@@ -303,6 +304,31 @@ struct queue_stats {
 	u32 total_fwd_pkts;
 	/*! total forward bytes */
 	u64 total_fwd_bytes;
+};
+
+/**
+ * @struct pp_qos_queue_drop_stat
+ * @brief Drop statistics per queue
+ */
+struct pp_qos_queue_drop_stats {
+	/*! Queue ID of the drop counter */
+	s32 queue_id;
+	/*! WRED InactiveQ Packet dropped */
+	u32 inactive_q;
+	/*! WRED RED Packet dropped */
+	u32 red_packets;
+	/*! WRED Yellow Packet dropped */
+	u32 yellow_drop;
+	/*! WRED Green Packet dropped */
+	u32 green_drop;
+	/*! WRED MIN/MAX Packet dropped */
+	u32 min_max_drop;
+	/*! WRED QM Full Packet dropped */
+	u32 wred_qm_full;
+	/*! WRED AQM Packet dropped */
+	u32 aqm_drop;
+	/*! WRED (any reason) Packet dropped */
+	u32 any_drop;
 };
 
 enum node_type {
@@ -625,6 +651,43 @@ s32 qos_queues_stats_show(char *buf, size_t sz, size_t *n, void *stats,
 			  u32 num_stats, void *data);
 
 /**
+ * @brief Print stats of all drop queues into a buffer
+ * @param buf buffer to print to
+ * @param sz buffer size
+ * @param n pointer to return number of bytes written
+ * @param stats the stats
+ * @param num_stats number of stats
+ * @param data qdev reference
+ * @return s32 0 on success, error code otherwise
+ */
+s32 qos_queues_drop_stats_show(char *buf, size_t sz, size_t *n, void *stats,
+			  u32 num_stats, void *data);
+
+/**
+ * @brief Get queue's drop statistics
+ * @param qos_dev handle to qos device instance obtained from
+ *        pp_qos_dev_open
+ * @param counter drop stats counter number
+ * @param reset if true reset the counters
+ * @param stat pointer to struct to be filled with queue's
+ *        statistics
+ * @return 0 on success
+ */
+s32 pp_qos_queue_drop_stat_get(struct pp_qos_dev *qdev, u32 counter,
+	bool reset, struct pp_qos_queue_drop_stats *stat);
+
+/**
+ * @brief set drop stats counter to a specific queue
+ * @param qos_dev handle to qos device instance obtained from
+ *        pp_qos_dev_open
+ * @param counter drop stats counter number
+ * @param queue_id queue id to monitor
+ * @return s32 0 on success, error code otherwise
+ */
+s32 pp_qos_queues_drop_stats_set(struct pp_qos_dev *qdev, u32 counter,
+				 u32 queue_id);
+
+/**
  * @brief Print stats in bytes for all queues into a buffer
  * @param buf buffer to print to
  * @param sz buffer size
@@ -659,6 +722,30 @@ s32 qos_queues_stats_diff(void *pre, u32 num_pre, void *post, u32 num_post,
  * @return s32 0 on success, error code otherwise
  */
 s32 qos_queues_stats_get(void *stats, u32 num_stats, void *data);
+
+/**
+ * @brief Calculates the difference between queues drop stats
+ * @param pre pre stats
+ * @param num_pre number of pre stats
+ * @param post post stats
+ * @param num_post number of post stats
+ * @param delta stats to save the delta
+ * @param num_delta number of delta stats
+ * @param data user data
+ * @note all stats array MUST be with same size
+ * @return s32 0 on success, error code otherwise
+ */
+s32 qos_queues_drop_stats_diff(void *pre, u32 num_pre, void *post, u32 num_post,
+			  void *delta, u32 num_delta, void *data);
+
+/**
+ * @brief Get all wred drop queues stats
+ * @param stats pointer to save the stats
+ * @param num_stats number of stats entries
+ * @param data user data
+ * @return s32 0 on success, error code otherwise
+ */
+s32 qos_queues_drop_stats_get(void *stats, u32 num_stats, void *data);
 
 /**
  * @brief Calculates the difference between queues stats in bytes

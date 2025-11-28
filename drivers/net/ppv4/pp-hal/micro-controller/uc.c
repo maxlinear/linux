@@ -1721,12 +1721,13 @@ u32 uc_cpu_sleep_count(bool uc_is_egr, unsigned int cid)
 		return PP_REG_RD32(UC_B_INGRESS_CPU_SLEEP_CNT(cid));
 }
 
-s32 __nf_reass_set(u16 tx_queue, u16 dflt_hif)
+s32 __nf_reass_set(u16 tx_queue, u16 dflt_hif, u16 uc_q)
 {
 	struct reassembly_info info;
 	struct pp_si dflt_si;
-	s32 ret;
 	struct rx_dma_port_cfg port_cfg;
+	phys_addr_t addr;
+	s32 i, ret;
 
 	memset(&info, 0, sizeof(info));
 
@@ -1766,6 +1767,12 @@ s32 __nf_reass_set(u16 tx_queue, u16 dflt_hif)
 		    dflt_si.base_policy);
 	PP_REG_WR32(UC_SSRAM(INGRESS, ING_HOST_INFO_POLICY_BMAP_SSRAM_OFF),
 		    dflt_si.policies_map);
+
+	/* write reassembly q to DCCM to each CPU */
+	for_each_ing_active_cpu(i) {
+		addr = DCCM_INGRESS_ADDR(i, ING_REASS_NF_Q);
+		memcpy_toio((void *)addr, &uc_q, sizeof(uc_q));
+	}
 
 	return uc_egr_mbox_cmd_send(UC_CMD_REASSEMBLY_INFO, 0,
 				    (const void *)&info, sizeof(info), NULL, 0);
@@ -1838,7 +1845,7 @@ s32 uc_nf_set(enum pp_nf_type nf, u16 pid, u16 subif, u16 qos_port,
 		ipsec_lld_info.ipsec.tx_q     = tx_queue;
 		ipsec_lld_info.ipsec.tx_subif = subif;
 		ipsec_lld_info.ipsec.vpn_gpid = vpn_gpid;
-		ipsec_lld_info.lld.nf_queue = uc_q;
+		ipsec_lld_info.lld.nf_queue   = uc_q;
 
 		ret = uc_egr_mbox_cmd_send(UC_CMD_IPSEC_INFO, 0,
 					   &ipsec_lld_info,
@@ -1848,7 +1855,7 @@ s32 uc_nf_set(enum pp_nf_type nf, u16 pid, u16 subif, u16 qos_port,
 		break;
 	case PP_NF_REASSEMBLY:
 		uc_port = UC_REASS_PORT;
-		ret = __nf_reass_set(tx_queue, dflt_hif);
+		ret = __nf_reass_set(tx_queue, dflt_hif, uc_q);
 		if (unlikely(ret)) {
 			pr_err("__nf_reass_set failed, ret %d\n", ret);
 			return ret;

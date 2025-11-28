@@ -46,7 +46,7 @@ int qos_tc_ip_drop_offload(struct net_device *dev,
 			   unsigned long cookie)
 {
 	GSW_PCE_rule_t *pce_rule = NULL;
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret = 0;
 
 	pce_rule = kzalloc(sizeof(*pce_rule), GFP_KERNEL);
@@ -90,7 +90,7 @@ int qos_tc_ip_drop_unoffload(struct net_device *dev,
 			     struct flow_cls_offload *f,
 			     unsigned long cookie)
 {
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret = 0;
 
 	ret = qos_tc_pce_rule_delete(cookie, pref);

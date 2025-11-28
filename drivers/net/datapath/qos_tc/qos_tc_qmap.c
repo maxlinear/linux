@@ -98,7 +98,7 @@ static int qos_tc_parse_tc_flower(struct flow_cls_offload *f,
 	}
 	pr_debug("%s: Supported key used: 0x%x\n", __func__, d->used_keys);
 
-	(*flt)->pref = f->common.prio >> 16;
+	(*flt)->pref = f->common.prio;
 	(*flt)->proto = f->common.protocol;
 	(*flt)->classid = f->classid;
 	(*flt)->ingress = ingress;

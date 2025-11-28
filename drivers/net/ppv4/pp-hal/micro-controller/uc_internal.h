@@ -76,6 +76,8 @@ extern u32 ing_ldb2_offset;
 	(ing_ldb1_offset + offsetof(struct ingress_uc_local_db, stats))
 #define ING_CHK_BASE                                                           \
 	(ing_ldb1_offset + offsetof(struct ingress_uc_local_db, chk_base))
+#define ING_REASS_NF_Q                                                         \
+	(ing_ldb1_offset + offsetof(struct ingress_uc_local_db, reassembly_nf_q))
 #define ING_DFLT_PORT_PRIORITY_OFF(port_id)                                    \
 	(ing_ldb2_offset +                                                    \
 	 offsetof(struct ingress_uc_local_db_2, dflt_port_priority[port_id]))

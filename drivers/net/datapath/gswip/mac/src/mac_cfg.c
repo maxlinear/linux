@@ -2009,6 +2009,7 @@ void mac_init_fn_ptrs(struct mac_ops *mac_op)
 	mac_op->config_hw_time_stamping = xgmac_set_hwtstamp_settings;
 	mac_op->config_subsec_inc = xgmac_config_subsec_inc;
 	mac_op->get_txtstamp_cap_cnt = xgmac_get_txtstamp_cnt;
+	mac_op->ptp_per_out_enable = xgmac_ptp_per_out_en;
 
 	mac_op->rmon_get = rmon_get;
 	mac_op->rmon_clr = rmon_clr;

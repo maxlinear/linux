@@ -974,6 +974,8 @@ enum DP_SUBIF_DATA_FLAG {
 	DP_SUBIF_NO_NDO_HACK = BIT(19), /*!< Flag to tell DPM no NDO/capability
 					 *   hacking
 					 */
+	DP_SUBIF_CPU_HIGH_PRI = BIT(20), /*!< CPU high priority Dequeue Port */
+	DP_SUBIF_CPU_LOW_PRI = BIT(21),  /*!< CPU low priority Dequeue Port */
 };
 
 /*! @brief dp_subif_id struct for get_netif_subif */
@@ -1627,6 +1629,7 @@ struct dp_dev_data {
 	struct dp_dev_opt_param opt_param; /*!< [in] optional parameters */
 	int emode; /*!< [in] optional parameters for gswip subif mode */
 	int cqe_lu_md; /*!< [in] optional parameters for cqm lookup mode */
+	u32 qos_id; /*!< [in] qos configuration id to match dts setting */
 };
 
 /**
@@ -3387,6 +3390,8 @@ struct xfrm_state;
 int dp_xdo_dev_state_add(struct xfrm_state *x);
 void dp_xdo_dev_state_delete(struct xfrm_state *x);
 bool dp_xdo_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x);
+void dp_xdo_dev_state_advance_esn(struct xfrm_state *x);
+
 /* xfrm dev capability update */
 int dp_dev_update_xfrm(struct net_device *dev);
 
@@ -3397,4 +3402,3 @@ int dp_get_ts_info(struct net_device *dev,
 int dp_ndo_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 
 #endif /*DATAPATH_API_H */
-

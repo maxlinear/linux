@@ -25,10 +25,10 @@
  * the version here
  */
 #define EGRESS_VER_MAJOR  1
-#define EGRESS_VER_MINOR  51
+#define EGRESS_VER_MINOR  54
 
 #define INGRESS_VER_MAJOR 1
-#define INGRESS_VER_MINOR 28
+#define INGRESS_VER_MINOR 30
 
 /* some attributes shortcuts */
 #ifndef __packed
@@ -706,6 +706,8 @@ struct __packed lld_cfg {
 	u32    vq_interval;
 	/* EWMA Alpha */
 	u32    vq_ewma_alpha;
+	/* flag that indicates if reset to lld counters is needed */
+	u32    reset_sf_lld_cnt;
 };
 
 /**
@@ -1093,6 +1095,8 @@ struct ingress_uc_local_db {
 	struct uc_gpid_group grp[UC_GPID_GRP_CNT];
 	/*! checker registers base */
 	u32 chk_base;
+	/*! reassembly network function queue */
+	u16 reassembly_nf_q;
 };
 
 struct ingress_uc_local_db_2 {

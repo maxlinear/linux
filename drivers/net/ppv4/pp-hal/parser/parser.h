@@ -1,8 +1,21 @@
 /*
- * Description: PP parser HAL APIs
+ * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2018-2020 Intel Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR APARTICULARPURPOSE.See the
+ * GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public
+ * License along with this program; if not,see
+ * <http://www.gnu.org/licenses/>.
  *
  * SPDX-License-Identifier: GPL-2.0-only
- * Copyright (C) 2018 Intel Corporation
+ *
+ * Description: PP parser HAL APIs
  */
 
 #ifndef __PARSER_H__
@@ -116,12 +129,12 @@ enum l2_cmp_op {
  */
 enum np_logic {
 	NP_LOGIC_TUNN,			/* tunnels          */
-	NP_LOGIC_IPV4,			/* external IPv6    */
-	NP_LOGIC_IPV6,			/* external IPv4    */
+	NP_LOGIC_IP,			/* external IP      */
 	NP_LOGIC_IP_SELECT,		/* IP select nibble */
-	NP_LOGIC_IPV4_2_L2TP,	/* internal IPv4 or L2TP   */
-	NP_LOGIC_IPV6_2,		/* internal IPv6    */
+	NP_LOGIC_PROTO_SELECT,	/* Next prot select */
+	NP_LOGIC_IP_2,			/* internal IP      */
 	NP_LOGIC_UDP,			/* UDP tunnels      */
+	NP_LOGIC_MPLS,			/* MPLS labels      */
 	NP_LOGIC_END,			/* for protocols prior to the payload */
 	NP_LOGICS_NUM
 };

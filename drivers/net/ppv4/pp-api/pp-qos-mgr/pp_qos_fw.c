@@ -585,6 +585,8 @@ enum cmd_type {
 	CMD_TYPE_REM_QUEUE,
 	CMD_TYPE_UPDATE_PREDS,
 	CMD_TYPE_GET_QUEUE_STATS,
+	CMD_TYPE_GET_QUEUE_DROP_STATS,
+	CMD_TYPE_SET_QUEUE_DROP_STATS,
 	CMD_TYPE_GET_QM_STATS,
 	CMD_TYPE_SET_AQM_SF,
 	CMD_TYPE_SET_CODEL_CFG,
@@ -632,6 +634,8 @@ static const char *const cmd_str[] = {
 	[CMD_TYPE_REM_QUEUE] = "CMD_TYPE_REM_QUEUE",
 	[CMD_TYPE_UPDATE_PREDS] = "CMD_TYPE_UPDATE_PREDS",
 	[CMD_TYPE_GET_QUEUE_STATS] = "CMD_TYPE_GET_QUEUE_STATS",
+	[CMD_TYPE_GET_QUEUE_DROP_STATS] = "CMD_TYPE_GET_QUEUE_DROP_STATS",
+	[CMD_TYPE_SET_QUEUE_DROP_STATS] = "CMD_TYPE_SET_QUEUE_DROP_STATS",
 	[CMD_TYPE_GET_QM_STATS] = "CMD_TYPE_GET_QM_STATS",
 	[CMD_TYPE_SET_AQM_SF] = "CMD_TYPE_SET_AQM_SF",
 	[CMD_TYPE_SET_CODEL_CFG] = "CMD_TYPE_SET_CODEL_CFG",
@@ -809,6 +813,16 @@ struct cmd_remove_shared_group {
 struct cmd_get_queue_stats {
 	struct cmd base;
 	struct fw_cmd_get_queue_stats fw;
+} __attribute__((packed));
+
+struct cmd_get_queue_drop_stats {
+	struct cmd base;
+	struct fw_cmd_get_queue_drop_stats fw;
+} __attribute__((packed));
+
+struct cmd_set_queue_drop_stats {
+	struct cmd base;
+	struct fw_cmd_set_queue_drop_stats fw;
 } __attribute__((packed));
 
 struct cmd_get_qm_stats {
@@ -2620,6 +2634,57 @@ void create_get_queue_stats_cmd(struct pp_qos_dev *qdev,
 	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
 }
 
+void create_get_queue_drop_stats_cmd(struct pp_qos_dev *qdev, u32 counter,
+				     bool reset,
+				     struct pp_qos_queue_drop_stats_s *drop_qstat)
+{
+	struct cmd_get_queue_drop_stats cmd;
+	size_t rsp_size = sizeof(struct pp_qos_queue_drop_stats_s);
+
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
+		return;
+
+	if (__check_rsp_size(qdev, rsp_size))
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_GET_QUEUE_DROP_STATS, sizeof(cmd),
+		 CMD_FLAGS_POST_PROCESS_DCCM, (void *)drop_qstat, 0, rsp_size);
+	cmd.fw.base.type = UC_QOS_CMD_GET_QUEUE_DROP_STATS;
+	cmd.fw.counter = counter;
+
+	if (reset)
+		cmd.fw.reset = QUEUE_STATS_CLEAR_ALL;
+	else
+		cmd.fw.reset = QUEUE_STATS_CLEAR_NONE;
+
+	QOS_LOG_DEBUG("cmd %u: CMD_TYPE_GET_queue_drop_STATS %u\n",
+		      qdev->drvcmds.cmd_id, counter);
+
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+}
+
+void create_set_queue_drop_stats_cmd(struct pp_qos_dev *qdev, u32 counter,
+				     u32 rlm)
+{
+	struct cmd_set_queue_drop_stats cmd;
+
+	if (PP_QOS_DEVICE_IS_ASSERT(qdev))
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd_init(qdev, &cmd.base, CMD_TYPE_SET_QUEUE_DROP_STATS, sizeof(cmd), 0,
+		 NULL, 0, 0);
+	cmd.fw.base.type = UC_QOS_CMD_SET_QUEUE_DROP_STATS;
+	cmd.fw.counter = counter;
+	cmd.fw.rlm = rlm;
+
+	QOS_LOG_DEBUG("cmd %u: CMD_TYPE_SET_QUEUE_DROP_STATS %u\n",
+		      qdev->drvcmds.cmd_id, counter);
+
+	cmd_queue_put(qdev->drvcmds.cmdq, &cmd, sizeof(cmd));
+}
+
 void create_get_qm_stats_cmd(struct pp_qos_dev *qdev, u32 rlm,
 			     struct qm_info *qstat)
 {
@@ -3137,6 +3202,8 @@ static s32 post_process_from_dccm(struct pp_qos_dev *qdev,
 		}
 		break;
 	case CMD_TYPE_GET_QUEUE_STATS:
+	case CMD_TYPE_GET_QUEUE_DROP_STATS:
+	case CMD_TYPE_SET_QUEUE_DROP_STATS:
 	case CMD_TYPE_GET_CODEL_STATS:
 	case CMD_TYPE_GET_PORT_STATS:
 	case CMD_TYPE_GET_SYSTEM_INFO:

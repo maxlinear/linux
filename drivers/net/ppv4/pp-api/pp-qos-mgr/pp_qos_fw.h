@@ -78,6 +78,13 @@ void create_get_queue_stats_cmd(struct pp_qos_dev *qdev, u32 phy, u32 rlm,
 				struct queue_stats_s *qstat,
 				bool reset);
 
+void create_get_queue_drop_stats_cmd(struct pp_qos_dev *qdev,
+				u32 counter, bool reset,
+				struct pp_qos_queue_drop_stats_s *drop_qstat);
+
+void create_set_queue_drop_stats_cmd(struct pp_qos_dev *qdev,
+				u32 counter, u32 rlm);
+
 void create_get_qm_stats_cmd(struct pp_qos_dev *qdev, u32 rlm,
 			    struct qm_info *qstat);
 
@@ -200,6 +207,9 @@ void fill_preds(const struct pp_nodes *nodes, u32 phy, u32 *preds, size_t size);
 #define create_get_queue_stats_cmd(qdev, phy, rlm, qstat, reset)\
 	QOS_LOG_DEBUG("GET QUEUE STATS: %u\n", phy)
 
+#define create_get_queue_drop_stats_cmd(qdev, counter, reset, drop_qstat)\
+	QOS_LOG_DEBUG("GET QUEUE DROP STATS: %u\n", counter)
+
 #define create_get_qm_stats_cmd(qdev, rlm, qstat)         \
 	QOS_LOG_DEBUG("GET QM STATS\n")
 
@@ -259,6 +269,7 @@ void fill_preds(const struct pp_nodes *nodes, u32 phy, u32 *preds, size_t size);
 #define create_set_shared_group_cmd(qdev, id, max_burst)
 #define create_remove_shared_group_cmd(qdev, id)
 #define create_get_queue_stats_cmd(qdev, phy, rlm, qstat, reset)
+#define create_get_queue_drop_stats_cmd(qdev, counter, reset, drop_qstat)
 #define create_get_qm_stats_cmd(qdev, rlm, qstat)
 #define create_aqm_sf_set_cmd(qdev, sf_id, enable, sf_cfg, queue_id)
 #define create_codel_cfg_set_cmd(qdev, cfg)

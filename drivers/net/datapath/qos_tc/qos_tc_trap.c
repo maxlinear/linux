@@ -177,7 +177,7 @@ int qos_tc_trap_offload(struct net_device *dev,
 {
 	struct dp_pce_blk_info *pce_blk_info;
 	GSW_PCE_rule_t *pce_rule;
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret;
 
 	pce_rule = kzalloc(sizeof(*pce_rule), GFP_ATOMIC);
@@ -282,7 +282,7 @@ int qos_tc_trap_unoffload(struct net_device *dev,
 			  unsigned long cookie)
 {
 	struct pce_rule_storage *p, *n;
-	int pref = f->common.prio >> 16;
+	int pref = f->common.prio;
 	int ret = -EINVAL;
 
 	list_for_each_entry_safe(p, n, &tc_trap_storage, list) {

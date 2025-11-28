@@ -176,6 +176,7 @@ static struct xfrmdev_ops xfrm_ops = {
 	.xdo_dev_state_add = dp_xdo_dev_state_add,
 	.xdo_dev_state_delete = dp_xdo_dev_state_delete,
 	.xdo_dev_offload_ok = dp_xdo_dev_offload_ok,
+	.xdo_dev_state_advance_esn = dp_xdo_dev_state_advance_esn,
 };
 #endif
 

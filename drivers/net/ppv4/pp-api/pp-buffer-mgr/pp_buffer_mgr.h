@@ -133,9 +133,17 @@ s32 pp_bmgr_config_get(struct pp_bmgr_init_param * const cfg);
  * @brief Get the SSB policy for LRO uc
  * @param policy_id
  * @return 0 on success, other error code on failure
- * @note This function is used by the LRO UC to get the SSB policy
+ * @note This function is used by the LRO uC to get the SSB policy
  */
 s32 pp_bmgr_ssb_policy_get(u32 *policy_id);
+
+/**
+ * @brief Get the LRO uC policy
+ * @param policy_id
+ * @return 0 on success, other error code on failure
+ * @note This function is used by the LRO uC to get the LRO policy
+ */
+s32 pp_bmgr_lro_policy_get(u32 *policy_id);
 
 /**
  * @brief Get group database info

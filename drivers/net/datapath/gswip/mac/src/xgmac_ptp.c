@@ -43,6 +43,7 @@
 
 #include <xgmac.h>
 #include <xgmac_ptp.h>
+#include <net/switch_api/mac_ops.h>
 
 #define AUX_TRIG_0 1
 #define AUX_TRIG_1 2
@@ -59,8 +60,7 @@ static void *parse_ptp_packet(struct sk_buff *skb,
 static void xgmac_get_rx_tstamp(struct mac_prv_data *pdata,
 				struct sk_buff *skb);
 static int xgmac_ptp_register(void *pdev);
-static void xgmac_extts_isr_handler(struct mac_prv_data *pdata,
-				    u32 tstamp_sts);
+static void xgmac_extts_isr_handler(struct mac_prv_data *pdata);
 
 void xgmac_config_timer_reg(void *pdev, u32 mac_tscr)
 {
@@ -153,14 +153,10 @@ static int xgmac_adj_time(struct ptp_clock_info *ptp, s64 delta)
 	quotient = div_u64_rem(delta, NSEC_TO_SEC, &reminder);
 	sec = quotient;
 	nsec = reminder;
-
 	spin_lock_bh(&pdata->ptp_lock);
-
 	hw_if->adjust_systime(hw_if, sec, nsec, neg_adj,
 			      pdata->one_nsec_accuracy);
-
 	spin_unlock_bh(&pdata->ptp_lock);
-
 	pr_debug("Adjust_time: Done\n");
 
 	return 0;
@@ -562,17 +558,16 @@ int xgmac_get_hwts(void *pdev, struct ifreq *ifr)
 int xgmac_ptp_isr_hdlr(void *pdev)
 {
 	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
-	u32 tstamp_sts;
 	struct mac_ops *hw_if = &pdata->ops;
 	u64 tstamp;
 	int ret = -1;
 	struct skb_shared_hwtstamps shhwtstamp;
 
 	/* Clear/Acknowledge interrupt by reading */
-	tstamp_sts = XGMAC_RGRD(pdata, MAC_TSTAMP_STSR);
+	pdata->tstamp_status = XGMAC_RGRD(pdata, MAC_TSTAMP_STSR);
 
 	/* Timestamp stored interrupt */
-	if (tstamp_sts & 0x8000) {
+	if (pdata->tstamp_status & 0x8000) {
 		if (IS_2STEP(pdata)) {
 			xgmac_ptp_tx_work(&pdata->ptp_tx_work);
 		}
@@ -586,9 +581,9 @@ int xgmac_ptp_isr_hdlr(void *pdev)
 	}
 
 	/* Auxilairy Timestamp stored interrupt */
-	if (tstamp_sts & 0x4) {
+	if (pdata->tstamp_status & 0x4) {
 		if (XGMAC_RGRD(pdata, MAC_AUX_CTRL) & 0x30)
-			xgmac_extts_isr_handler(pdata, tstamp_sts);
+			xgmac_extts_isr_handler(pdata);
 	}
 
 	return ret;
@@ -599,8 +594,11 @@ static int xgmac_extts_enable(struct ptp_clock_info *ptp,
 {
 	struct mac_prv_data *pdata =
 		container_of(ptp, struct mac_prv_data, ptp_clk_info);
-	int i;
+	struct mac_ops *hw_if = &pdata->ops;
+	int i, ret = 0;
 	u32 aux_ctrl;
+	u64 pps_intvl, pps_width = 0, pps_start = 0;
+	s64 pps_phase = 0;
 
 	switch (rq->type) {
 	case PTP_CLK_REQ_EXTTS:
@@ -620,6 +618,48 @@ static int xgmac_extts_enable(struct ptp_clock_info *ptp,
 			return -EINVAL;
 		}
 		return 0;
+	case PTP_CLK_REQ_PEROUT:
+		if (rq->perout.flags & ~(PTP_PEROUT_DUTY_CYCLE |
+					PTP_PEROUT_PHASE))
+			return -EOPNOTSUPP;
+
+		pps_intvl = (((rq->perout.period.sec) * NSEC_TO_SEC) +
+			       	rq->perout.period.nsec);
+
+		if (rq->perout.flags & PTP_PEROUT_DUTY_CYCLE) {
+			pps_width = (((rq->perout.on.sec) * NSEC_TO_SEC) +
+				       	rq->perout.on.nsec);
+			if (pps_width == 0 || pps_width >= pps_intvl) {
+				mac_dbg("PPS width must be > 0 and less than interval\n");
+				return -EINVAL;
+			}
+		}
+		if (rq->perout.flags & PTP_PEROUT_PHASE) {
+			pps_phase = (((rq->perout.phase.sec) * NSEC_TO_SEC) +
+				       	rq->perout.phase.nsec);
+			if (pps_phase < 0) {
+				mac_dbg("Negative PPS phase is not allowed\n");
+				return -EINVAL;
+			}
+			if (pps_phase >= pps_intvl) {
+				mac_dbg("PPS phase must be less than interval\n");
+				return -EINVAL;
+			}
+		} else {
+			pps_start = (((rq->perout.start.sec) * NSEC_TO_SEC) +
+				       	rq->perout.start.nsec);
+			if (pps_start <= hw_if->get_systime(hw_if)) {
+				mac_dbg("PPS start time must be in advance\n");
+				return -EINVAL;
+			}
+		}
+
+		spin_lock_bh(&pdata->ptp_lock);
+
+		ret = hw_if->ptp_per_out_enable(hw_if, pps_intvl, pps_width, pps_start, (u64)pps_phase);
+
+		spin_unlock_bh(&pdata->ptp_lock);
+		return ret;
 	default:
 		break;
 	}
@@ -643,18 +683,17 @@ static u64 xgmac_get_auxtimestamp(struct mac_prv_data *pdata)
 }
 #endif
 
-static void xgmac_extts_isr_handler(struct mac_prv_data *pdata,
-				    u32 tstamp_sts)
+static void xgmac_extts_isr_handler(struct mac_prv_data *pdata)
 {
 #ifdef CONFIG_PTP_1588_CLOCK
 	u8 val, i;
 	struct ptp_clock_event event;
 	u64 ts[N_EXT_TS] = {0};
 	u8 ts_valid[N_EXT_TS] = {0};
-	u8 cnt = MAC_GET_VAL(tstamp_sts, MAC_TSTAMP_STSR, ATSNS);
+	u8 cnt = MAC_GET_VAL(pdata->tstamp_status, MAC_TSTAMP_STSR, ATSNS);
 
 	while (cnt--) {
-		val = MAC_GET_VAL(tstamp_sts, MAC_TSTAMP_STSR, ATSSTN);
+		val = MAC_GET_VAL(pdata->tstamp_status, MAC_TSTAMP_STSR, ATSSTN);
 		if (val && val <= N_EXT_TS) {
 			ts[val - 1] = xgmac_get_auxtimestamp(pdata);
 			ts_valid[val - 1] = 1;
@@ -797,6 +836,7 @@ int xgmac_get_ts_info(void *pdev,
 static int xgmac_ptp_register(void *pdev)
 {
 	struct mac_prv_data *pdata = GET_MAC_PDATA(pdev);
+	struct xgmac_hw_features *hw_feat = &pdata->hw_feat;
 	struct ptp_clock_info *info = &pdata->ptp_clk_info;
 	int ret = 0;
 
@@ -810,6 +850,7 @@ static int xgmac_ptp_register(void *pdev)
 	info->owner = THIS_MODULE;
 	info->max_adj = MAX_FREQ_ADJUSTMENT;
 	info->n_ext_ts = N_EXT_TS;
+	info->n_per_out = hw_feat->pps_out_num;
 	info->adjfreq = xgmac_adj_freq;
 	info->adjtime = xgmac_adj_time;
 	info->gettime64 = xgmac_get_time;
@@ -817,6 +858,10 @@ static int xgmac_ptp_register(void *pdev)
 	info->enable	= xgmac_extts_enable;
 #ifdef CONFIG_PTP_1588_CLOCK
 	if (!pdata->ext_ref_time) {
+		/* Register a PTP device only for the XGMAC
+		   which is a time reference source
+		   (does not use external time reference).
+		 */
 		pdata->ptp_clock = ptp_clock_register(info, pdata->dev);
 		if (IS_ERR(pdata->ptp_clock)) {
 			pdata->ptp_clock = NULL;

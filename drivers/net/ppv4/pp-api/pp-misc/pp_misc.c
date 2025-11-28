@@ -72,12 +72,6 @@
  */
 #define LLD_MAX_FLOOR         (65535000)
 
-/**
- * @define CRITICAL_QL_FACTOR for QL calculation
- * (spec CM-SP-MULPI C.2.2.9.17.8)
- */
-#define CRITICAL_QL_FACTOR     (1000)
-
 
 struct pp_sf_entry {
 	struct pp_qos_aqm_lld_sf_config sf_cfg;
@@ -452,7 +446,7 @@ void pp_tx_pkt_hook(struct sk_buff *skb, u16 pid)
 }
 EXPORT_SYMBOL(pp_tx_pkt_hook);
 
-s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
+s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg, bool reset_sf_lld_cnt)
 {
 	struct lld_ctx_cfg uc_lld_cfg = { 0 };
 	struct aqm_ctx_cfg uc_aqm_cfg = { 0 };
@@ -538,6 +532,9 @@ s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 	uc_lld_cfg.lld_cfg.coupled_sf = sf_cfg->coupled_sf;
 	uc_lld_cfg.lld_cfg.iaqm_en = sf_cfg->cfg.lld_cfg.iaqm_en;
 	uc_lld_cfg.lld_cfg.qp_en = sf_cfg->cfg.lld_cfg.qp_en;
+	/* reset_sf_lld_cnt indicates whether to reset LLD SF counters. this is not always needed.
+	   for example: when only updating the histogram bins of SF, we shouldn't reset it */
+	uc_lld_cfg.lld_cfg.reset_sf_lld_cnt = reset_sf_lld_cnt;
 
 	/* According to Annex O */
 	if (sf_cfg->amsr == 0 && sf_cfg->msr_l == 0)
@@ -559,18 +556,32 @@ s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 	uc_lld_cfg.lld_cfg.maxth_ns = US_2_NS(sf_cfg->cfg.lld_cfg.maxth_us);
 	uc_lld_cfg.lld_cfg.lg_aging = sf_cfg->cfg.lld_cfg.lg_aging;
 	uc_lld_cfg.lld_cfg.range_ns = 1 << sf_cfg->cfg.lld_cfg.lg_range;
-	uc_lld_cfg.lld_cfg.minth_ns = (uc_lld_cfg.lld_cfg.maxth_ns - uc_lld_cfg.lld_cfg.range_ns) >
-		floor ? (uc_lld_cfg.lld_cfg.maxth_ns - uc_lld_cfg.lld_cfg.range_ns) : floor;
+	if (uc_lld_cfg.lld_cfg.maxth_ns > uc_lld_cfg.lld_cfg.range_ns)
+		uc_lld_cfg.lld_cfg.minth_ns =
+			max(uc_lld_cfg.lld_cfg.maxth_ns -
+				uc_lld_cfg.lld_cfg.range_ns, floor);
+	else
+		uc_lld_cfg.lld_cfg.minth_ns = floor;
 
-	uc_lld_cfg.lld_cfg.maxth_ns = uc_lld_cfg.lld_cfg.minth_ns + uc_lld_cfg.lld_cfg.range_ns;
-	uc_lld_cfg.lld_cfg.maxth_ns = min(uc_lld_cfg.lld_cfg.maxth_ns, LLD_MAX_FLOOR);
+	uc_lld_cfg.lld_cfg.maxth_ns =
+		uc_lld_cfg.lld_cfg.minth_ns + uc_lld_cfg.lld_cfg.range_ns;
+	uc_lld_cfg.lld_cfg.maxth_ns =
+		min(uc_lld_cfg.lld_cfg.maxth_ns, LLD_MAX_FLOOR);
+
+	pr_debug(
+		"LL sf_id %u PROB: %u: max_rate %llu, maxth_ns %u, minth_ns %u, "
+		"range_ns %u floor %u\n", sf_id,
+		sf_id, uc_lld_cfg.lld_cfg.max_rate,
+		uc_lld_cfg.lld_cfg.maxth_ns,
+		uc_lld_cfg.lld_cfg.minth_ns,
+		uc_lld_cfg.lld_cfg.range_ns, floor);
 
 	/* critical_ql taken from configuration if exist, otherwise according to
 	 * maxth div 1000 (according to spec CM-SP-MULPI C.2.2.9.17.8)
 	 */
 	uc_lld_cfg.lld_cfg.critical_ql_ns = sf_cfg->cfg.lld_cfg.critical_ql_us
 		? US_2_NS(sf_cfg->cfg.lld_cfg.critical_ql_us)
-		: uc_lld_cfg.lld_cfg.maxth_ns / CRITICAL_QL_FACTOR;
+		: uc_lld_cfg.lld_cfg.maxth_ns;
 
 	/* critical_ql_score taken from configuration if exist, otherwise set to
 	 * default (according to spec CM-SP-MULPI C.2.2.9.17.9)
@@ -581,6 +592,13 @@ s32 pp_misc_sf_set(u8 sf_id, struct pp_qos_aqm_lld_sf_config *sf_cfg)
 
 	uc_lld_cfg.lld_cfg.critical_qL_product = (u64)critical_ql_score_ns *
 					  uc_lld_cfg.lld_cfg.critical_ql_ns;
+
+	pr_debug(
+		"LL sf_id %u QP: critical_ql_ns %u, critical_ql_score_ns %u, "
+		"critical_qL_pgroduct %llu\n", sf_id,
+		uc_lld_cfg.lld_cfg.critical_ql_ns,
+		critical_ql_score_ns,
+		uc_lld_cfg.lld_cfg.critical_qL_product);
 
 	uc_lld_cfg.lld_cfg.vq_interval = sf_cfg->cfg.lld_cfg.vq_interval;
 	uc_lld_cfg.lld_cfg.vq_ewma_alpha = sf_cfg->cfg.lld_cfg.vq_ewma_alpha;
@@ -778,20 +796,15 @@ s32 pp_misc_sf_hist_get(u8 sf_id, struct pp_sf_hist_stat *hist, bool reset)
 		ret = uc_sf_hist_get(sf_id, hist, reset);
 		if (unlikely(ret))
 			return ret;
-	} else { /* In AQM SW mode, classic histogram is taken from UC */
-		if (db->aqm_engine == PP_AQM_SW) {
-			ret = uc_sf_hist_get(sf_id, hist, reset);
-			if (unlikely(ret))
-				return ret;
-		} else {  /* In AQM HW histogram is from qos fw */
-			qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
-			if (ptr_is_null(qdev))
-				return -ENODEV;
+	} else {
+		/* In AQM SW/HW histogram is from qos fw */
+		qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+		if (ptr_is_null(qdev))
+			return -ENODEV;
 
-			ret = pp_qos_sf_hist_get(qdev, sf_id, hist, reset);
-			if (unlikely(ret))
-				return ret;
-		}
+		ret = pp_qos_sf_hist_get(qdev, sf_id, hist, reset);
+		if (unlikely(ret))
+			return ret;
 	}
 	return 0;
 }

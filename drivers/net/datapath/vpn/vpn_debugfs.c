@@ -39,7 +39,8 @@ static int vpn_genconf_show(struct seq_file *s, void *v)
 	for (i = 0; i < MAX_RING; i++)
 		seq_printf(s, "\tfw_cur_state[%d]: 0x%x\n", i,
 			   genconf->fw_cur_state[i]);
-	for (i = 0; i < 8; i++)
+	seq_printf(s, "\tlive_counter: 0x%x\n", genconf->live_counter);
+	for (i = 0; i < ARRAY_SIZE(genconf->res1); i++)
 		seq_printf(s, "\tres1[%d]: 0x%x\n", i,
 			   genconf->res1[i]);
 	for (i = 0; i < DBG_BUF_COUNT; i++)
@@ -414,12 +415,12 @@ static int vpn_test_add_sa(struct vpn_data *priv, int mode)
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
 		x.id.spi = cpu_to_be32(0x37 + i); /* xfrm spi is big endian */
 
-		/* add outbound */
-		x.xso.flags = 0;
-		vpn_add_xfrm_sa(&x);
+		/* odd tunnel as inbound, even tunnel as outbound */
+		if (i % 2)
+			x.xso.flags = XFRM_OFFLOAD_INBOUND;
+		else
+			x.xso.flags = 0;
 
-		/* add inbound */
-		x.xso.flags = XFRM_OFFLOAD_INBOUND;
 		vpn_add_xfrm_sa(&x);
 	}
 
@@ -453,12 +454,12 @@ static int vpn_test_delete_sa(struct vpn_data *priv)
 	for (i = 0; i < IPSEC_TUN_MAX; i++) {
 		x.id.spi = cpu_to_be32(0x37 + i); /* xfrm spi is big endian */
 
-		/* delete outbound */
-		x.xso.flags = 0;
-		vpn_delete_xfrm_sa(&x);
+		/* odd tunnel as inbound, even tunnel as outbound */
+		if (i % 2)
+			x.xso.flags = XFRM_OFFLOAD_INBOUND;
+		else
+			x.xso.flags = 0;
 
-		/* delete inbound */
-		x.xso.flags = XFRM_OFFLOAD_INBOUND;
 		vpn_delete_xfrm_sa(&x);
 	}
 
@@ -645,7 +646,7 @@ static ssize_t vpn_test_write(struct file *file, const char __user *buf,
 	int i;
 	char *p;
 	char *tokens[3];
-	u32 tunnel_id = 0;
+	u32 tunnel_id = IPSEC_TUN_MAX;
 	u32 num = 1;
 
 	priv = ((struct seq_file *)file->private_data)->private;
@@ -684,10 +685,14 @@ static ssize_t vpn_test_write(struct file *file, const char __user *buf,
 
 	switch (match_string(mode_strings, -1, tokens[0])) {
 	case VPN_TEST_ENC:
+		if (tunnel_id == IPSEC_TUN_MAX)
+			tunnel_id = 0; /* tun_id 0 by default */
 		for (i = 0; i < num; i++)
 			vpn_test_enq_cqm(priv, 0, tunnel_id, mode);
 		break;
 	case VPN_TEST_DEC:
+		if (tunnel_id == IPSEC_TUN_MAX)
+			tunnel_id = 1; /* tun_id 0 by default */
 		for (i = 0; i < num; i++)
 			vpn_test_enq_cqm(priv, 1, tunnel_id, mode);
 		break;

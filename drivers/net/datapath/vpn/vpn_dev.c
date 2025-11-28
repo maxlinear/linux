@@ -628,6 +628,9 @@ static int vpn_add_sa(struct vpn_data *priv, struct xfrm_state *x,
 	else
 		params.mode = VPN_MODE_TRANSPORT;
 
+	if (x->props.flags & XFRM_STATE_ESN)
+		params.esn = true;
+
 	info = &priv->genconf->ipsec_info[tunnel_id];
 	params.ctx_buffer = &priv->genconf->ctx[tunnel_id];
 	params.token_buffer = &priv->genconf->acd_tmpl[tunnel_id];
@@ -949,6 +952,11 @@ static bool vpn_is_transport_proto_supported(struct vpn_data *priv,
 	}
 
 	return true;
+}
+
+static void vpn_state_advance_esn(struct xfrm_state *x)
+{
+	/* do nothing */
 }
 
 bool vpn_xfrm_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
@@ -2097,6 +2105,7 @@ static int vpn_probe(struct platform_device *pdev)
 	priv->ops.add_xfrm_sa = vpn_add_xfrm_sa;
 	priv->ops.delete_xfrm_sa = vpn_delete_xfrm_sa;
 	priv->ops.xfrm_offload_ok = vpn_xfrm_offload_ok;
+	priv->ops.state_advance_esn = vpn_state_advance_esn;
 	priv->ops.proto_to_next_header = vpn_proto_to_next_header;
 
 	dp_register_ops(0, DP_OPS_VPN, (void *)&priv->ops);

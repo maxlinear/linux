@@ -138,7 +138,7 @@ s32 smgr_lro_conf_get(struct smgr_lro_conf *conf)
 s32 smgr_lro_nf_set(u16 gpid, u16 subif, u16 phyq)
 {
 	s32 ret = 0;
-	u16 policy;
+	u32 policy = 0;
 	u8 pool;
 	struct smgr_lro_conf conf;
 	struct pp_port_cfg port_cfg;
@@ -148,15 +148,10 @@ s32 smgr_lro_nf_set(u16 gpid, u16 subif, u16 phyq)
 	if (!gpid || !subif || !phyq)
 		return 0;
 
-	/* Get policy */
+	/* Get pool and policy */
 	ret = pp_port_get(gpid, &port_cfg);
-	if (ret)
-		return ret;
-	policy = port_cfg.tx.base_policy +
-			fls(port_cfg.tx.policies_map) - ffs(port_cfg.tx.policies_map);
-	
-	/* Get pool */
-	ret = pp_bmgr_policy_conf_get(policy, &policy_params);
+	ret |= pp_bmgr_lro_policy_get(&policy);
+	ret |= pp_bmgr_policy_conf_get(policy, &policy_params);
 	if (ret)
 		return ret;
 	pool = policy_params.pools_in_policy[0].pool_id;

@@ -74,7 +74,13 @@
 */
 #define POOL_SSB                             BIT(2)
 
-#define BMGR_NUM_FLAGS 3
+/**
+ * @define pool_flags_bitmap
+ * @brief POOL_LRO When this pool is LRO pool
+*/
+#define POOL_LRO                             BIT(3)
+
+#define BMGR_NUM_FLAGS 4
 
 /**
  * @struct pp_bmgr_pool_params

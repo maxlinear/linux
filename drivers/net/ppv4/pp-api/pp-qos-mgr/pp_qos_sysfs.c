@@ -28,6 +28,21 @@ static ssize_t __queues_stats_show(char *buf, size_t sz)
 	return n;
 }
 
+static ssize_t __queues_drop_stats_show(char *buf, size_t sz)
+{
+	struct pp_qos_dev *qdev;
+	size_t n = 0;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return -EINVAL;
+
+	pp_stats_show(sizeof(struct pp_qos_queue_drop_stats),
+		      WRED_QUEUE_DROP_COUNTER_MAX, qos_queues_drop_stats_get,
+		      qos_queues_drop_stats_show, qdev, buf, sz, &n);
+	return n;
+}
+
 static ssize_t __queues_pps_show(char *buf, size_t sz)
 {
 	struct pp_qos_dev *qdev;
@@ -40,6 +55,22 @@ static ssize_t __queues_pps_show(char *buf, size_t sz)
 	pp_pps_show(sizeof(struct queue_stats), qdev->init_params.max_queues,
 		    qos_queues_stats_get, qos_queues_stats_diff,
 		    qos_queues_stats_show, qdev, buf, sz, &n);
+	return n;
+}
+
+static ssize_t __queues_drop_pps_show(char *buf, size_t sz)
+{
+	struct pp_qos_dev *qdev;
+	size_t n = 0;
+
+	qdev = pp_qos_dev_open(PP_QOS_INSTANCE_ID);
+	if (unlikely(ptr_is_null(qdev)))
+		return -EINVAL;
+
+	pp_pps_show(sizeof(struct pp_qos_queue_drop_stats),
+		    WRED_QUEUE_DROP_COUNTER_MAX, qos_queues_drop_stats_get,
+		    qos_queues_drop_stats_diff, qos_queues_drop_stats_show,
+		    qdev, buf, sz, &n);
 	return n;
 }
 
@@ -76,13 +107,19 @@ static ssize_t __tree_show(char *buf, size_t sz)
 }
 
 PP_DEFINE_SYSFS_ATTR(qos_queues_stats, __queues_stats_show,
-		     __queues_stats_reset);
+		__queues_stats_reset);
+PP_DEFINE_SYSFS_ATTR(qos_queues_drop_stats, __queues_drop_stats_show,
+		__queues_stats_reset);
 PP_DEFINE_SYSFS_ATTR(qos_queues_pps, __queues_pps_show, __queues_stats_reset);
+PP_DEFINE_SYSFS_ATTR(qos_queues_drop_pps, __queues_drop_pps_show,
+		__queues_stats_reset);
 PP_DEFINE_SYSFS_ATTR(qos_tree, __tree_show, NULL);
 
 static struct attribute *attrs[] = {
 	&PP_SYSFS_ATTR(qos_queues_stats).attr,
+	&PP_SYSFS_ATTR(qos_queues_drop_stats).attr,
 	&PP_SYSFS_ATTR(qos_queues_pps).attr,
+	&PP_SYSFS_ATTR(qos_queues_drop_pps).attr,
 	&PP_SYSFS_ATTR(qos_tree).attr,
 	NULL
 };

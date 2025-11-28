@@ -204,6 +204,11 @@ EXPORT_SYMBOL(dp_spl_conn_get_fn);
 int (*dp_qos_get_q_logic_fn)(struct dp_qos_q_logic *cfg, int flag);
 EXPORT_SYMBOL(dp_qos_get_q_logic_fn);
 
+int (*dp_qos_get_q_global_parms_fn)(int inst, int dp_port,
+				    int alloc_flag, u32 qos_id,
+				    struct dp_qos_q_parms *parms) = NULL;
+EXPORT_SYMBOL(dp_qos_get_q_global_parms_fn);
+
 int (*dp_register_tx_fn)(enum DP_TX_PRIORITY priority, tx_fn fn, void *priv) = NULL;
 EXPORT_SYMBOL(dp_register_tx_fn);
 
@@ -263,6 +268,9 @@ EXPORT_SYMBOL(dp_xdo_dev_state_delete_fn);
 bool (*dp_xdo_dev_offload_ok_fn)(struct sk_buff *skb,
       struct xfrm_state *x) = NULL;
 EXPORT_SYMBOL(dp_xdo_dev_offload_ok_fn);
+
+void (*dp_xdo_dev_state_advance_esn_fn)(struct xfrm_state *x) = NULL;
+EXPORT_SYMBOL(dp_xdo_dev_state_advance_esn_fn);
 
 int (*dp_dev_update_xfrm_fn)(struct net_device *dev) = NULL;
 EXPORT_SYMBOL(dp_dev_update_xfrm_fn);
@@ -1159,6 +1167,13 @@ bool dp_xdo_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
 }
 EXPORT_SYMBOL(dp_xdo_dev_offload_ok);
 
+void dp_xdo_dev_state_advance_esn(struct xfrm_state *x)
+{
+	if (dp_xdo_dev_state_advance_esn_fn)
+		dp_xdo_dev_state_advance_esn_fn(x);
+}
+EXPORT_SYMBOL(dp_xdo_dev_state_advance_esn);
+
 /* xfrm dev capability update */
 int dp_dev_update_xfrm(struct net_device *dev)
 {
@@ -1194,6 +1209,16 @@ int dp_get_netif_stats(struct net_device *dev, dp_subif_t *subif_id,
 	return -1;
 }
 EXPORT_SYMBOL(dp_get_netif_stats);
+
+int dp_qos_get_q_global_parms(int inst, int dp_port, int alloc_flag,
+			      u32 qos_id, struct dp_qos_q_parms *parms)
+{
+	if (dp_qos_get_q_global_parms_fn)
+		return dp_qos_get_q_global_parms_fn(inst, dp_port,
+						    alloc_flag, qos_id, parms);
+	return -1;
+}
+EXPORT_SYMBOL(dp_qos_get_q_global_parms);
 
 static char dp_dbg_cmdline[50];
 static int __init dp_dbg_lvl_set(char *str)

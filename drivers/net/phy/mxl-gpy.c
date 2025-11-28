@@ -36,11 +36,14 @@
 #define PHY_CTL1_MDICD		BIT(3)
 #define PHY_CTL1_MDIAB		BIT(2)
 #define PHY_CTL1_AMDIX		BIT(0)
+#define PHY_CTL2		0x14
+#define PHY_CTL2_LP		BIT(3)
 #define PHY_MIISTAT		0x18	/* MII state */
 #define PHY_IMASK		0x19	/* interrupt mask */
 #define PHY_ISTAT		0x1A	/* interrupt status */
 #define PHY_LED			0x1B	/* LED control */
 #define PHY_FWV			0x1E	/* firmware version */
+#define PHY_TEST		0x1F	/* internal test modes CDIAG and ABIST */
 
 #define PHY_MIISTAT_SPD_MASK	GENMASK(2, 0)
 #define PHY_MIISTAT_DPX		BIT(3)
@@ -453,6 +456,9 @@ static int gpy_probe(struct phy_device *phydev)
 		    priv->fw_major, priv->fw_minor, fw_version,
 		    fw_version & PHY_FWV_REL_MASK ? "" : " test version");
 
+	/* disable EXC Average running */
+	phy_write(phydev, PHY_TEST, BIT(6));
+
 	phy_sysfs_init(&phydev->mdio.dev);
 
 	ret = usxgmii_reach_setting(phydev);
@@ -731,7 +737,7 @@ static int gpy_read_status(struct phy_device *phydev)
 	stat = phy_read(phydev, PHY_MIISTAT);
 	if (stat < 0) {
 		return stat;
-	} else if (stat == 0xFFFF) {
+	} else if (!stat || stat == 0xFFFF) {
 		phydev->link = 0;
 		return 0;
 	}
@@ -971,6 +977,62 @@ static int gpy115_loopback(struct phy_device *phydev, bool enable)
 	return genphy_soft_reset(phydev);
 }
 
+static int gpy_get_edpd(struct phy_device *phydev, u16 *edpd)
+{
+	int ret;
+
+	ret = phy_read(phydev, PHY_CTL2);
+	if (ret < 0)
+		return ret;
+
+	if (ret & PHY_CTL2_LP)
+		*edpd = ETHTOOL_PHY_EDPD_DFLT_TX_MSECS;
+	else
+		*edpd = ETHTOOL_PHY_EDPD_DISABLE;
+
+	return 0;
+}
+
+static int gpy_set_edpd(struct phy_device *phydev, u16 val)
+{
+	return phy_modify(phydev, PHY_CTL2, PHY_CTL2_LP, val ? PHY_CTL2_LP:0);
+}
+
+static bool gpy_is_low_power_supported(struct phy_device *phydev)
+{
+	/* LP state is not applicable to the master port */
+	if (phydev->mdio.addr % 4)
+		return true;
+	else
+		return false;
+}
+
+static int gpy_get_tunable(struct phy_device *phydev,
+			   struct ethtool_tunable *tuna, void *data)
+{
+	switch (tuna->id) {
+	case ETHTOOL_PHY_EDPD:
+		if (gpy_is_low_power_supported(phydev))
+			return gpy_get_edpd(phydev, data);
+		fallthrough;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int gpy_set_tunable(struct phy_device *phydev,
+			   struct ethtool_tunable *tuna, const void *data)
+{
+	switch (tuna->id) {
+	case ETHTOOL_PHY_EDPD:
+		if (gpy_is_low_power_supported(phydev))
+			return gpy_set_edpd(phydev, *(const u16 *)data);
+		fallthrough;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static struct phy_driver gpy_drivers[] = {
 	{
 		PHY_ID_MATCH_MODEL(PHY_ID_GPY2xx),
@@ -988,6 +1050,8 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.get_tunable    = gpy_get_tunable,
+		.set_tunable    = gpy_set_tunable,
 	},
 	{
 		.phy_id		= PHY_ID_GPY115B,
@@ -1145,6 +1209,8 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.get_tunable    = gpy_get_tunable,
+		.set_tunable    = gpy_set_tunable,
 	},
 	{
 		PHY_ID_MATCH_MODEL(PHY_ID_GPY241BM),
@@ -1162,6 +1228,8 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.get_tunable    = gpy_get_tunable,
+		.set_tunable    = gpy_set_tunable,
 	},
 	{
 		PHY_ID_MATCH_MODEL(PHY_ID_GPY245B),
@@ -1179,6 +1247,8 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.get_tunable    = gpy_get_tunable,
+		.set_tunable    = gpy_set_tunable,
 	},
 };
 module_phy_driver(gpy_drivers);
