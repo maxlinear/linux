@@ -95,6 +95,14 @@ static void print_keyload_struct(struct seccrypto_load_key_tep *loadkey)
 	pr_debug("key_type		: %d\n", loadkey->key_type);
 }
 
+static void print_attr_struct(struct seccrypto_set_attribute_tep *attr)
+{
+	pr_debug("struct seccrypto_set_attribute_tep => size:%lu\n", sizeof(*attr));
+	pr_debug("attr type	: %d\n", attr->type);
+	pr_debug("key_attribute_size: %d\n", attr->key_attribute_size);
+	pr_debug("key_attribute ptr: %u\n", attr->key_attributes);
+}
+
 static void atom_key_context_init(void *buffer, uint32_t len, enum sec_alg algo,
 		enum gen_key_flags flag)
 {
@@ -477,7 +485,6 @@ int handle_keygen_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		if (copy_from_user(genkey_public_attribute_buffer, ugenkey->public_key_attribute, ugenkey->public_attribute_size))
 			return -EFAULT;
 		printk(KERN_INFO "public_key_attribute content => %*phD\n", genkey->public_attribute_size, (uint32_t *)genkey_public_attribute_buffer);
-		printk(KERN_INFO "public_key_attribute content => %s\n", (char *)genkey_public_attribute_buffer);
 
 		dma_genkey_public_attribute_buffer = dma_map_single_attrs(drv->iccdev,
 									genkey_public_attribute_buffer,
@@ -505,7 +512,6 @@ int handle_keygen_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		if (copy_from_user(genkey_private_attribute_buffer, ugenkey->private_key_attribute, ugenkey->private_attribute_size))
 			return -EFAULT;
 		printk(KERN_INFO "private_key_attribute content => %*phD\n", genkey->private_attribute_size, (uint32_t *)genkey_private_attribute_buffer);
-		printk(KERN_INFO "private_key_attribute content => %s\n", (char *)genkey_private_attribute_buffer);
 
 		dma_genkey_private_attribute_buffer = dma_map_single_attrs(drv->iccdev,
 									genkey_private_attribute_buffer,
@@ -580,6 +586,188 @@ gen_free:
 		gen_pool_free(drv->iccpool, (unsigned long)genkey_private_attribute_buffer, genkey->public_attribute_size);
 	if (genkey)
 		gen_pool_free(drv->iccpool, (unsigned long)genkey, sizeof(*genkey));
+
+	if (active_session) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		gen_pool_free(drv->iccpool, (unsigned long)active_session, sizeof(*active_session));
+	}
+	return ret;
+}
+
+static int attr_params_validate(uint32_t num_params, struct tee_param *param, struct seccrypto_set_attribute_tep *attr, struct secure_storage_params_tep *attr_sst_params)
+{
+	struct secure_storage_params *sst_params = NULL;
+	struct seccrypto_set_attribute *uattr = NULL;
+	size_t uattr_size = 0;
+
+	uattr = param[0].u.memref.shm->kaddr;
+	uattr_size = param[0].u.memref.shm->size;
+	if (!uattr || (uattr_size < sizeof(*attr))) {
+		pr_err("set attribute: set attribute parameter is invalid\n");
+		return -EINVAL;
+	}
+
+	if ((uattr->type < ATTRIBUTE_TYPE_PUBLIC) || (uattr->type > ATTRIBUTE_TYPE_PRIVATE)) {
+		pr_err("set attribute: attribute type is invalid\n");
+		return -ENOTSUPP;
+	}
+
+	if (uattr->key_attribute_size <= 0) {
+		pr_err("set attribute: key attribute size is invalid [%d]\n", attr->key_attribute_size);
+		return -ENOTSUPP;
+	}
+
+	sst_params = &uattr->sst_params;
+	if (sst_params) {
+		attr_sst_params->handle = sst_params->handle;
+		attr_sst_params->access_perm = sst_params->access_perm;
+		attr_sst_params->policy_attr = sst_params->policy_attr;
+		attr_sst_params->crypto_mode_flag = sst_params->crypto_mode_flag;
+		fill_secure_storage_params(attr_sst_params);
+	} else {
+		pr_err("set attribute: secure storage parameters required\n");
+		return -EINVAL;
+	}
+
+	attr->type = uattr->type;
+	attr->key_attribute_size = uattr->key_attribute_size;
+	return TEEC_SUCCESS;
+}
+
+int handle_attribute_set_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		uint32_t num_params, struct tee_param *param)
+{
+	struct active_session_param *active_session = NULL;
+	struct seccrypto_set_attribute_tep *attr = NULL;
+	struct seccrypto_set_attribute *uattr = NULL;
+	struct secure_storage_params_tep *attr_sst_params = NULL;
+	void *key_attribute_buffer = NULL;
+	dma_addr_t dma_key_attributes_buffer = 0x0;
+	dma_addr_t dma_active_session = 0x0;
+	dma_addr_t dma_attr = 0x0;
+	dma_addr_t dma_attr_sst_params = 0x0;
+	uint32_t uattr_size = 0;
+	icc_msg_t icc_msg = {0};
+	int ret = 0;
+
+	active_session = get_active_scsa_session(drv, session, TA_SECURE_CRYPTO_SET_ATTRIBUTE,
+			&dma_active_session);
+	if (IS_ERR_OR_NULL(active_session)) {
+		pr_err("set attribute: memory allocation failed for session\n");
+		return PTR_ERR(active_session);
+	}
+
+	attr = (void *)gen_pool_alloc(drv->iccpool, sizeof(*attr));
+	if (!attr) {
+		pr_err("set attribute: memory allocation failed for key generation\n");
+		return -ENOMEM;
+	}
+	memset(attr, 0x0, sizeof(*attr));
+
+	attr_sst_params = (void *)gen_pool_alloc(drv->iccpool, sizeof(struct secure_storage_params_tep));
+	if (!attr_sst_params) {
+		pr_err("set attribute: memory allocation failed for sst params\n");
+		return -ENOMEM;
+	}
+	memset(attr_sst_params, 0x0, sizeof(struct secure_storage_params_tep));
+
+	uattr = param[0].u.memref.shm->kaddr;
+	uattr_size = param[0].u.memref.shm->size;
+	ret =  attr_params_validate(num_params, param, attr, (struct secure_storage_params_tep *) attr_sst_params);
+	if (ret < 0)
+		goto attr_free;
+
+	dma_attr_sst_params = dma_map_single_attrs(drv->iccdev, attr_sst_params, sizeof(struct secure_storage_params_tep),
+			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_attr_sst_params)) {
+		pr_err("set attribute: DMA mapping failed for key attribute set\n");
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+	dma_sync_single_for_device(drv->iccdev, dma_attr_sst_params, sizeof(struct secure_storage_params_tep), DMA_TO_DEVICE);
+	attr->sst_params = dma_attr_sst_params;
+
+	if (attr->key_attribute_size) {
+		key_attribute_buffer = (void *)gen_pool_alloc(drv->iccpool, attr->key_attribute_size);
+		if (!key_attribute_buffer) {
+			pr_err("set attribute: memory allocation failed for key attribute key_attribute_size:%u\n",
+					 attr->key_attribute_size);
+			ret = -ENOMEM;
+			goto attr_free;
+		}
+		memset(key_attribute_buffer, 0x0, attr->key_attribute_size);
+		if (copy_from_user(key_attribute_buffer, uattr->key_attributes,
+					 uattr->key_attribute_size))
+			return -EFAULT;
+		printk(KERN_INFO "key_attribute content => %*phD\n",
+				attr->key_attribute_size,
+				(uint32_t *)key_attribute_buffer);
+
+		dma_key_attributes_buffer = dma_map_single_attrs(drv->iccdev,
+						key_attribute_buffer,
+						attr->key_attribute_size,
+						DMA_TO_DEVICE,
+						DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_key_attributes_buffer)) {
+			pr_err("set attribute: DMA mapping failed for key attribute buffer\n");
+			ret = -ENOMEM;
+			goto attr_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_key_attributes_buffer,
+						 attr->key_attribute_size, DMA_TO_DEVICE);
+		attr->key_attributes = dma_key_attributes_buffer;
+	}
+
+	dma_attr = dma_map_single_attrs(drv->iccdev, attr, sizeof(*attr),
+			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_attr)) {
+		pr_err("set attribute: DMA mapping failed for key attribute set\n");
+		ret = -ENOMEM;
+		goto dma_unmap;
+	}
+	dma_sync_single_for_device(drv->iccdev, dma_attr, sizeof(*attr), DMA_TO_DEVICE);
+
+	icc_msg.src_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.dst_client_id = SECURE_SIGN_SERVICE;
+	icc_msg.msg_id = ICC_CMD_ID_INVOKE_CMD;
+	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
+	icc_msg.param[0] = dma_active_session;
+	icc_msg.param[1] = dma_attr;
+
+	print_attr_struct(attr);
+	print_sst_details(attr_sst_params);
+
+	ret = icc_write_and_read(&icc_msg);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = validate_icc_reply(&icc_msg, session->session_id);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = icc_msg.param[2];
+
+dma_unmap:
+	if (dma_attr) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_attr, sizeof(*attr), DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_attr, sizeof(*attr), DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_attr_sst_params) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_attr_sst_params, sizeof(struct secure_storage_params_tep), DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_attr_sst_params, sizeof(struct secure_storage_params_tep), DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_key_attributes_buffer)
+		dma_unmap_single_attrs(drv->iccdev, dma_key_attributes_buffer,
+					attr->key_attribute_size, DMA_FROM_DEVICE, DMA_ATTR_NON_CONSISTENT);
+
+attr_free:
+	if (key_attribute_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)key_attribute_buffer, attr->key_attribute_size);
+	if (attr)
+		gen_pool_free(drv->iccpool, (unsigned long)attr, sizeof(*attr));
 
 	if (active_session) {
 		dma_sync_single_for_cpu(drv->iccdev, dma_active_session, sizeof(*active_session),

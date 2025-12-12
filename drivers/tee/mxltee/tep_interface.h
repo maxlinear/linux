@@ -105,6 +105,14 @@ struct seccrypto_gen_key_tep {
 	uint32_t private_key_attribute;
 } __attribute__ ((packed));
 
+struct seccrypto_set_attribute_tep
+{
+	uint32_t sst_params;
+	enum attribute_type type;
+	uint32_t key_attributes;
+	int key_attribute_size;
+};
+
 /**
  * struct seccrypto_load_key - key load parameters for TA_SECURE_CRYPTO_LOAD_KEY tee command
  * @sst_params:	secure storage params like handle, policy etc...
@@ -391,5 +399,7 @@ s32 handle_initpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 s32 handle_authpin_command(struct mxltee_driver *drv, struct mxltee_session *session,
 		u32 num_params, struct tee_param *param);
 s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		u32 num_params, struct tee_param *param);
+s32 handle_attribute_set_command(struct mxltee_driver *drv, struct mxltee_session *session,
 		u32 num_params, struct tee_param *param);
 #endif //_TEP_INTERFACE_H_

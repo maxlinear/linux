@@ -47,6 +47,7 @@ static invoke_tee_function invoke_tee_func[] = {
 	[TA_SECURE_CRYPTO_WRAP] = handle_wrap_command,
 	[TA_SECURE_CRYPTO_UNWRAP] = handle_unwrap_command,
 	[TA_SECURE_CRYPTO_GEN_MAC_SINGLE] = handle_macgen_command,
+	[TA_SECURE_CRYPTO_SET_ATTRIBUTE] = handle_attribute_set_command,
 	[TA_SECURE_CRYPTO_INIT_PIN] = handle_initpin_command,
 	[TA_SECURE_CRYPTO_AUTH_PIN] = handle_authpin_command,
 	[TA_SECURE_CRYPTO_SET_PIN] = handle_setpin_command,
@@ -300,7 +301,7 @@ int scs_invoke(struct mxltee_driver *drv, struct mxltee_context *ctx,
 		ret = invoke_tee_func[sess_arg->func](drv, session, sess_arg->num_params,
 				param);
 	} else {
-		pr_debug("TEE function:0x%x is not supported\n", sess_arg->func);
+		pr_err("TEE function:0x%x is not supported\n", sess_arg->func);
 		ret = -ENOTSUPP;
 	}
 	return ret;

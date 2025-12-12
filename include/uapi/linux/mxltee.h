@@ -137,6 +137,15 @@ enum mac_flags {
 };
 
 /**
+ * enum attribute_type - type of attributes public/private
+ */
+enum attribute_type
+{
+	ATTRIBUTE_TYPE_PUBLIC = 1,
+	ATTRIBUTE_TYPE_PRIVATE = 2,
+};
+
+/**
  * struct big_number -	represents big number
  * @number_len: length of @number in bytes
  * @number:	pointer to number
@@ -305,9 +314,10 @@ enum MXLTEE_TA_SECURE_CRYPTO_CMD {
 	 * param0	- MAC generation parameters
 	 */
 	TA_SECURE_CRYPTO_GEN_MAC_SINGLE = 0x08,
-	TA_SECURE_CRYPTO_INIT_PIN = 0x09,
-	TA_SECURE_CRYPTO_AUTH_PIN = 0x0a,
-	TA_SECURE_CRYPTO_SET_PIN = 0x0b,
+	TA_SECURE_CRYPTO_SET_ATTRIBUTE = 0x09,
+	TA_SECURE_CRYPTO_INIT_PIN = 0x0a,
+	TA_SECURE_CRYPTO_AUTH_PIN = 0x0b,
+	TA_SECURE_CRYPTO_SET_PIN = 0x0c,
 };
 
 /**
@@ -346,6 +356,13 @@ struct seccrypto_gen_key {
 	uint32_t *public_key_attribute;
 	uint32_t private_attribute_size;
 	uint32_t *private_key_attribute;
+};
+
+struct seccrypto_set_attribute {
+	struct secure_storage_params sst_params;
+	enum attribute_type type;
+	unsigned char *key_attributes;
+	int key_attribute_size;
 };
 
 /**
