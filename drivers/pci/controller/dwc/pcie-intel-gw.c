@@ -87,6 +87,12 @@ enum {
 	PCIE_LINK_SPEED_GEN4,
 };
 
+typedef enum {
+	PCIE_CELLULAR_MODULE_NONE,
+	PCIE_CELLULAR_MODULE_RM502Q_AE,
+	PCIE_CELLULAR_MODULE_RM520N_GL,
+} CELLULAR_MODULE_MODEL;
+
 struct intel_pcie_soc {
 	unsigned int	pcie_ver;
 };
@@ -115,11 +121,16 @@ struct intel_pcie_port {
 	u32			link_gen;
 	u32			max_width;
 	u32			n_fts;
+	CELLULAR_MODULE_MODEL   cellular_module;
+	struct gpio_desc        *module_reset_gpio;
+	struct gpio_desc        *module_power_on;
+
 };
 
 static void pcie_update_bits(void __iomem *base, u32 ofs, u32 mask, u32 val)
 {
 	u32 old;
+
 
 	old = readl(base + ofs);
 	val = (old & ~mask) | (val & mask);
@@ -224,16 +235,52 @@ static int intel_pcie_ep_rst_init(struct intel_pcie_port *lpp)
 	struct device *dev = lpp->pci.dev;
 	int ret;
 
-	lpp->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(lpp->reset_gpio)) {
-		ret = PTR_ERR(lpp->reset_gpio);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to request PCIe GPIO: %d\n", ret);
-		return ret;
-	}
+	if (lpp->cellular_module != PCIE_CELLULAR_MODULE_NONE) {
+		lpp->module_power_on = devm_gpiod_get(dev, "power_on", GPIOD_OUT_LOW);
+		if (IS_ERR(lpp->module_power_on)) {
+			ret = PTR_ERR(lpp->module_power_on);
+			dev_err(dev, "failed to request module_power_on GPIO: %d\n", ret);
+			return ret;
+		}
+		lpp->module_reset_gpio = devm_gpiod_get(dev, "module_reset", GPIOD_OUT_HIGH);
+		if (IS_ERR(lpp->module_reset_gpio)) {
+			ret = PTR_ERR(lpp->module_reset_gpio);
+			dev_err(dev, "failed to request module_reset GPIO: %d\n", ret);
+			return ret;
+		}
+		lpp->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+		if (IS_ERR(lpp->reset_gpio)) {
+			ret = PTR_ERR(lpp->reset_gpio);
+			dev_err(dev, "failed to request module PCIe reset GPIO: %d\n", ret);
+			return ret;
+		}
 
-	/* Make initial reset last for 100us */
-	usleep_range(100, 200);
+		if (lpp->cellular_module == PCIE_CELLULAR_MODULE_RM502Q_AE) {
+			msleep(50);
+			gpiod_set_value_cansleep(lpp->module_reset_gpio, 0);
+			msleep(200);
+			gpiod_set_value_cansleep(lpp->module_power_on, 1);
+			msleep(2000);
+		} else if (lpp->cellular_module == PCIE_CELLULAR_MODULE_RM520N_GL) {
+			msleep(1000);
+			gpiod_set_value_cansleep(lpp->module_power_on, 1);
+			msleep(2000);
+		} else {
+			dev_err(dev, "does not support cellular module:%d\n", lpp->cellular_module);
+			return -EINVAL;
+		}
+	} else {
+		lpp->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+		if (IS_ERR(lpp->reset_gpio)) {
+			ret = PTR_ERR(lpp->reset_gpio);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Failed to request PCIe GPIO: %d\n", ret);
+			return ret;
+		}
+
+		/* Make initial reset last for 100us */
+		usleep_range(100, 200);
+	}
 
 	return 0;
 }
@@ -435,6 +482,11 @@ static int intel_pcie_get_resources(struct platform_device *pdev)
 			dev_err(dev, "Couldn't get pcie-phy: %d\n", ret);
 		return ret;
 	}
+
+	/* for 5GNR module */
+	ret = device_property_read_u32(dev, "intel,cellular_module", &lpp->cellular_module);
+	if (ret)
+		lpp->cellular_module = PCIE_CELLULAR_MODULE_NONE;
 
 	return 0;
 }
