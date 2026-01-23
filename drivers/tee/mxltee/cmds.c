@@ -48,6 +48,7 @@ static invoke_tee_function invoke_tee_func[] = {
 	[TA_SECURE_CRYPTO_UNWRAP] = handle_unwrap_command,
 	[TA_SECURE_CRYPTO_GEN_MAC_SINGLE] = handle_macgen_command,
 	[TA_SECURE_CRYPTO_SET_ATTRIBUTE] = handle_attribute_set_command,
+	[TA_SECURE_CRYPTO_ASYM_DECRYPT] = handle_asym_decrypt_command,
 	[TA_SECURE_CRYPTO_INIT_PIN] = handle_initpin_command,
 	[TA_SECURE_CRYPTO_AUTH_PIN] = handle_authpin_command,
 	[TA_SECURE_CRYPTO_SET_PIN] = handle_setpin_command,

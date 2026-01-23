@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2020-2024 MaxLinear, Inc.
+ * Copyright (C) 2020-2026 MaxLinear, Inc.
  * Copyright (C) 2016-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -1075,6 +1075,8 @@ struct cqm_cpubuff {
 	void *dc_free_base;
 	int mcpy_pid;
 	spinlock_t dcfree_lock;
+	u32 trans_cnt;
+	int dq_port;
 #endif
 };
 

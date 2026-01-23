@@ -19,7 +19,7 @@
 #include <linux/string.h>
 
 #define MXL_TEE_PIN_SST_OBJNAME 		"token_persistent_info"
-#define MXL_TEE_PIN_SST_OBJNAME_ACCESS_POLICY	0x20020CF
+#define MXL_TEE_PIN_SST_OBJNAME_ACCESS_POLICY	0x10020CF
 #define SS_CREATE_FLAG_RESET			0xEF
 
 #define SO_PIN_DEFAULT				"87654321"
@@ -229,19 +229,10 @@ static void populate_secure_store_config(sst_config_t *secure_store_config)
 
 static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 					sst_config_t *secure_store_config,
-					sshandle_t *ss_handle)
+					sst_param_t *sst_param)
 {
 	s32 ret = 0;
-	sst_param_t *sst_param = NULL;
-
 	pr_debug("Create/Open Secure Storage Object.\n");
-	sst_param = (sst_param_t *)kzalloc(sizeof(sst_param_t), GFP_DMA);
-	if (sst_param == NULL) {
-
-		pr_err("Allocation failed. \r\n");
-		ret = -ENOMEM;
-		goto finish;
-	}
 
 	populate_sst_param(sst_param);
 
@@ -263,7 +254,6 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 				goto finish;
 			} else {
 				pr_info("secure storage to open success ret:%d\n", ret);
-				*ss_handle = sst_param->ss_handle;
 				mxl_tee_pin_sst_obj_exists = true;
 			}
 		} else {
@@ -272,15 +262,24 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 		}
 	} else {
 		pr_info("secure storage to open success ret:%d\n", ret);
-		*ss_handle = sst_param->ss_handle;
 		mxl_tee_pin_sst_obj_exists = true;
 	}
 
 finish:
-	if (sst_param)
-		kfree(sst_param);
-
 	return ret;
+}
+
+static s32 mxl_tee_securestore_close(struct mxltee_driver *drv,
+                                        sst_config_t *secure_store_config,
+                                        sst_param_t *sst_param)
+{
+	s32 ret = 0;
+	pr_debug("Create/Open Secure Storage Object.\n");
+	if (sse_secure_storage_close_delete_fn) {
+		ret = sse_secure_storage_close_delete_fn(sst_param, secure_store_config);
+	}
+	return ret;
+
 }
 
 static s32 mxl_tee_securestore_save(sst_config_t *secure_store_config,
@@ -360,6 +359,14 @@ s32 handle_initpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 #ifdef DEBUG
 	token_persistent_info_t token_persistent_info_load = {0};
 #endif
+	sst_param_t *sst_param = NULL;
+	sst_param = (sst_param_t *)kzalloc(sizeof(sst_param_t), GFP_DMA);
+	if (sst_param == NULL) {
+		pr_err("Allocation failed. \r\n");
+		ret = -ENOMEM;
+		goto finish;
+	}
+	memset(sst_param, 0, sizeof(sst_param_t));
 
 	secure_store_config = (void *)gen_pool_alloc(drv->iccpool, sizeof(sst_config_t));
 	if (secure_store_config == NULL) {
@@ -370,22 +377,23 @@ s32 handle_initpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	memset(secure_store_config, 0, sizeof(sst_config_t));
 
 	/* Create open SST object */
-	ret = mxl_tee_securestore_create_open(drv, secure_store_config, &ss_handle);
+	ret = mxl_tee_securestore_create_open(drv, secure_store_config, sst_param);
 	if (ret < 0) {
 		pr_err("Securestore Object (%s) creation failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
 	}
+	ss_handle = sst_param->ss_handle;
 
 	/* Generate hmac of the default pin */
 	token_persistent_info.so_hash_size = TEE_MAX_HASH_SIZE;
 	ret = encrypt_password(SO_PIN_DEFAULT, token_persistent_info.so_pin_hash);
 	if (ret < 0) {
 		pr_err("encrypt_password failed.\n");
-		return ret;
+		goto finish;
 	}
 
 	/* Save data in SST object */
-	ret = mxl_tee_securestore_save(secure_store_config, ss_handle, &token_persistent_info);
+	ret = mxl_tee_securestore_save(secure_store_config, sst_param->ss_handle, &token_persistent_info);
 	if (ret < 0) {
 		pr_err("Saving data to Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
@@ -393,7 +401,7 @@ s32 handle_initpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 
 #ifdef DEBUG
 	/* Load data from SST object */
-	ret = mxl_tee_securestore_load(secure_store_config, ss_handle, &token_persistent_info_load);
+	ret = mxl_tee_securestore_load(secure_store_config, sst_param->ss_handle, &token_persistent_info_load);
 	if (ret < 0) {
 		pr_err("Loading data from Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
@@ -401,6 +409,10 @@ s32 handle_initpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 #endif
 
 finish:
+	if(ss_handle)
+		mxl_tee_securestore_close(drv, secure_store_config, sst_param);
+	if(sst_param)
+		kfree(sst_param);
 	if (secure_store_config)
 		gen_pool_free(drv->iccpool, (unsigned long)secure_store_config, sizeof(sst_config_t));
 
@@ -464,8 +476,16 @@ s32 handle_authpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	sshandle_t ss_handle = 0;
 	token_persistent_info_t token_persistent_info_load = {0};
 	seccrypto_pin_info_t *pin_info = NULL;
-
+	sst_param_t *sst_param = NULL;
 	pin_info = param[0].u.memref.shm->kaddr;
+
+	sst_param = (sst_param_t *)kzalloc(sizeof(sst_param_t), GFP_DMA);
+	if (sst_param == NULL) {
+		pr_err("Allocation failed. \r\n");
+		ret = -ENOMEM;
+		goto finish;
+	}
+	memset(sst_param, 0, sizeof(sst_param_t));
 
 	secure_store_config = (void *)gen_pool_alloc(drv->iccpool, sizeof(sst_config_t));
 	if (secure_store_config == NULL) {
@@ -476,14 +496,15 @@ s32 handle_authpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	memset(secure_store_config, 0, sizeof(sst_config_t));
 
 	/* Open SST object */
-	ret = mxl_tee_securestore_create_open(drv, secure_store_config, &ss_handle);
+	ret = mxl_tee_securestore_create_open(drv, secure_store_config, sst_param);
 	if (ret < 0) {
 		pr_err("Securestore Object (%s) creation failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
 	}
+	ss_handle = sst_param->ss_handle;
 
 	/* Load data from SST object */
-	ret = mxl_tee_securestore_load(secure_store_config, ss_handle, &token_persistent_info_load);
+	ret = mxl_tee_securestore_load(secure_store_config, sst_param->ss_handle, &token_persistent_info_load);
 	if (ret < 0) {
 		pr_err("Loading data from Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
@@ -499,6 +520,10 @@ s32 handle_authpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	}
 
 finish:
+	if(ss_handle)
+                mxl_tee_securestore_close(drv, secure_store_config, sst_param);
+	if(sst_param)
+		kfree(sst_param);
 	if (secure_store_config)
 		gen_pool_free(drv->iccpool, (unsigned long)secure_store_config, sizeof(sst_config_t));
 
@@ -513,9 +538,18 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 	sshandle_t ss_handle = 0;
 	token_persistent_info_t token_persistent_info_load = {0};
 	seccrypto_pin_set_info_t *pin_info = NULL;
+	sst_param_t *sst_param = NULL;
 	unsigned char new_pin[MAX_KEY_LEN] = {0};
 
 	pin_info = param[0].u.memref.shm->kaddr;
+
+	sst_param = (sst_param_t *)kzalloc(sizeof(sst_param_t), GFP_DMA);
+	if (sst_param == NULL) {
+		pr_err("Allocation failed. \r\n");
+		ret = -ENOMEM;
+		goto finish;
+	}
+	memset(sst_param, 0, sizeof(sst_param_t));
 
 	secure_store_config = (void *)gen_pool_alloc(drv->iccpool, sizeof(sst_config_t));
 	if (secure_store_config == NULL) {
@@ -526,19 +560,19 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 	memset(secure_store_config, 0, sizeof(sst_config_t));
 
 	/* Open SST object */
-	ret = mxl_tee_securestore_create_open(drv, secure_store_config, &ss_handle);
+	ret = mxl_tee_securestore_create_open(drv, secure_store_config, sst_param);
 	if (ret < 0) {
 		pr_err("Securestore Object (%s) creation failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
 	}
 
 	/* Load data from SST object */
-	ret = mxl_tee_securestore_load(secure_store_config, ss_handle, &token_persistent_info_load);
+	ret = mxl_tee_securestore_load(secure_store_config, sst_param->ss_handle, &token_persistent_info_load);
 	if (ret < 0) {
 		pr_err("Loading data from Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
 	}
-
+	ss_handle = sst_param->ss_handle;
 	/* Auth with the pin */
 	if (pin_info->old_pin_info.pin_len) {
 		ret = authenicate_pin(&pin_info->old_pin_info, &token_persistent_info_load);
@@ -552,7 +586,8 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 
 	if (copy_from_user(new_pin, pin_info->new_pin, pin_info->new_pin_len)) {
 		pr_err("copy_from_user failed.\n");
-		return -EFAULT;
+		ret = -EFAULT;
+		goto finish;
 	}
 
 	/* SET/Modify the PIN */
@@ -565,7 +600,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		ret = encrypt_password(new_pin, token_persistent_info_load.user_pin_hash);
 		if (ret < 0) {
 			pr_err("encrypt_password failed.\n");
-			return ret;
+			goto finish;
 		}
 
 	} else if (pin_info->old_pin_info.user_type == TYPE_SO) {
@@ -577,7 +612,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		ret = encrypt_password(new_pin, token_persistent_info_load.so_pin_hash);
 		if (ret < 0) {
 			pr_err("encrypt_password failed.\n");
-			return ret;
+			goto finish;
 		}
 
 	} else {
@@ -585,7 +620,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 	}
 
 	/* Save data in SST object */
-	ret = mxl_tee_securestore_save(secure_store_config, ss_handle, &token_persistent_info_load);
+	ret = mxl_tee_securestore_save(secure_store_config, sst_param->ss_handle, &token_persistent_info_load);
 	if (ret < 0) {
 		pr_err("Saving data to Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
@@ -594,7 +629,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 #ifdef DEBUG
 	/* Load data from SST object */
 	memset(&token_persistent_info_load, 0x0, sizeof(token_persistent_info_t));
-	ret = mxl_tee_securestore_load(secure_store_config, ss_handle, &token_persistent_info_load);
+	ret = mxl_tee_securestore_load(secure_store_config, sst_param->ss_handle, &token_persistent_info_load);
 	if (ret < 0) {
 		pr_err("Loading data from Securestore Object (%s) failed\n", MXL_TEE_PIN_SST_OBJNAME);
 		goto finish;
@@ -602,6 +637,10 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 #endif
 
 finish:
+	if(ss_handle)
+                mxl_tee_securestore_close(drv, secure_store_config, sst_param);
+	if (sst_param)
+		kfree(sst_param);
 	if (secure_store_config)
 		gen_pool_free(drv->iccpool, (unsigned long)secure_store_config, sizeof(sst_config_t));
 

@@ -23,6 +23,11 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Prevent linux/ioctl.h from being included since we have sys/ioctl.h */
+#ifndef _LINUX_IOCTL_H
+#define _LINUX_IOCTL_H
+#endif
+
 #include <linux/ptp_clock.h>
 
 #define DEVICE "/dev/ptp0"
@@ -323,8 +328,8 @@ int main(int argc, char *argv[])
 		if (clock_gettime(clkid, &ts)) {
 			perror("clock_gettime");
 		} else {
-			printf("clock time: %ld.%09ld or %s",
-			       ts.tv_sec, ts.tv_nsec, ctime(&ts.tv_sec));
+			printf("clock time: %"PRIdMAX".%09ld or %s",
+				(intmax_t)ts.tv_sec, ts.tv_nsec, ctime(&ts.tv_sec));
 		}
 	}
 

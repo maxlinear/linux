@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2020-2026 MaxLinear, Inc.
  * Copyright (C) 2016-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -8149,6 +8149,7 @@ static void NO_OPTIMIZE cpubuff_init(void)
 	cpubuff->num_desc = dqp_info->deq_info.num_desc;
 	cpubuff->brptr_num = dqp_info->deq_info.num_free_burst;
 	cpubuff->dc_free_base = cqm_ctrl->dmadesc_64_phys + CQM_DQM_DC_BUF_RTN(deqport, 0);
+	cpubuff->dq_port = deqport;
 
 	dev_dbg(cqm_ctrl->dev,
 		"%s CPU Buff Return DC port: %d Base Addr: %lx brptr_num = %d\n",
@@ -10682,12 +10683,40 @@ static inline u64 cqm_cpubuf_to_dc_desc(void *va, u8 pool, u8 policy)
 	return (lo | ((u64)hi << 32ULL));
 }
 
+static void cqm_cpubuff_bm_return(struct dc_return_ring *dc_ret)
+{
+	int i;
+	u8 pool = 0, policy = 0;
+	phys_addr_t pa;
+	u32 lo, hi;
+	u64 desc;
+	u32 mask = CPUBUF_RING_SIZE - 1;
+	u32 tail = dc_ret->tail;
+
+	for (i = 0; i < cpubuff->brptr_num; i++) {
+		desc = dc_ret->dc_desc[tail];
+		lo = lower_32_bits(desc);
+		hi = upper_32_bits(desc);
+
+		pa = ((dma_addr_t)(FIELD_GET(PTRRET_DW3_HIADDR, hi)) << 32) | lo;
+		pool   = FIELD_GET(PTRRET_DW3_POOL, hi);
+		policy = FIELD_GET(PTRRET_DW3_POLICY, hi);
+
+		pp_bmgr_push_buffer((u32)policy, (u32)pool, pa);
+
+		/* Advance tail with mask (power-of-two ring) */
+		tail = (tail + 1) & mask;
+	}
+}
+
 void cqm_cpubuff_return_dc(void *va, u8 pool, u8 policy)
 {
 	struct dc_return_ring *dc_ret;
 	void *dc_reg = cpubuff->dc_free_base;
 	unsigned long flags;
 	unsigned long paddr;
+	u32 bprc;
+	bool need_bm_return = false;
 
 	local_irq_save(flags);
 	dc_ret = &get_cpu_var(dc_ret_ring);
@@ -10703,15 +10732,26 @@ void cqm_cpubuff_return_dc(void *va, u8 pool, u8 policy)
 	}
 
 	spin_lock(&cpubuff->dcfree_lock);
-	/* Return 32 buffers in a burst write */
-	paddr = __pa((&dc_ret->dc_desc[dc_ret->tail]));
-	intel_hw_mcpy(dc_reg + sizeof(u64) * (dc_ret->tail % cpubuff->num_desc),
-		      (void *)paddr, cpubuff->mcpy_pid,
-		      cpubuff->brptr_num * sizeof(u64),
-		      MCPY_SRC_PADDR | MCPY_DST_PADDR | MCPY_WAIT_BEF_NEXT_COPY);
-
-	dc_ret->tail = ((dc_ret->tail + cpubuff->brptr_num) & (CPUBUF_RING_SIZE - 1));
+	bprc = cbm_r32(cqm_ctrl->deq + DQ_DC_PORT(cpubuff->dq_port, bprc));
+	if (unlikely(cpubuff->trans_cnt != bprc)) {
+		CQM_DEBUG(CQM_DBG_FLAG_BUFF_RTN,
+			  "buffer return diff %d trans_cnt 0x%x bprc 0x%x?\n",
+			  cpubuff->trans_cnt - bprc, cpubuff->trans_cnt, bprc);
+		need_bm_return = true;
+	} else {
+		/* Return 32 buffers in a burst write */
+		paddr = __pa((&dc_ret->dc_desc[dc_ret->tail]));
+		intel_hw_mcpy(dc_reg + sizeof(u64) * (dc_ret->tail % cpubuff->num_desc),
+				(void *)paddr, cpubuff->mcpy_pid,
+				cpubuff->brptr_num * sizeof(u64),
+				MCPY_SRC_PADDR | MCPY_DST_PADDR | MCPY_WAIT_BEF_NEXT_COPY);
+		cpubuff->trans_cnt += cpubuff->brptr_num;
+	}
 	spin_unlock(&cpubuff->dcfree_lock);
+
+	if (unlikely(need_bm_return))
+		cqm_cpubuff_bm_return(dc_ret);
+	dc_ret->tail = ((dc_ret->tail + cpubuff->brptr_num) & (CPUBUF_RING_SIZE - 1));
 
 	put_cpu_var(dc_ret_ring);
 	local_irq_restore(flags);
@@ -11036,6 +11076,7 @@ static int NO_OPTIMIZE cqm_lgm_probe(struct platform_device *pdev)
 #if IS_ENABLED(CONFIG_LGM_CQM_CPUBUF_RET_DC)
 	cpubuff->mcpy_pid = mcpy_get_pid();
 	spin_lock_init(&cpubuff->dcfree_lock);
+	cpubuff->trans_cnt = 0;
 #endif
 
 	for_each_present_cpu(i) {

@@ -54,6 +54,7 @@ static inline u32 signature_len(enum sec_alg algo)
 		sign_len = ECDSA_SIGN_P384_LENGTH;
 		break;
 	case SEC_ALG_AES_WRAP_UNWRAP:
+	case SEC_ALG_RSA_1024:
 	case SEC_ALG_MAX:
 		break;
 	}
@@ -87,6 +88,7 @@ static s32 atom_sign_ctx_init(enum sec_alg algo, u8 *signature, u32 *ctx_len)
 		ret = (s32)(*ctx_len + ecdsa_sign->r.num_len + ecdsa_sign->s.num_len);
 		break;
 	case SEC_ALG_AES_WRAP_UNWRAP:
+	case SEC_ALG_RSA_1024:
 	case SEC_ALG_MAX:
 		break;
 	}
@@ -115,6 +117,7 @@ static s32 get_sign_ctx_and_len(enum sec_alg algo, void *signature)
 		ret = (s32)(sizeof(*ecdsa_sign) + ecdsa_sign->r.num_len + ecdsa_sign->s.num_len);
 		break;
 	case SEC_ALG_AES_WRAP_UNWRAP:
+	case SEC_ALG_RSA_1024:
 	case SEC_ALG_MAX:
 		break;
 	}
@@ -145,6 +148,7 @@ static void tep_sign_ctx_init(enum sec_alg algo, void *buffer, dma_addr_t dma, u
 		*ctx_len = sizeof(*ecdsa_sign);
 		break;
 	case SEC_ALG_AES_WRAP_UNWRAP:
+	case SEC_ALG_RSA_1024:
 	case SEC_ALG_MAX:
 		break;
 	}

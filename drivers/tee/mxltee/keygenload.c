@@ -70,6 +70,20 @@ static void print_key_ctx(struct ecdsa_key_pair_tep *key_pair)
 	pr_debug("pri->pri_key.num_ptr	:	0x%x\n", pri->pri_key.num_ptr);
 }
 
+static void print_asymencdec_struct(struct seccrypto_asym_enc_dec_tep *asymencdec)
+{
+	pr_debug("struct seccrypto_asym_enc_dec_tep => size:%lu\n", sizeof(*asymencdec));
+	pr_debug("encod_schm		: %d\n", asymencdec->encod_schm);
+	pr_debug("hash_alg		: %d\n", asymencdec->hash_alg);
+	pr_debug("asym_flags		: %d\n", asymencdec->asym_flags);
+	pr_debug("input_data ptr       	: 0x%x\n", asymencdec->input_data);
+	pr_debug("input_data_len       	: %u\n", asymencdec->input_data_len);
+	pr_debug("additional_input ptr 	: 0x%x\n", asymencdec->additional_input);
+	pr_debug("additional_input_len 	: %u\n", asymencdec->additional_input_len);
+	pr_debug("output_data ptr		: 0x%x\n", asymencdec->output_data);
+	pr_debug("output_data_len       	: %u\n", asymencdec->output_data_len);
+}
+
 static void print_keygen_struct(struct seccrypto_gen_key_tep *gen_key)
 {
 	pr_debug("struct seccrypto_gen_key => size:%lu\n", sizeof(*gen_key));
@@ -247,7 +261,6 @@ static int keygen_params_validate(struct seccrypto_gen_key *ugenkey,
 {
 	struct secure_storage_params *sst_params = NULL;
 
-
 	if (ugenkey_size < sizeof(*genkey)) {
 		pr_debug("keygen: keyegen parameter is invalid\n");
 		return -EINVAL;
@@ -313,7 +326,7 @@ static int keyload_params_validate(uint32_t num_params, struct tee_param *param,
 		pr_debug("keyload: hash alogorithm type is not supported\n");
 		return -ENOTSUPP;
 	}
-	if ((uloadkey->load_flags < PRIVATE_KEY_BLOB) || (uloadkey->load_flags > PRIVATE_KEY_PLAINTEXT)) {
+	if ((uloadkey->load_flags < PRIVATE_KEY_BLOB) || (uloadkey->load_flags >= MAX_LOAD_KEY_FLAG)) {
 		pr_debug("keyload: options are invalid\n");
 		return -EINVAL;
 	}
@@ -776,5 +789,227 @@ attr_free:
 				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
 		gen_pool_free(drv->iccpool, (unsigned long)active_session, sizeof(*active_session));
 	}
+	return ret;
+}
+
+static int asymencdec_params_validate(struct seccrypto_asym_enc_dec *uasymencdec, 
+		uint32_t asymencdec_size, struct seccrypto_asym_enc_dec_tep *asymencdec)
+{
+	if (!asymencdec || (asymencdec_size < sizeof(*asymencdec))) {
+		pr_debug("asym enc dec: asymencdec parameter is invalid\n");
+		return -EINVAL;
+	}
+
+	if ((uasymencdec->encod_schm < RSA_ENCOD_OAEP) || (uasymencdec->encod_schm > RSA_ENCOD_PKCS1_V1_5)) {
+		pr_debug("keyload: alogorithm type is invalid\n");
+		return -ENOTSUPP;
+	}
+	if ((uasymencdec->hash_alg < ASYM_ENC_HASH_SHA1) || (uasymencdec->hash_alg > ASYM_ENC_HASH_SHA512)) {
+		pr_debug("keyload: hash alogorithm type is not supported\n");
+		return -ENOTSUPP;
+	}
+	if ((uasymencdec->asym_flags < ASYM_FLAG_OAEP_ADDNL_INPUT_HASH) || (uasymencdec->asym_flags > ASYM_FLAG_OAEP_ADDNL_INPUT_DATA)) {
+		pr_debug("keyload: options are invalid\n");
+		return -EINVAL;
+	}
+
+	asymencdec->hash_alg = uasymencdec->hash_alg;
+	asymencdec->encod_schm = uasymencdec->encod_schm;
+	asymencdec->asym_flags = uasymencdec->asym_flags;
+	asymencdec->input_data_len = uasymencdec->input_data_len;
+	asymencdec->additional_input_len = uasymencdec->additional_input_len;
+	asymencdec->output_data_len = uasymencdec->output_data_len;
+
+	return TEEC_SUCCESS;
+}
+
+s32 handle_asym_decrypt_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		uint32_t num_params, struct tee_param *param)
+{
+	int ret = 0;
+	uint32_t uasymencdec_size;
+	struct active_session_param *active_session = NULL;
+	struct seccrypto_asym_enc_dec *uasymencdec = NULL;
+	struct seccrypto_asym_enc_dec_tep *asymencdec = NULL;
+	void *asymencdec_out_buffer = NULL;
+	void *asymencdec_data_buffer = NULL;
+	void *asymencdec_additional_input_buffer = NULL;
+	dma_addr_t dma_active_session = 0x0;
+	dma_addr_t dma_asymencdec = 0x0;
+	dma_addr_t dma_asymencdec_out_buffer = 0x0;
+	dma_addr_t dma_asymencdec_data_buffer = 0x0;
+	dma_addr_t dma_asymencdec_additional_input_buffer = 0x0;
+	icc_msg_t icc_msg = {0};
+
+	active_session = get_active_scsa_session(drv, session, 
+			TA_SECURE_CRYPTO_ASYM_DECRYPT, &dma_active_session);
+	if (IS_ERR_OR_NULL(active_session)) {
+		pr_debug("keyload: memory allocation failed for session\n");
+		return PTR_ERR(active_session);
+	}
+
+	asymencdec = (void *)gen_pool_alloc(drv->iccpool, sizeof(*asymencdec));
+	if (!asymencdec) {
+		pr_debug("asym enc dec: memory allocation failed for asym enc dec.\n");
+		return -ENOMEM;
+	}
+	memset(asymencdec, 0x0, sizeof(*asymencdec));
+
+	uasymencdec = param[0].u.memref.shm->kaddr;
+	uasymencdec_size = param[0].u.memref.shm->size;
+
+	ret = asymencdec_params_validate(uasymencdec, uasymencdec_size, asymencdec);
+	if (ret < 0)
+		goto gen_free;
+
+	if (uasymencdec->output_data_len) {
+		asymencdec_out_buffer = (void *)gen_pool_alloc(drv->iccpool, uasymencdec->output_data_len);
+		if (!asymencdec_out_buffer) {
+			pr_debug("asym enc dec: memory allocation failed for asym enc dec output_data_len:%u\n", uasymencdec->output_data_len);
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		memset(asymencdec_out_buffer, 0x0, uasymencdec->output_data_len);
+
+		dma_asymencdec_out_buffer = dma_map_single_attrs(drv->iccdev, asymencdec_out_buffer, uasymencdec->output_data_len,
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_asymencdec_out_buffer)) {
+			pr_debug("asym enc dec: DMA mapping failed for asym enc dec\n");
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_asymencdec_out_buffer, uasymencdec->output_data_len, DMA_TO_DEVICE);
+		asymencdec->output_data = dma_asymencdec_out_buffer;
+	}
+
+	if (uasymencdec->input_data_len) {
+		asymencdec_data_buffer = (void *)gen_pool_alloc(drv->iccpool, uasymencdec->input_data_len);
+		if (!asymencdec_data_buffer) {
+			pr_debug("asym enc dec: memory allocation failed for key public attribute input_data_len:%u\n",
+					 uasymencdec->input_data_len);
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		memset(asymencdec_data_buffer, 0x0, uasymencdec->input_data_len);
+		if (copy_from_user(asymencdec_data_buffer, uasymencdec->input_data, uasymencdec->input_data_len))
+			return -EFAULT;
+		printk(KERN_INFO "data content => %*phD\n", uasymencdec->input_data_len, (uint32_t *)asymencdec_data_buffer);
+
+		dma_asymencdec_data_buffer = dma_map_single_attrs(drv->iccdev,
+									asymencdec_data_buffer,
+									uasymencdec->input_data_len,
+									DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_asymencdec_data_buffer)) {
+			pr_debug("asym enc dec: DMA mapping failed for uasymencdec public attribute buffer\n");
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_asymencdec_data_buffer,
+						 uasymencdec->input_data_len, DMA_TO_DEVICE);
+		asymencdec->input_data = dma_asymencdec_data_buffer;
+	}
+
+	if (uasymencdec->additional_input_len) {
+		asymencdec_additional_input_buffer = (void *)gen_pool_alloc(drv->iccpool, uasymencdec->additional_input_len);
+		if (!asymencdec_additional_input_buffer) {
+			pr_debug("asym enc dec: memory allocation failed for key public attribute additional_input_len:%u\n",
+					 uasymencdec->additional_input_len);
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		memset(asymencdec_additional_input_buffer, 0x0, uasymencdec->additional_input_len);
+		if (copy_from_user(asymencdec_additional_input_buffer, uasymencdec->additional_input, uasymencdec->additional_input_len))
+			return -EFAULT;
+		printk(KERN_INFO "additional_input content => %*phD\n", uasymencdec->additional_input_len, (uint32_t *)asymencdec_additional_input_buffer);
+
+		dma_asymencdec_additional_input_buffer = dma_map_single_attrs(drv->iccdev,
+									asymencdec_additional_input_buffer,
+									uasymencdec->additional_input_len,
+									DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		if (dma_mapping_error(drv->iccdev, dma_asymencdec_additional_input_buffer)) {
+			pr_debug("asym enc dec: DMA mapping failed for uasymencdec public attribute buffer\n");
+			ret = -ENOMEM;
+			goto gen_free;
+		}
+		dma_sync_single_for_device(drv->iccdev, dma_asymencdec_additional_input_buffer,
+						 uasymencdec->additional_input_len, DMA_TO_DEVICE);
+		asymencdec->additional_input = dma_asymencdec_additional_input_buffer;
+	}
+
+	dma_asymencdec = dma_map_single_attrs(drv->iccdev, asymencdec, sizeof(*asymencdec),
+			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
+	if (dma_mapping_error(drv->iccdev, dma_asymencdec)) {
+		pr_debug("asymencdec: DMA mapping failed for asym enc dec structure\n");
+		ret = -ENOMEM;
+		goto gen_free;
+	}
+	dma_sync_single_for_device(drv->iccdev, dma_asymencdec, sizeof(*asymencdec), DMA_TO_DEVICE);
+
+	icc_msg.src_client_id = SECURE_SIGN_SERVICE; /* REE_TEE_SERVICE */
+	icc_msg.dst_client_id = SECURE_SIGN_SERVICE; /* TEP_SCSA_CLIENT_ID */
+	icc_msg.msg_id = ICC_CMD_ID_INVOKE_CMD;
+	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
+	icc_msg.param[0] = dma_active_session;
+	icc_msg.param[1] = dma_asymencdec;
+
+	print_asymencdec_struct(asymencdec);
+
+	ret = icc_write_and_read(&icc_msg);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = validate_icc_reply(&icc_msg, session->session_id);
+	if (ret < 0)
+		goto dma_unmap;
+
+	ret = icc_msg.param[2];
+	pr_debug("asym enc dec:: data length:%d [%d]\n", ret, asymencdec->output_data_len);
+	uasymencdec->output_data_len = asymencdec->output_data_len;
+	memcpy(uasymencdec->output_data, bus_to_virt(asymencdec->output_data), asymencdec->output_data_len);
+	asymencdec->output_data_len = ret;
+
+dma_unmap:
+	if (dma_asymencdec) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_asymencdec, sizeof(*asymencdec),
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_asymencdec, sizeof(*asymencdec),
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_asymencdec_out_buffer) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_asymencdec_out_buffer, uasymencdec->output_data_len,
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_asymencdec_out_buffer, uasymencdec->output_data_len,
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_asymencdec_data_buffer) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_asymencdec_data_buffer, uasymencdec->input_data_len,
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_asymencdec_data_buffer, uasymencdec->input_data_len,
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+	if (dma_asymencdec_additional_input_buffer) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_asymencdec_additional_input_buffer, uasymencdec->additional_input_len,
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_asymencdec_additional_input_buffer, uasymencdec->additional_input_len,
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+	}
+
+gen_free:
+	if (asymencdec)
+		gen_pool_free(drv->iccpool, (unsigned long)asymencdec, sizeof(struct seccrypto_asym_enc_dec_tep));
+	if (asymencdec_out_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)asymencdec_out_buffer, uasymencdec->output_data_len);
+	if (asymencdec_data_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)asymencdec_data_buffer, uasymencdec->input_data_len);
+	if (asymencdec_additional_input_buffer)
+		gen_pool_free(drv->iccpool, (unsigned long)asymencdec_additional_input_buffer, uasymencdec->additional_input_len);
+	if (active_session) {
+		dma_sync_single_for_cpu(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE);
+		dma_unmap_single_attrs(drv->iccdev, dma_active_session, sizeof(*active_session),
+				DMA_TO_DEVICE, DMA_ATTR_NON_CONSISTENT);
+		gen_pool_free(drv->iccpool, (unsigned long)active_session, sizeof(*active_session));
+	}
+
 	return ret;
 }

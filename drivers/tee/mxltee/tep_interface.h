@@ -323,6 +323,18 @@ struct rsa_key_tep {
 	big_number_tep m;
 };
 
+struct seccrypto_asym_enc_dec_tep {
+	enum sec_asym_enc_hash_alg hash_alg;
+	enum sec_asym_encoding encod_schm;
+	unsigned int input_data_len;
+	uint32_t input_data;
+	unsigned int additional_input_len;
+	uint32_t additional_input;
+	unsigned int output_data_len;
+	uint32_t output_data;
+	enum asym_crypto_flags asym_flags;
+};
+
 /**
  * fill_secure_storage_params() - Fills uid, pid and process name for secure storage details
  */
@@ -402,4 +414,6 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		u32 num_params, struct tee_param *param);
 s32 handle_attribute_set_command(struct mxltee_driver *drv, struct mxltee_session *session,
 		u32 num_params, struct tee_param *param);
+s32 handle_asym_decrypt_command(struct mxltee_driver *drv, struct mxltee_session *session,
+		uint32_t num_params, struct tee_param *param);
 #endif //_TEP_INTERFACE_H_

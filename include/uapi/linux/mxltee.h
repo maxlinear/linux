@@ -39,6 +39,7 @@ enum sec_alg {
 	SEC_ALG_ECDSA_P256,
 	SEC_ALG_ECDSA_P384,
 	SEC_ALG_AES_WRAP_UNWRAP,
+	SEC_ALG_RSA_1024,
 	SEC_ALG_MAX
 };
 
@@ -82,6 +83,10 @@ enum gen_key_flags
 enum load_key_flags {
 	PRIVATE_KEY_BLOB = 1,
 	PRIVATE_KEY_PLAINTEXT,
+	WRAP_KEY_IN_SECURE_STORE,
+	WRAP_KEY_IN_OTP,
+	PRIVATE_KEY_PKCS8,
+	MAX_LOAD_KEY_FLAG,
 };
 
 /**
@@ -315,9 +320,10 @@ enum MXLTEE_TA_SECURE_CRYPTO_CMD {
 	 */
 	TA_SECURE_CRYPTO_GEN_MAC_SINGLE = 0x08,
 	TA_SECURE_CRYPTO_SET_ATTRIBUTE = 0x09,
-	TA_SECURE_CRYPTO_INIT_PIN = 0x0a,
-	TA_SECURE_CRYPTO_AUTH_PIN = 0x0b,
-	TA_SECURE_CRYPTO_SET_PIN = 0x0c,
+	TA_SECURE_CRYPTO_ASYM_DECRYPT = 0x0a,
+	TA_SECURE_CRYPTO_INIT_PIN = 0x0b,
+	TA_SECURE_CRYPTO_AUTH_PIN = 0x0c,
+	TA_SECURE_CRYPTO_SET_PIN = 0x0d,
 };
 
 /**
@@ -527,5 +533,35 @@ typedef struct {
 enum gen_keypair_ver {
 	BASE_VERSION_0 = 0, /* Old driver, without PKCS Attribute Support */
 	BASE_VERSION_1 = 1, /* With PKCS Attribute Support */
+};
+
+enum sec_asym_enc_hash_alg {
+	ASYM_ENC_HASH_SHA1,
+	ASYM_ENC_HASH_SHA224,
+	ASYM_ENC_HASH_SHA256,
+	ASYM_ENC_HASH_SHA384,
+	ASYM_ENC_HASH_SHA512,
+};
+
+enum sec_asym_encoding {
+	RSA_ENCOD_OAEP,
+	RSA_ENCOD_PKCS1_V1_5,
+};
+
+enum asym_crypto_flags {
+	ASYM_FLAG_OAEP_ADDNL_INPUT_HASH,
+	ASYM_FLAG_OAEP_ADDNL_INPUT_DATA,
+};
+
+struct seccrypto_asym_enc_dec {
+	enum sec_asym_enc_hash_alg hash_alg;
+	enum sec_asym_encoding encod_schm;
+	unsigned int input_data_len;
+	void *input_data;
+	unsigned int additional_input_len;
+	void *additional_input;
+	unsigned int output_data_len;
+	void *output_data;
+	enum asym_crypto_flags asym_flags;
 };
 #endif //_MXLTEE_H_

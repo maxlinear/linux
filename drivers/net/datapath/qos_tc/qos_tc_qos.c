@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2020 - 2025 MaxLinear, Inc.
+ * Copyright (c) 2020 - 2026 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -658,6 +658,7 @@ static int qos_tc_link_sched(struct qos_tc_qdisc *sch, int prio,
 		const struct qos_tc_params *tc_params)
 {
 	struct dp_node_link node = {0};
+	struct dp_node_prio node_prio = {0};
 
 	if (tc_params && tc_params->flags & QOS_TC_LINK_SCH) {
 		node.p_node_id.sch_id = tc_params->sch_id;
@@ -679,6 +680,23 @@ static int qos_tc_link_sched(struct qos_tc_qdisc *sch, int prio,
 	node.node_id.sch_id = sch->sch_id;
 	if (dp_node_link_add(&node, 0) == DP_FAILURE) {
 		netdev_err(sch->dev, "failed to link sched %d to port\n", sch->sch_id);
+		return -ENODEV;
+	}
+	/* When adding multiple WRR child schedulers under a parent WSP scheduler,
+	 * the first WRR child scheduler always gets a weight of 1 irrespective of
+	 * what the specified weight is, so an explicit update is necessary.
+	 * This is because after the addition of the 1st WRR child the arbitration of
+	 * the parent gets updated to WRR as per DPM design. Since PP QoS treats nodes
+	 * differently on the basis of parent arbitration, the situation of the 1st WRR
+	 * child becomes anomalous.
+	 */
+	node_prio.inst = node.inst;
+	node_prio.type = node.node_type;
+	node_prio.id.sch_id = node.node_id.sch_id;
+	node_prio.arbi = node.arbi;
+	node_prio.prio_wfq = node.prio_wfq;
+	if (dp_qos_link_prio_set(&node_prio, 0) == DP_FAILURE) {
+		netdev_err(sch->dev, "failed to update link prio of sched %d\n", sch->sch_id);
 		return -ENODEV;
 	}
 
