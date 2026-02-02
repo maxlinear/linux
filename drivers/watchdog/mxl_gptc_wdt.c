@@ -130,7 +130,7 @@ static int mxl_gptc_wdt_start(struct watchdog_device *wdd)
 	return 0;
 }
 
-static int mxl_gptc_wdt_stop(struct watchdog_device *wdd)
+static int __maybe_unused mxl_gptc_wdt_stop(struct watchdog_device *wdd)
 {
 	struct mxl_wdt_drvdata *drvdata = wdd->driver_data;
 	u32 val;
@@ -210,7 +210,7 @@ static const struct watchdog_info mxl_gptc_wdt_info = {
 static const struct watchdog_ops mxl_gptc_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = mxl_gptc_wdt_start,
-	.stop = mxl_gptc_wdt_stop,
+	.stop = mxl_gptc_wdt_start,
 	.set_timeout = mxl_gptc_wdt_set_timeout,
 	.set_pretimeout = mxl_gptc_wdt_set_pretimeout,
 	.get_timeleft = mxl_gptc_wdt_get_timeleft,
@@ -304,7 +304,7 @@ static void mxl_gptc_wdt_shutdown(struct platform_device *pdev)
 	struct mxl_wdt_drvdata *drvdata = platform_get_drvdata(pdev);
 	struct watchdog_device *wdd = &drvdata->wdd;
 
-	mxl_gptc_wdt_stop(wdd);
+	mxl_gptc_wdt_start(wdd);
 }
 
 static struct mxl_match_data lgm_b = {
