@@ -979,7 +979,7 @@ bool vpn_xfrm_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
 			return false;
 	}
 
-	if (skb->len > mtu) {
+	if (!skb_is_gso(skb) && skb->len > mtu) {
 		iph = ip_hdr(skb);
 		if (iph->version != 4)
 			return false;

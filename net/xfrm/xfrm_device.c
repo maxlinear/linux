@@ -109,7 +109,7 @@ static inline bool xmit_xfrm_check_overflow(struct sk_buff *skb)
 	return false;
 }
 
-struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features, bool *again)
+struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features, bool *again, int *rc)
 {
 	int err;
 	unsigned long flags;
@@ -120,6 +120,9 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 	struct xfrm_offload *xo = xfrm_offload(skb);
 	struct net_device *dev = skb->dev;
 	struct sec_path *sp;
+
+	if (rc)
+		*rc = NETDEV_TX_OK;
 
 	if (!xo || (xo->flags & XFRM_XMIT))
 		return skb;
@@ -172,8 +175,9 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 
 		err = x->type_offload->xmit(x, skb, esp_features);
 		if (err) {
-			if (err == -EINPROGRESS)
+			if (err == -EINPROGRESS) {
 				return NULL;
+			}
 
 			XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 			kfree_skb(skb);

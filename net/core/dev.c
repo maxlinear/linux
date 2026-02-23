@@ -3730,7 +3730,7 @@ sw_checksum:
 }
 EXPORT_SYMBOL(skb_csum_hwoffload_help);
 
-static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device *dev, bool *again)
+static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device *dev, bool *again, int *rc)
 {
 	netdev_features_t features;
 
@@ -3774,7 +3774,7 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device 
 		}
 	}
 
-	skb = validate_xmit_xfrm(skb, features, again);
+	skb = validate_xmit_xfrm(skb, features, again, rc);
 
 	return skb;
 
@@ -3788,6 +3788,7 @@ out_null:
 struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev, bool *again)
 {
 	struct sk_buff *next, *head = NULL, *tail;
+	int rc;
 
 	for (; skb != NULL; skb = next) {
 		next = skb->next;
@@ -3796,7 +3797,7 @@ struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *d
 		/* in case skb wont be segmented, point to itself */
 		skb->prev = skb;
 
-		skb = validate_xmit_skb(skb, dev, again);
+		skb = validate_xmit_skb(skb, dev, again, &rc);
 		if (!skb)
 			continue;
 
@@ -4295,7 +4296,7 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 			if (dev_xmit_recursion())
 				goto recursion_alert;
 
-			skb = validate_xmit_skb(skb, dev, &again);
+			skb = validate_xmit_skb(skb, dev, &again, &rc);
 			if (!skb)
 				goto out;
 
