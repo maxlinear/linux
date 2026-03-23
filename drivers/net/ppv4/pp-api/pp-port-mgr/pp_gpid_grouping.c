@@ -71,7 +71,7 @@ static inline bool group_params_check(const char *name, struct pp_cpu_info *cpu,
 	if (ptr_is_null(cpu))
 		return false;
 
-	if (num_cpus < 1 || PP_MAX_HOST_CPUS < num_cpus) {
+	if (num_cpus < 1 || num_cpus > PP_MAX_HOST_CPUS) {
 		pr_err("CPUs number should be in range 1-%u\n",
 		       PP_MAX_HOST_CPUS);
 		return false;
@@ -80,6 +80,11 @@ static inline bool group_params_check(const char *name, struct pp_cpu_info *cpu,
 	for (i = 0; i < num_cpus; i++) {
 		if (!cpu[i].num_q) {
 			pr_err("CPU[%u] MUST have at least 1 queue\n", i);
+			return false;
+		}
+		if (cpu[i].num_q > ARRAY_SIZE(cpu[i].queue)) {
+			pr_err("CPU[%u] has too many queues %u, max is %zu\n",
+			       i, cpu[i].num_q, ARRAY_SIZE(cpu[i].queue));
 			return false;
 		}
 	}
@@ -112,6 +117,7 @@ static s32 gpid_group_create(struct pmgr_db *db, const char *name)
 	dp.eg[0].qos_q = dflt_dp->eg.qos_q;
 	ret = pmgr_hif_dp_add(&dp, grp_id, 0, BIT(SI_CHCK_FLAG_SEND2FW));
 	if (ret) {
+		clear_bit(grp_id, db->grp_bmap);
 		pr_err("Failed to create group %u dp, ret %d\n", grp_id, ret);
 		return ret;
 	}
@@ -202,7 +208,7 @@ s32 pp_gpid_group_create(const char *name, struct pp_cpu_info *cpu,
 		goto unlock;
 
 	/* create group in uC */
-	ret = uc_ing_gpid_group_create(grp_id, uc_cpu);
+	ret = uc_ing_gpid_group_update(grp_id, uc_cpu);
 
 unlock:
 	spin_unlock_bh(&db->lock);
@@ -214,6 +220,42 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL(pp_gpid_group_create);
+
+s32 pp_gpid_group_update(u32 grp_id, struct pp_cpu_info *cpu,
+			 unsigned int num_cpus)
+{
+	struct pmgr_db *db = pmgr_get_db();
+	struct pmgr_db_grp *grp;
+	struct ing_host_cpu_info uc_cpu[PP_MAX_HOST_CPUS];
+	s32 ret = -EINVAL;
+
+	if (ptr_is_null(db))
+		return -EPERM;
+
+	if (!uc_gpid_group_id_is_valid(grp_id) ||
+	    !group_params_check(NULL, cpu, num_cpus))
+		return -EINVAL;
+
+	spin_lock_bh(&db->lock);
+
+	if (!group_is_active(db, grp_id))
+		goto unlock;
+
+	grp = &db->grp[grp_id];
+
+	/* create the uC group info */
+	ret = gpid_grp_to_uc(cpu, num_cpus, uc_cpu);
+	if (ret)
+		goto unlock;
+
+	/* update group in uC */
+	ret = uc_ing_gpid_group_update(grp_id, uc_cpu);
+
+unlock:
+	spin_unlock_bh(&db->lock);
+	return ret;
+}
+EXPORT_SYMBOL(pp_gpid_group_update);
 
 s32 pp_gpid_group_delete(u32 id)
 {
@@ -797,7 +839,6 @@ s32 pp_gpid_group_add_port(u32 grp_id, u32 port_id, u32 dflt_prio)
 		return -EPERM;
 	if (!uc_gpid_group_priority_is_valid(dflt_prio))
 		return -EINVAL;
-
 
 	spin_lock_bh(&db->lock);
 	if (!group_is_active(db, grp_id) || !__pmgr_port_is_active(port_id)) {

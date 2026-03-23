@@ -163,10 +163,9 @@ struct ftrace_likely_data {
 /*
  * GCC does not warn about unused static inline functions for -Wunused-function.
  * Suppress the warning in clang as well by using __maybe_unused, but enable it
- * for W=1 build. This will allow clang to find unused functions. Remove the
- * __inline_maybe_unused entirely after fixing most of -Wunused-function warnings.
+ * for W=2 build. This will allow clang to find unused functions.
  */
-#ifdef KBUILD_EXTRA_WARN1
+#ifdef KBUILD_EXTRA_WARN2
 #define __inline_maybe_unused
 #else
 #define __inline_maybe_unused __maybe_unused
@@ -252,16 +251,14 @@ struct ftrace_likely_data {
 
 /*
  * Any place that could be marked with the "alloc_size" attribute is also
- * a place to be marked with the "malloc" attribute, except those that may
- * be performing a _reallocation_, as that may alias the existing pointer.
- * For these, use __realloc_size().
+ * a place to be marked with the "malloc" attribute. Do this as part of the
+ * __alloc_size macro to avoid redundant attributes and to avoid missing a
+ * __malloc marking.
  */
 #ifdef __alloc_size__
 # define __alloc_size(x, ...)	__alloc_size__(x, ## __VA_ARGS__) __malloc
-# define __realloc_size(x, ...)	__alloc_size__(x, ## __VA_ARGS__)
 #else
 # define __alloc_size(x, ...)	__malloc
-# define __realloc_size(x, ...)
 #endif
 
 #ifndef asm_volatile_goto

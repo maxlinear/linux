@@ -94,7 +94,12 @@
 			 *  change as as needed
 			 */
 #define DP_MAX_ETH_ALEN 6  /*!< @brief MAC Header Size */
+
+#if IS_ENABLED(CONFIG_SOC_LGM)
+#define DP_MAX_PMAC_LEN     16  /*!< @brief Maximum PMAC Header Size, 16B for LGP */
+#else
 #define DP_MAX_PMAC_LEN     8  /*!< @brief Maximum PMAC Header Size */
+#endif
 
 #define DP_TXIN_RING_SIZE_DEF  4000 /*!< Default TXIN Ring size, upper driver
 				     *   can tune down via dp_register_dev_ext

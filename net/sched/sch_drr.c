@@ -71,6 +71,36 @@ static int drr_cl_offload(struct Qdisc *sch, struct drr_class *cl,
 	return dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_DRR, &opt);
 }
 
+static int drr_dump_offload(struct Qdisc *sch)
+{
+	struct tc_drr_qopt_offload hw_stats = {
+		.command = TC_DRR_STATS,
+		.parent = sch->parent,
+		.handle = sch->handle,
+		.stats = {
+			.bstats = &sch->bstats,
+			.qstats = &sch->qstats,
+		},
+	};
+
+	return qdisc_offload_dump_helper(sch, TC_SETUP_QDISC_DRR, &hw_stats);
+}
+
+static int drr_cl_dump_offload(struct Qdisc *sch, struct drr_class *cl)
+{
+	struct tc_drr_qopt_offload hw_stats = {
+		.command = TC_DRR_STATS,
+		.parent = sch->handle,
+		.handle = cl->common.classid,
+		.stats = {
+			.bstats = &cl->bstats,
+			.qstats = &cl->qdisc->qstats,
+		},
+	};
+
+	return qdisc_offload_dump_helper(sch, TC_SETUP_QDISC_DRR, &hw_stats);
+}
+
 static struct drr_class *drr_find_class(struct Qdisc *sch, u32 classid)
 {
 	struct drr_sched *q = qdisc_priv(sch);
@@ -298,9 +328,13 @@ static int drr_dump_class_stats(struct Qdisc *sch, unsigned long arg,
 				struct gnet_dump *d)
 {
 	struct drr_class *cl = (struct drr_class *)arg;
-	__u32 qlen = qdisc_qlen_sum(cl->qdisc);
 	struct Qdisc *cl_q = cl->qdisc;
+	__u32 qlen;
 	struct tc_drr_stats xstats;
+
+	if (cl_q != &noop_qdisc)
+		drr_cl_dump_offload(sch, cl);
+	qlen = qdisc_qlen_sum(cl_q);
 
 	memset(&xstats, 0, sizeof(xstats));
 	if (qlen)
@@ -313,6 +347,13 @@ static int drr_dump_class_stats(struct Qdisc *sch, unsigned long arg,
 		return -1;
 
 	return gnet_stats_copy_app(d, &xstats, sizeof(xstats));
+}
+
+static int drr_dump(struct Qdisc *sch, struct sk_buff *skb)
+{
+	drr_dump_offload(sch);
+
+	return skb->len;
 }
 
 static void drr_walk(struct Qdisc *sch, struct qdisc_walker *arg)
@@ -531,6 +572,7 @@ static struct Qdisc_ops drr_qdisc_ops __read_mostly = {
 	.peek		= qdisc_peek_dequeued,
 	.init		= drr_init_qdisc,
 	.reset		= drr_reset_qdisc,
+	.dump		= drr_dump,
 	.destroy	= drr_destroy_qdisc,
 	.owner		= THIS_MODULE,
 };

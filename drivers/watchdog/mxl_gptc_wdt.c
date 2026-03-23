@@ -33,6 +33,7 @@
 #include <linux/regmap.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
+#include <linux/syscore_ops.h>
 #include <clocksource/mxl-gptc-timer.h>
 #include <linux/sched/debug.h>
 #include <linux/nmi.h>
@@ -68,7 +69,8 @@ struct mxl_wdt_drvdata {
 	const struct mxl_match_data *soc_data;
 };
 
-
+/* Global reference for syscore operations */
+static struct mxl_wdt_drvdata *global_wdt_drvdata = NULL;
 static int reboot_reason = 0;
 
 static int __init parse_rst_reason(char *rst_reason)
@@ -130,7 +132,7 @@ static int mxl_gptc_wdt_start(struct watchdog_device *wdd)
 	return 0;
 }
 
-static int __maybe_unused mxl_gptc_wdt_stop(struct watchdog_device *wdd)
+static int mxl_gptc_wdt_stop(struct watchdog_device *wdd)
 {
 	struct mxl_wdt_drvdata *drvdata = wdd->driver_data;
 	u32 val;
@@ -147,6 +149,20 @@ static int __maybe_unused mxl_gptc_wdt_stop(struct watchdog_device *wdd)
 
 	return 0;
 }
+
+/* Syscore operations for end-of-shutdown watchdog disable */
+static void mxl_wdt_syscore_shutdown(void)
+{
+	if (global_wdt_drvdata) {
+		struct watchdog_device *wdd = &global_wdt_drvdata->wdd;
+		pr_info("WDT: Stopping watchdog during syscore shutdown (final stage)\n");
+		mxl_gptc_wdt_stop(wdd);
+	}
+}
+
+static struct syscore_ops mxl_wdt_syscore_ops = {
+	.shutdown = mxl_wdt_syscore_shutdown,
+};
 
 static int mxl_gptc_wdt_set_pretimeout(struct watchdog_device *wdd,
 				unsigned int pretimeout)
@@ -210,7 +226,7 @@ static const struct watchdog_info mxl_gptc_wdt_info = {
 static const struct watchdog_ops mxl_gptc_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = mxl_gptc_wdt_start,
-	.stop = mxl_gptc_wdt_start,
+	.stop = mxl_gptc_wdt_stop,
 	.set_timeout = mxl_gptc_wdt_set_timeout,
 	.set_pretimeout = mxl_gptc_wdt_set_pretimeout,
 	.get_timeleft = mxl_gptc_wdt_get_timeleft,
@@ -278,6 +294,10 @@ static int mxl_gptc_wdt_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, drvdata);
 
+	/* Store global reference for syscore operations */
+	global_wdt_drvdata = drvdata;
+	register_syscore_ops(&mxl_wdt_syscore_ops);
+
 	return devm_watchdog_register_device(dev, wdd);
 }
 
@@ -288,6 +308,12 @@ static int __exit mxl_gptc_wdt_remove(struct platform_device *pdev)
 	struct watchdog_device *wdd = &drvdata->wdd;
 	int cpu;
 
+	/* Unregister syscore operations */
+	if (global_wdt_drvdata == drvdata) {
+		unregister_syscore_ops(&mxl_wdt_syscore_ops);
+		global_wdt_drvdata = NULL;
+	}
+
 	for_each_online_cpu(cpu) {
 
 		gptc_wdt_release(cpu);
@@ -297,14 +323,6 @@ static int __exit mxl_gptc_wdt_remove(struct platform_device *pdev)
 	watchdog_unregister_pretimeout(wdd);
 
 	return 0;
-}
-
-static void mxl_gptc_wdt_shutdown(struct platform_device *pdev)
-{
-	struct mxl_wdt_drvdata *drvdata = platform_get_drvdata(pdev);
-	struct watchdog_device *wdd = &drvdata->wdd;
-
-	mxl_gptc_wdt_start(wdd);
 }
 
 static struct mxl_match_data lgm_b = {
@@ -325,7 +343,6 @@ static const struct of_device_id mxl_gptc_wdt_match[] = {
 static struct platform_driver mxl_gptc_wdt_driver = {
 	.probe = mxl_gptc_wdt_probe,
 	.remove = __exit_p(mxl_gptc_wdt_remove),
-	.shutdown = mxl_gptc_wdt_shutdown,
 	.driver = {
 		.name = "lgm,gptc-wdt",
 		.owner = THIS_MODULE,

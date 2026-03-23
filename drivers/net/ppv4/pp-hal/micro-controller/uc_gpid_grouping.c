@@ -113,7 +113,7 @@ bool uc_gpid_group_priority_is_valid(u32 prio)
 	return false;
 }
 
-s32 uc_ing_gpid_group_create(u32 grp_id,
+s32 uc_ing_gpid_group_update(u32 grp_id,
 			     struct ing_host_cpu_info cpu[PP_MAX_HOST_CPUS])
 {
 	struct uc_gpid_group *grp;

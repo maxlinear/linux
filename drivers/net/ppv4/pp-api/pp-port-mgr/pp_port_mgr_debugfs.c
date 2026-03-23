@@ -853,6 +853,110 @@ opt_parse_err:
 
 PP_DEFINE_DEBUGFS(group_action, group_action_help, group_action_wr);
 
+enum grp_update_tokens {
+	grp_update_help = 1,
+	grp_update_id,
+	grp_update_cpu,
+};
+
+static const match_table_t grp_update_token_table = {
+	{ grp_update_help, "help" },
+	{ grp_update_id, "id=%u" },
+	{ grp_update_cpu, "cpu=%s" },
+	{ 0 }
+};
+
+static void group_update_help(struct seq_file *f)
+{
+	seq_puts(f, "\nusage:\n");
+	seq_puts(f, " echo id=<group_id> cpu=<qid:gpid>,... cpu=... > update\n");
+	seq_printf(f, " Up to %u CPUs, each with up to %u queues\n",
+		   PP_MAX_HOST_CPUS, PP_MAX_CPU_QUEUES);
+	seq_puts(f, " Example: echo id=1 cpu=100:1,200:2 cpu=300:3,400:4 > update\n");
+}
+
+static int parse_cpu_queues(char *str, struct pp_cpu_info *cpu)
+{
+	char *tok;
+	int i = 0;
+
+	while ((tok = strsep(&str, ",")) != NULL && i < PP_MAX_CPU_QUEUES) {
+		u16 qid, gpid;
+		if (sscanf(tok, "%hu:%hu", &qid, &gpid) != 2) {
+			pr_err("Invalid queue format: %s\n", tok);
+			return -EINVAL;
+		}
+		cpu->queue[i].id = qid;
+		cpu->queue[i].gpid = gpid;
+		i++;
+	}
+	cpu->num_q = i;
+
+	return 0;
+}
+
+static void group_update_set(char *args, void *data)
+{
+	substring_t substr[MAX_OPT_ARGS];
+	enum grp_update_tokens opt;
+	char *tok;
+	char tmp[256];
+	u32 grp_id = PMGR_GPID_GRP_INVALID;
+	struct pp_cpu_info cpus[PP_MAX_HOST_CPUS] = { 0 };
+	int ret, cpu_idx = 0;
+	char buf[512];
+	struct seq_file f = {
+		.buf = buf,
+		.size = sizeof(buf),
+		.count = 0,
+		.private = data,
+	};
+
+	args = strim(args);
+	while ((tok = strsep(&args, " \t\n")) != NULL) {
+		if (!*tok)
+			continue;
+
+		opt = match_token(tok, grp_update_token_table, substr);
+		switch (opt) {
+		case grp_update_help:
+			group_update_help(&f);
+			pr_info("%s", f.buf);
+			return;
+		case grp_update_id:
+			if (match_int(substr, &grp_id))
+				goto parse_err;
+			break;
+		case grp_update_cpu:
+			match_strlcpy(tmp, substr, sizeof(tmp));
+			ret = parse_cpu_queues(tmp, &cpus[cpu_idx]);
+			if (ret)
+				goto parse_err;
+			cpu_idx++;
+			break;
+		default:
+			goto parse_err;
+		}
+	}
+
+	if (grp_id == PMGR_GPID_GRP_INVALID) {
+		pr_err("Group ID is required\n");
+		return;
+	}
+
+	ret = pp_gpid_group_update(grp_id, cpus, cpu_idx);
+	if (ret)
+		pr_err("Failed to update group %u, ret %d\n", grp_id, ret);
+	else
+		pr_info("Group %u updated successfully\n", grp_id);
+	return;
+
+parse_err:
+	pr_err("Failed to parse input: %s\n", tok);
+}
+
+PP_DEFINE_DEBUGFS(group_update, group_update_help, group_update_set);
+
 static void group_queues_show(struct seq_file *f)
 {
 	struct pp_qos_dev *qdev;
@@ -1434,6 +1538,7 @@ static struct debugfs_file group_files[] = {
 static struct debugfs_file groups_files[] = {
 	{ "groups", &PP_DEBUGFS_FOPS(gpid_groups) },
 	{ "create", &PP_DEBUGFS_FOPS(group_action), (void *)GRP_CREATE },
+	{ "update", &PP_DEBUGFS_FOPS(group_update) },
 	{ "delete", &PP_DEBUGFS_FOPS(group_action), (void *)GRP_DELETE },
 };
 

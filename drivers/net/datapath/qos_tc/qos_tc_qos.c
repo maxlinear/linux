@@ -17,9 +17,111 @@
 
 static LIST_HEAD(port_list);
 
+static int qos_tc_read_qstats(struct qos_tc_qdisc *sch,
+		       struct qos_tc_q_data *qdata,
+		       struct gnet_stats_basic_packed *bstats,
+		       struct gnet_stats_queue *qstats)
+{
+	struct dp_qos_queue_info qinfo = {0};
+	struct dp_qos_q_logic qlogic = {0};
+
+	if (!sch || !qdata)
+		return -EINVAL;
+
+	qlogic.inst = sch->inst;
+	qlogic.q_id = qdata->qid;
+	qinfo.inst = sch->inst;
+	if (dp_qos_get_q_logic(&qlogic, 0) == DP_SUCCESS)
+		qinfo.nodeid = qlogic.q_logic_id;
+	else
+		qinfo.nodeid = qdata->qid;
+
+	if (dp_qos_get_q_mib(&qinfo, 0) == DP_FAILURE)
+		return -EIO;
+
+	if (bstats) {
+		bstats->packets = qinfo.qacc;
+		bstats->bytes = qinfo.qacc_bytes;
+	}
+
+	if (qstats) {
+		qstats->qlen = qinfo.qocc;
+		qstats->backlog = min_t(u64, qinfo.qocc_bytes, U32_MAX);
+		qstats->drops = qinfo.qdrp;
+	}
+
+	return 0;
+}
+
+static int qos_tc_get_class_stats(struct qos_tc_qdisc *sch, int idx,
+				  struct gnet_stats_basic_packed *bstats,
+				  struct gnet_stats_queue *qstats)
+{
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
+		return -EINVAL;
+
+	if (sch->children[idx])
+		return -EOPNOTSUPP;
+
+	if (!sch->qids[idx].qid)
+		return -ENOENT;
+
+	return qos_tc_read_qstats(sch, &sch->qids[idx], bstats, qstats);
+}
+
+int qos_tc_collect_stats(struct net_device *dev, u32 handle,
+			 struct gnet_stats_basic_packed *bstats,
+			 struct gnet_stats_queue *qstats)
+{
+	struct qos_tc_qdisc *sch = NULL;
+	int ret, i;
+
+	if (!bstats || !qstats)
+		return -EINVAL;
+
+	ret = qos_tc_get_sch_by_handle(dev, handle, &sch);
+	if (ret < 0)
+		return ret;
+
+	if (TC_H_MIN(handle)) {
+		int idx = TC_H_MIN(handle) - 1;
+
+		ret = qos_tc_get_class_stats(sch, idx, bstats, qstats);
+		if (ret < 0 && idx >= 0 && idx < QOS_TC_MAX_Q)
+			net_warn_ratelimited("%s %s: class %#x idx %d qid %u mib read failed: %d\n",
+					     __func__, netdev_name(dev),
+					     handle, idx,
+					     sch->qids[idx].qid, ret);
+
+		return ret;
+	}
+
+	memset(bstats, 0, sizeof(*bstats));
+	memset(qstats, 0, sizeof(*qstats));
+
+	for (i = 0; i < QOS_TC_MAX_Q; i++) {
+		struct gnet_stats_basic_packed qbstats = {0};
+		struct gnet_stats_queue qqstats = {0};
+
+		ret = qos_tc_get_class_stats(sch, i, &qbstats, &qqstats);
+		if (ret < 0)
+			continue;
+
+		bstats->packets += qbstats.packets;
+		bstats->bytes += qbstats.bytes;
+		qstats->qlen += qqstats.qlen;
+		qstats->backlog += qqstats.backlog;
+		qstats->drops += qqstats.drops;
+	}
+
+	return 0;
+}
+
 static int __qos_tc_qdata_remove(struct net_device *dev,
 				 struct qos_tc_q_data *qid,
 				 struct qos_tc_qdata_params *p);
+static int qos_tc_set_qmap(int qid, struct qos_tc_qdisc *sch, int subif,
+			int tc_cookie, bool en, const struct qos_tc_params *tc_params);
 
 struct qos_tc_port *qos_tc_port_get(struct net_device *dev)
 {
@@ -206,6 +308,8 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 			flags = subif->data_flag;
 			/* save hw egress port settings */
 			sch->inst = subif->inst;
+			/* Save lookup mode */
+			sch->lookup_mode = subif->lookup_mode;
 			/* alloc_flag will be set for URX only; for other SoCs, it will be zero.
 			This alloc_flag is utilized for getting interface information.
 			Based on the interface, we are modifying queue length and drop algorithm
@@ -280,6 +384,8 @@ int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 		sch->port = subif->port_id;
 		sch->deq_idx = 0;
 		sch->ds = true;
+		/* Save lookup mode */
+		sch->lookup_mode = subif->lookup_mode;
 	}
 
 	ret = set_alloc_flag(sch);
@@ -577,6 +683,28 @@ static int hw_queue_del(struct qos_tc_qdisc *sch, int idx)
 	return 0;
 }
 
+/*
+ * Update or clear CQM qid_queue_map entry for a queue.
+ * Only applicable for lookup Mode2 interfaces
+ */
+int qos_tc_update_cqm_qmap(struct qos_tc_qdisc *sch, int idx,
+			bool enable, const struct qos_tc_params *tc_params)
+{
+	int ret;
+
+	if (sch->lookup_mode != DP_CQE_LU_MODE2)
+		return 0;
+
+	ret = qos_tc_set_qmap(sch->qids[idx].qid, sch, 0, idx, enable, tc_params);
+	if (ret < 0) {
+		netdev_warn(sch->dev, "%s: qid_queue_map %s failed for qid=%d, "
+				"class=%d\n", __func__, enable ? "update" : "clear",
+			    sch->qids[idx].qid, idx);
+	}
+
+	return ret;
+}
+
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
 /*!
  * Fill up the notifier structure with required data and return structure
@@ -589,7 +717,16 @@ static void fill_qos_notify_data(struct qos_notifier_data *data,
 	data->sch_parent_id = (event == QOS_EVENT_SCH_ADD) ? parent : QOS_TC_UNUSED;
 	data->qid = ((event == QOS_EVENT_Q_ADD || event == QOS_EVENT_Q_DELETE) &&
 				(idx >= 0)) ? sch->qids[idx].qid : QOS_TC_UNUSED;
-	data->idx = (event == QOS_EVENT_SCH_DELETE) ? QOS_TC_UNUSED : (prio_w + 1);
+	/* Reverse priority mapping: prio values 0-7 map to priority 7-0
+	 * Prio 0 = lowest priority, Prio 7 = highest priority
+	 */
+	if (sch->type == QOS_TC_QDISC_PRIO) {
+		data->idx = (sch->prio.bands - 1 - prio_w);
+	} else if (sch->type == QOS_TC_QDISC_DRR) {
+		data->idx = prio_w;
+	} else {
+		data->idx = QOS_TC_UNUSED;
+	}
 }
 
 /*!

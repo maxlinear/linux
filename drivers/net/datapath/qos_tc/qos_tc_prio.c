@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2021 - 2025 MaxLinear, Inc.
+ * Copyright (c) 2021 - 2026 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -9,7 +9,6 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
-#include <linux/version.h>
 #include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_tbf.h"
@@ -74,6 +73,9 @@ static int qos_tc_queues_update(struct net_device *dev,
 
 	if (bands < sch->prio.bands) {
 		for (i = 0; i < sch->prio.bands; i++) {
+			/* Clear CQM qid_queue_map entry before queue deletion */
+			qos_tc_update_cqm_qmap(sch, i, false, tc_params);
+
 			ret = qos_tc_queue_del(sch, i, tc_params);
 			if (ret < 0) {
 				netdev_err(dev, "queue del failed\n");
@@ -89,8 +91,17 @@ static int qos_tc_queues_update(struct net_device *dev,
 	for (i = 0; i < bands; i++) {
 		ret = qos_tc_queue_add(sch, QOS_TC_QDISC_PRIO, priomap[i], i,
 				tc_params);
-		if (ret < 0)
+		if (ret < 0) {
 			netdev_err(dev, "queue add failed\n");
+			return ret;
+		}
+
+		/* Update CQM qid_queue_map for priority to queue mapping */
+		ret = qos_tc_update_cqm_qmap(sch, i, true, tc_params);
+		if (ret < 0) {
+			netdev_err(dev, "qid_queue_map update failed\n");
+			return ret;
+		}
 	}
 
 	return 0;
@@ -243,10 +254,14 @@ int qos_tc_prio_offload(struct net_device *dev,
 		}
 		break;
 	case TC_PRIO_STATS:
-		/* TODO */
 		netdev_dbg(dev, "stats pid:%#x class/handle:%#x\n",
 			   opt->parent, opt->handle);
-		return -EOPNOTSUPP;
+		err = qos_tc_collect_stats(dev, opt->handle,
+					   opt->stats.bstats,
+					   opt->stats.qstats);
+		if (err < 0)
+			netdev_dbg(dev, "tc-prio stats failed: %d\n", err);
+		return err;
 	case TC_PRIO_GRAFT:
 		/* TODO */
 		netdev_dbg(dev, "graft pid:%#x class/handle:%#x band:%#x\n",

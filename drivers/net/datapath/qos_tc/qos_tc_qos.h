@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
- * Copyright (c) 2020 - 2025 MaxLinear, Inc.
+ * Copyright (c) 2020 - 2026 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -103,6 +103,7 @@ struct qos_tc_qdisc {
 	int epn;
 	int def_q;
 	bool ds;
+	u8 lookup_mode; /* CQM lookup mode */
 	struct qos_tc_dot1p dot1p[QOS_TC_DOT1P_SZ];
 
 	unsigned int num_q;
@@ -183,6 +184,8 @@ int qos_tc_queue_add(struct qos_tc_qdisc *sch, int arbi, int prio_w, int idx,
 		const struct qos_tc_params *tc_params);
 int qos_tc_queue_del(struct qos_tc_qdisc *sch, int idx,
 		const struct qos_tc_params *tc_params);
+int qos_tc_update_cqm_qmap(struct qos_tc_qdisc *sch, int idx,
+			bool enable, const struct qos_tc_params *tc_params);
 
 int qos_tc_qos_init(void);
 int qos_tc_qos_destroy(void);
@@ -271,6 +274,10 @@ int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx);
 
 u64 psched_ns_t2l(const struct psched_ratecfg *r, u64 time_in_ns);
 int qos_tc_check_qid(struct qos_tc_qdisc *qdisc, int idx);
+
+int qos_tc_collect_stats(struct net_device *dev, u32 handle,
+			 struct gnet_stats_basic_packed *bstats,
+			 struct gnet_stats_queue *qstats);
 
 int qos_tc_add_qdisc_to_dev(struct net_device *dev,
 			    struct qos_tc_qdisc *qdisc, u32 handle);

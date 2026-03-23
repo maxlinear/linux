@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
-// Generated from Workbook version: 3.0.32_dyn on 9/27/2024 3:54:49 PM 
+// Generated from Workbook version: 3.0.36_dyn on 1/28/2026 7:50:14 PM 
 #ifndef __LGM_MXL_NOC_FW_DEFS_H
 #define __LGM_MXL_NOC_FW_DEFS_H
 
@@ -115,6 +115,8 @@
 #define BM_END                                     0x08
 #define QOS_START                                  0x09
 #define QOS_END                                    0x0A
+#define LLD_START                                  0xFD
+#define LLD_END                                    0xFE
 
 // PCIe ADP Dynamic Variables
 
@@ -198,6 +200,10 @@
 #define NOC_FW_DYN_PCIE40_QOS_END                  NOC_FW_SET_PCIERC_ID(NOC_FW_DYN_PCIE40_PREFIX, QOS_END)             // 0x400000A
 #define NOC_FW_DYN_PCIE41_QOS_START                NOC_FW_SET_PCIERC_ID(NOC_FW_DYN_PCIE41_PREFIX, QOS_START)           // 0x4100009
 #define NOC_FW_DYN_PCIE41_QOS_END                  NOC_FW_SET_PCIERC_ID(NOC_FW_DYN_PCIE41_PREFIX, QOS_END)             // 0x410000A
+
+/* LLD for Argus can be on different PCIe RC on board, but PCIE10 prefix used for any of them */
+#define NOC_FW_DYN_PCIE_ARGUS_LLD_START            NOC_FW_SET_PCIERC_ID(NOC_FW_DYN_PCIE10_PREFIX, LLD_START)           // 0x10000FD
+#define NOC_FW_DYN_PCIE_ARGUS_LLD_END              NOC_FW_SET_PCIERC_ID(NOC_FW_DYN_PCIE10_PREFIX, LLD_END)             // 0x10000FE
 
 	// Peripheral_SAI
 #define SAI_IA_PCI_0_VAL        			0x2C	// PCI3Lane0/3.0

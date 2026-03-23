@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2020-2026 MaxLinear, Inc.
  * Copyright (C) 2018-2020 Intel Corporation
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -25,7 +25,7 @@
  * the version here
  */
 #define EGRESS_VER_MAJOR  1
-#define EGRESS_VER_MINOR  54
+#define EGRESS_VER_MINOR  55
 
 #define INGRESS_VER_MAJOR 1
 #define INGRESS_VER_MINOR 30

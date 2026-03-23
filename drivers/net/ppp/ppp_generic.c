@@ -1920,6 +1920,13 @@ ppp_send_frame(struct ppp *ppp, struct sk_buff *skb)
 		/* peek at outbound CCP frames */
 		ppp_ccp_peek(ppp, skb, 0);
 		break;
+	case PPP_LCP:
+	case PPP_IPCP:
+	case PPP_PAP:
+	case PPP_CHAP:
+		/* Mark PPP control/auth frames with highest priority */
+		skb->priority = TC_PRIO_CONTROL;
+		break;
 	}
 
 	/* try to do packet compression */
@@ -2255,6 +2262,8 @@ static void __ppp_channel_push(struct channel *pch)
 	if (pch->chan) {
 		while (!skb_queue_empty(&pch->file.xq)) {
 			skb = skb_dequeue(&pch->file.xq);
+			/* Mark PPP control/auth frames with highest priority */
+			skb->priority = TC_PRIO_CONTROL;
 			if (!pch->chan->ops->start_xmit(pch->chan, skb)) {
 				/* put the packet back and try again later */
 				skb_queue_head(&pch->file.xq, skb);

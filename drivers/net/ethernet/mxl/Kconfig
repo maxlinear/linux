@@ -33,10 +33,4 @@ config MXL_ETH_THERMAL
 
 endif #MXL_ETH
 
-config MXL_PON_HGU_VUNI
-	tristate "Mxl PON HGU vUNI driver"
-	depends on (INTEL_DATAPATH || MXL_CBM)
-	help
-	Mxl PON HGU vUNI driver.
-
 endif # NET_VENDOR_MXL

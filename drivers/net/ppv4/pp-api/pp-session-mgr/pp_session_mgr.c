@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2025 MaxLinear, Inc.
+ * Copyright (C) 2020-2026 MaxLinear, Inc.
  * Copyright (C) 2019-2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or
@@ -187,6 +187,7 @@ union work_args {
 static s32 __smgr_port_flush(u16 pid);
 static inline bool smgr_is_l2tpudp_sess_supported(struct sess_info *s);
 static inline bool __smgr_is_ip_nat_addr_changed(struct sess_info *s);
+static inline bool __smgr_is_mac_changed(struct sess_info *s, u8 lvl);
 
 /* Shortcuts for database accesses */
 #define DB_FREE_LIST_GET_NODE(_db) \
@@ -536,11 +537,22 @@ static inline bool __smgr_is_rx_first_frag(struct sess_info *s)
  */
 static inline bool __smgr_is_frag_accl_sess(struct sess_info *s)
 {
+	/* frag no tunnel (only outer exist) */
 	if (__smgr_is_first_frag_bypass(s, HDR_OUTER))
 		return true;
 
+	/* frag with tunnel bypass (frag is inner in both rx and tx) */
 	if (PKTPRS_IS_MULTI_LEVEL(SESS_RX_PKT(s)) &&
 	    __smgr_is_first_frag_bypass(s, HDR_INNER))
+		return true;
+
+	/* inner frag with tunnel termination
+	 * (rx is checked for inner, and tx outer since only outer
+	 * exist after header removal)
+	 */
+	if (__smgr_is_iptun_decp_sess(s) &&
+	    pktprs_first_frag(SESS_RX_PKT(s), HDR_INNER) &&
+	    pktprs_first_frag(SESS_TX_PKT(s), HDR_OUTER))
 		return true;
 
 	return false;
@@ -673,8 +685,14 @@ static bool __smgr_is_pppoe_supported(struct sess_info *s)
  */
 static inline bool is_reass_pkt(struct sess_info *s, enum pktprs_hdr_level lvl)
 {
+	enum pktprs_hdr_level tx_lvl = lvl;
+
+	/* for tunnel decap inner was removed, so header on tx is outer */
+	if (__smgr_is_iptun_decp_sess(s) && lvl == HDR_INNER)
+		tx_lvl = HDR_OUTER;
+
 	return (pktprs_first_frag(SESS_RX_PKT(s), lvl) &&
-		!pktprs_first_frag(SESS_TX_PKT(s), lvl));
+		!pktprs_first_frag(SESS_TX_PKT(s), tx_lvl));
 }
 
 /**
@@ -714,9 +732,17 @@ static inline bool __smgr_is_frag_supported(struct sess_info *s)
 		return pp_misc_is_nf_en(PP_NF_REASSEMBLY);
 	}
 
-	/* frag acceleration */
+	/* Fragment acceleration */
 	if (__smgr_is_frag_accl_sess(s)) {
-		/* supported only if reassembly NF is enabled */
+		/* session flags are not set at this point so __smgr_is_sess_bridged()
+		 * which checks route flag, can't be used instead direct MAC is used as indication.
+		 */
+		if (__smgr_is_mac_changed(s, HDR_OUTER) && !__smgr_is_iptun_decp_sess(s))
+			/* Only support for bridge sessions (MAC not changed and not tunnel decap) */
+			return false;
+		if (__smgr_is_ip_nat_addr_changed(s))
+			/* NAT not implemented for fragmented acceleration in FW */
+			return false;
 		return pp_misc_is_nf_en(PP_NF_REASSEMBLY);
 	}
 
@@ -4574,11 +4600,6 @@ static s32 __smgr_si_mod_info_set(struct sess_info *s)
 
 	if (!(SESS_RX_PKT(s) && SESS_TX_PKT(s)))
 		return 0;
-
-	if (!__smgr_is_sess_bridged(s) && __smgr_is_frag_accl_sess(s)) {
-		pr_debug("Fragments acceleration supported only for bridge sessions\n");
-		return -EPROTONOSUPPORT;
-	}
 
 	__smgr_si_l2_mod_set(s);
 	ret = __smgr_si_nat_set(s);

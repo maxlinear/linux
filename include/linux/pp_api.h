@@ -945,7 +945,7 @@ struct pp_cpu_queue_info {
 };
 
 /**
- * @struct CPU info PP requires for DoS protection
+ * @struct PP CPU info requires for grouping API
  */
 struct pp_cpu_info {
 	/*! queues info, highest priority queue at index 0 */
@@ -1290,6 +1290,17 @@ s32 pp_hostif_del(struct pp_hostif_cfg *hif);
  *       in case of failure, the error code is a negative value
  */
 s32 pp_gpid_group_create(const char *name, struct pp_cpu_info *cpu,
+			 unsigned int num_cpus);
+
+/**
+ * @brief Update an existing GPID group
+ * @param id group's id, returned by gpid group create API
+ * @param cpu cpu info array
+ * @param num_cpus number of cpus
+ * @return s32 0 on success, error code otherwise
+ * @note This will overwrite the existing pp cpu info
+ */
+s32 pp_gpid_group_update(u32 id, struct pp_cpu_info *cpu,
 			 unsigned int num_cpus);
 
 /**

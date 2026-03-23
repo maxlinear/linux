@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2023 MaxLinear, Inc.
+ * Copyright (C) 2020-2026 MaxLinear, Inc.
  * Copyright (C) 2020 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -1434,12 +1434,17 @@ int dp_block_flush_queue(struct dp_qos_blk_flush_queue *cfg, int flag);
  * Structure defining the QoS queue info
  *
  */
+#define DP_QOS_QUEUE_INFO_HAS_BYTE_STATS 1
+
 struct dp_qos_queue_info {
 	int inst; /*!< [in] dp instance */
 	u32 nodeid; /*!< [in] QoS logical qid */
 	u32 qocc; /*!< [out] queue occupancy value */
 	u32 qacc; /*!< [out] queue accept value */
 	u32 qdrp; /*!< [out] queue drop value*/
+	u64 qocc_bytes; /*!< [out] queue occupancy bytes */
+	u64 qacc_bytes; /*!< [out] queue accepted bytes */
+	u64 qdrp_bytes; /*!< [out] queue dropped bytes */
 };
 
 /*!< API dp_qos_get_q_mib: Helps to retrieve QoS queue occupancy  value

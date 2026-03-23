@@ -4,5 +4,4 @@
 #
 
 obj-$(CONFIG_MXL_ETH) += mxl_eth_drv.o
-obj-$(CONFIG_MXL_PON_HGU_VUNI) += mxl_pon_hgu_vuni.o
 obj-$(CONFIG_EIP160S_MACSEC) += mxl_eth_macsec.o

@@ -8,7 +8,7 @@
  ** DATE 	: 3 NOV 2008
  ** AUTHOR 	: Xu Liang
  ** DESCRIPTION : PPA Protocol Stack Hook Pointers
- ** COPYRIGHT	: Copyright (c) 2020-2024 MaxLinear, Inc
+ ** COPYRIGHT	: Copyright (c) 2020-2026 MaxLinear, Inc
  **		  Copyright (c) 2017 - 2018 Intel Corporation
  **		  Copyright (c) 2010 - 2016 Lantiq Beteiligungs-GmbH & Co. KG
  **
@@ -34,6 +34,7 @@
 #include <linux/netfilter_bridge.h>
 #include <net/netfilter/nf_conntrack_acct.h>
 #include <soc/mxl/mxl_skb_ext.h>
+#include <uapi/linux/pkt_sched.h>
 
 /*
  * Chip Specific Head File
@@ -180,6 +181,8 @@ int32_t (*ppa_hook_reset_qos_wfq)(uint32_t portid, uint32_t queueid, uint32_t fl
 #endif /*end of CONFIG_PPA_QOS*/
 
 #ifdef CONFIG_INTEL_IPQOS_MARK_SKBPRIO
+#define MAX_TC_PRIO 8
+
 /*
  * Function to mark priority based on specific criteria
  */
@@ -191,10 +194,9 @@ int skb_mark_priority(struct sk_buff *skb)
 	unsigned value;
 
 	/*
-	 * IPQoS in UGW: added copy of nfmark set in classifier to skb->priority
-	 * to be used in hardware queues.
-	 * nfmark range = 1-8 if QoS is enabled; priority range = 0-7;
-	 * else preserve original priority
+	 * Extract queue priority from packet mark (set by traffic classifier)
+	 * and copy to skb->priority for hardware queue selection.
+	 * If no valid priority is found in mark, preserve original skb->priority.
 	 */
 #ifdef HAVE_QOS_EXTMARK
 	mark = ppa_get_skb_extmark(skb);
@@ -203,8 +205,15 @@ int skb_mark_priority(struct sk_buff *skb)
 	mark = skb->mark;
 	GET_DATA_FROM_MARK_OPT(mark, MARK_QUEPRIO_MASK, MARK_QUEPRIO_START_BIT_POS, value);
 #endif /* HAVE_QOS_EXTMARK */
-	if (value)
-		skb->priority = value - 1;
+	/*
+	 * Map extracted priority to skb->priority (lower 16 bits only).
+	 * Preserve upper 16 bits (major handle), update lower 16 bits (minor handle).
+	 * Valid range is 0-7 matching Linux standard queue indices.
+	 * For values >= MAX_TC_PRIO, preserve original skb->priority unchanged.
+	 */
+	if (value && value < MAX_TC_PRIO)
+		skb->priority = (skb->priority & TC_H_MAJ_MASK) | value;
+
 	return old_priority;
 }
 #endif /* CONFIG_INTEL_IPQOS_MARK_SKBPRIO*/

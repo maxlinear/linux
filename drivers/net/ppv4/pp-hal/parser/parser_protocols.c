@@ -259,10 +259,13 @@ static s32 __proto_mac_int_init(struct protocol_info *info)
 	skip->hdr_len_im  = sizeof(struct ethhdr);
 	skip->logic       = SKIP_LOGIC_IM;
 	/* preceding protocols */
-	params->n_pre = 1;
+	params->n_pre = 2;
 	/* Tunnel -> MAC */
 	params->pre[0].np_logic = NP_LOGIC_TUNN;
 	params->pre[0].val      = ETH_P_TEB;
+	/* MPLS select -> MAC (L2 over MPLS) */
+	params->pre[1].np_logic = NP_LOGIC_IPV4;
+	params->pre[1].val      = 0;
 	/* for other protocols preceding internal mac this will be used as
 	 * their default
 	 */
@@ -426,7 +429,7 @@ static s32 __proto_vlan_int_ext_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* VLAN INT -> VLAN Ext */
-	params->pre[0].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[0].np_logic = NP_LOGIC_IP_SELECT;
 	params->pre[0].val      = ETH_P_8021Q;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -466,7 +469,7 @@ static s32 __proto_vlan_int_init(struct protocol_info *info)
 		    BITS_PER_BYTE;
 	np->len   = sizeof_field(struct vlan_hdr, h_vlan_encapsulated_proto) *
 		    BITS_PER_BYTE;
-	np->logic = NP_LOGIC_PROTO_SELECT;
+	np->logic = NP_LOGIC_IP_SELECT;
 	np->dflt  = PRSR_PROTO_PAYLOAD;
 	/* header skip info */
 	skip = &params->skip;
@@ -636,7 +639,7 @@ static s32 __proto_pppoe_int_init(struct protocol_info *info)
 	params->pre[0].np_logic = NP_LOGIC_TUNN;
 	params->pre[0].val      = ETH_P_PPP_SES;
 	/* VLAN internal -> PPPoE */
-	params->pre[1].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[1].np_logic = NP_LOGIC_IP_SELECT;
 	params->pre[1].val      = ETH_P_PPP_SES;
 	/* extract info */
 	/* PPPoE code and session id */
@@ -788,7 +791,7 @@ static s32 __proto_ip_select_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* MPLS -> IP select (last label) */
-	params->pre[0].np_logic = NP_LOGIC_MPLS;
+	params->pre[0].np_logic = NP_LOGIC_UDP;
 	params->pre[0].val      = 1;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -827,8 +830,10 @@ static s32 __proto_mpls_select_init(struct protocol_info *info)
 	 * which indicates that the next header is an inner L2 header
 	 */
 	np = &params->np;
-	np->logic = NP_LOGIC_END;
-	np->dflt  = PRSR_PROTO_MAC_INT;
+	np->off   = IP_SELECT_NEXT_HDR_OFF;
+	np->len   = IP_SELECT_NEXT_HDR_LEN;
+	np->logic = NP_LOGIC_IPV4;
+	np->dflt  = PRSR_PROTO_PAYLOAD;
 	/* skip PW eth control word */
 	skip = &params->skip;
 	skip->hdr_len_im  = 4;
@@ -879,7 +884,7 @@ static s32 __proto_mpls_init(struct protocol_info *info)
 	np = &params->np;
 	np->off   = MPLS_LAST_ENTRY_OFF;
 	np->len   = MPLS_LAST_ENTRY_LEN;
-	np->logic = NP_LOGIC_MPLS;
+	np->logic = NP_LOGIC_UDP;
 	np->dflt  = PRSR_PROTO_PAYLOAD;
 	/* header skip info */
 	skip = &params->skip;
@@ -888,7 +893,7 @@ static s32 __proto_mpls_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* MPLS -> MPLS (multiple labels) */
-	params->pre[0].np_logic = NP_LOGIC_MPLS;
+	params->pre[0].np_logic = NP_LOGIC_UDP;
 	params->pre[0].val      = 0;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -982,7 +987,7 @@ static s32 __proto_ipv4_init(struct protocol_info *info)
 	n = strscpy(params->leth[1].name, "PPPoE IPv4",
 		    sizeof(params->leth[1].name));
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP;
+	params->np.logic = NP_LOGIC_IPV4;
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* IP Select -> IPv4 */
@@ -1017,21 +1022,24 @@ static s32 __proto_ipv4_int_init(struct protocol_info *info)
 	info->id    = PRSR_PROTO_IPV4_INT;
 	/* next protocol info */
 	np = &params->np;
-	np->logic = NP_LOGIC_IP_2;
+	np->logic = NP_LOGIC_IPV4_2_L2TP;
 	/* preceding protocols */
-	params->n_pre = 4;
-	/* (DSlite) IPv4/6 -> IPv4 */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 5;
+	/* (DSlite) IPv4 -> IPv4 */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_IPIP;
+	/* (DSlite) IPv6 -> IPv4 */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_IPIP;
 	/* Tunnel -> IPv4 */
-	params->pre[1].np_logic = NP_LOGIC_TUNN;
-	params->pre[1].val      = ETH_P_IP;
-	/* VLAN internal -> IPv4 */
-	params->pre[2].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[2].np_logic = NP_LOGIC_TUNN;
 	params->pre[2].val      = ETH_P_IP;
+	/* VLAN internal -> IPv4 */
+	params->pre[3].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[3].val      = ETH_P_IP;
 	/* PPPoE internal -> IPv4 */
-	params->pre[3].np_logic = NP_LOGIC_TUNN;
-	params->pre[3].val      = PPP_IP;
+	params->pre[4].np_logic = NP_LOGIC_TUNN;
+	params->pre[4].val      = PPP_IP;
 	/* extract info */
 	/* set fv index value to the first IPv4 */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l3.v4);
@@ -1116,7 +1124,7 @@ static s32 __proto_ipv6_init(struct protocol_info *info)
 	n = strscpy(params->leth[1].name, "PPPoE IPv6",
 		    sizeof(params->leth[1].name));
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP;
+	params->np.logic = NP_LOGIC_IPV6;
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* IP Select -> IPv6 */
@@ -1148,21 +1156,24 @@ static s32 __proto_ipv6_int_init(struct protocol_info *info)
 	params      = &info->up;
 	info->id       = PRSR_PROTO_IPV6_INT;
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP_2;
+	params->np.logic = NP_LOGIC_IPV6_2;
 	/* preceding protocols */
-	params->n_pre = 4;
-	/* (DSlite) IPv4/6 -> IPv6 */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 5;
+	/* (DSlite) IPv4 -> IPv6 */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_IPV6;
+	/* (DSlite) IPv6 -> IPv6 */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_IPV6;
 	/* Tunnel -> IPv6 */
-	params->pre[1].np_logic = NP_LOGIC_TUNN;
-	params->pre[1].val      = ETH_P_IPV6;
-	/* VLAN internal -> IPv6 */
-	params->pre[2].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[2].np_logic = NP_LOGIC_TUNN;
 	params->pre[2].val      = ETH_P_IPV6;
+	/* VLAN internal -> IPv6 */
+	params->pre[3].np_logic = NP_LOGIC_IP_SELECT;
+	params->pre[3].val      = ETH_P_IPV6;
 	/* PPPoE internal -> IPv6 */
-	params->pre[3].np_logic = NP_LOGIC_TUNN;
-	params->pre[3].val      = PPP_IPV6;
+	params->pre[4].np_logic = NP_LOGIC_TUNN;
+	params->pre[4].val      = PPP_IPV6;
 	/* extract info */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l3.v6);
 	params->ext.fld[1].fv_idx = offsetof(struct pp_fv, second.l3.v6.saddr);
@@ -1227,17 +1238,17 @@ static u32 __proto_ipv6_exten_init(struct protocol_info *info)
 	params = &info->up;
 	info->id  = PRSR_PROTO_IPV6EXT;
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP;
+	params->np.logic = NP_LOGIC_IPV6;
 	/* preceding protocols */
 	params->n_pre = 3;
 	/* IPv6 -> HOP OPTS */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->pre[0].np_logic = NP_LOGIC_IPV6;
 	params->pre[0].val      = IPPROTO_HOPOPTS;
 	/* IPv6 -> Routing */
-	params->pre[1].np_logic = NP_LOGIC_IP;
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
 	params->pre[1].val      = IPPROTO_ROUTING;
 	/* IPv6 -> Dest OPTS */
-	params->pre[2].np_logic = NP_LOGIC_IP;
+	params->pre[2].np_logic = NP_LOGIC_IPV6;
 	params->pre[2].val      = IPPROTO_DSTOPTS;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -1259,17 +1270,17 @@ static u32 __proto_ipv6_exten_int_init(struct protocol_info *info)
 	params = &info->up;
 	info->id  = PRSR_PROTO_IPV6EXT_INT;
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP_2;
+	params->np.logic = NP_LOGIC_IPV6_2;
 	/* preceding protocols */
 	params->n_pre = 3;
 	/* IPv6 Internal -> HOP OPTS */
-	params->pre[0].np_logic = NP_LOGIC_IP_2;
+	params->pre[0].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[0].val      = IPPROTO_HOPOPTS;
 	/* IPv6 Internal -> Routing */
-	params->pre[1].np_logic = NP_LOGIC_IP_2;
+	params->pre[1].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[1].val      = IPPROTO_ROUTING;
 	/* IPv6 Internal -> Dest OPTS */
-	params->pre[2].np_logic = NP_LOGIC_IP_2;
+	params->pre[2].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[2].val      = IPPROTO_DSTOPTS;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -1325,11 +1336,11 @@ static u32 __proto_ipv6_frag_init(struct protocol_info *info)
 	params     = &info->up;
 	info->id      = PRSR_PROTO_IPV6FRAG;
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP;
+	params->np.logic = NP_LOGIC_IPV6;
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* IPv6 -> Fragment */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->pre[0].np_logic = NP_LOGIC_IPV6;
 	params->pre[0].val      = IPPROTO_FRAGMENT;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -1350,11 +1361,11 @@ static u32 __proto_ipv6_frag_int_init(struct protocol_info *info)
 	params     = &info->up;
 	info->id      = PRSR_PROTO_IPV6FRAG_INT;
 	/* next protocol info */
-	params->np.logic = NP_LOGIC_IP_2;
+	params->np.logic = NP_LOGIC_IPV6_2;
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* IPv6 Internal -> Fragment */
-	params->pre[0].np_logic = NP_LOGIC_IP_2;
+	params->pre[0].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[0].val      = IPPROTO_FRAGMENT;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
@@ -1396,10 +1407,10 @@ static s32 __proto_icmpv4_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 2;
 	/* IPv4 -> ICMP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_ICMP;
 	/* IPv4 internal -> ICMP */
-	params->pre[1].np_logic = NP_LOGIC_IP_2;
+	params->pre[1].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[1].val      = IPPROTO_ICMP;
 	/* extract info */
 	/* extracting type and code fields */
@@ -1448,10 +1459,10 @@ static s32 __proto_icmpv6_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 2;
 	/* IPv6 -> ICMPv6 */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->pre[0].np_logic = NP_LOGIC_IPV6;
 	params->pre[0].val      = IPPROTO_ICMPV6;
 	/* IPv6 Internal -> ICMPv6 */
-	params->pre[1].np_logic = NP_LOGIC_IP_2;
+	params->pre[1].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[1].val      = IPPROTO_ICMPV6;
 	/* extract info */
 	/* extracting type and code fields */
@@ -1524,10 +1535,13 @@ static s32 __proto_esp_init(struct protocol_info *info)
 	params   = &info->up;
 	info->id = PRSR_PROTO_ESP;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> ESP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 2;
+	/* IPv4 -> ESP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_ESP;
+	/* IPv6 -> ESP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_ESP;
 	/* extract info */
 	/* set the fv index to the first */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, first.l4.esp);
@@ -1551,10 +1565,13 @@ static s32 __proto_esp_int_init(struct protocol_info *info)
 
 	info->id = PRSR_PROTO_ESP_INT;
 	/* preceding protocols */
-	info->up.n_pre = 1;
-	/* IPv4/6 Internal -> ESP */
-	info->up.pre[0].np_logic = NP_LOGIC_IP_2;
+	info->up.n_pre = 2;
+	/* IPv4 Internal -> ESP */
+	info->up.pre[0].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	info->up.pre[0].val      = IPPROTO_ESP;
+	/* IPv6 Internal -> ESP */
+	info->up.pre[1].np_logic = NP_LOGIC_IPV6_2;
+	info->up.pre[1].val      = IPPROTO_ESP;
 	/* extract info */
 	/* set the fv index to the second */
 	info->up.ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l4.esp);
@@ -1633,10 +1650,13 @@ static s32 __proto_tcp_init(struct protocol_info *info)
 	params   = &info->up;
 	info->id = PRSR_PROTO_TCP;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> TCP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 2;
+	/* IPv4 -> TCP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_TCP;
+	/* IPv6 -> TCP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_TCP;
 	/* extract info */
 	/* set the fv index to the second */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, first.l4.tcp);
@@ -1663,10 +1683,13 @@ static s32 __proto_tcp_int_init(struct protocol_info *info)
 	params      = &info->up;
 	info->id       = PRSR_PROTO_TCP_INT;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> TCP */
-	params->pre[0].np_logic = NP_LOGIC_IP_2;
+	params->n_pre = 2;
+	/* IPv4 -> TCP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[0].val      = IPPROTO_TCP;
+	/* IPv6 -> TCP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6_2;
+	params->pre[1].val      = IPPROTO_TCP;
 	/* extract info */
 	/* set the fv index to the second */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l4.tcp);
@@ -1742,10 +1765,13 @@ static s32 __proto_udp_init(struct protocol_info *info)
 	np->len   = sizeof_field(struct udphdr, dest) * BITS_PER_BYTE;
 	np->logic = NP_LOGIC_UDP;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> UDP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 2;
+	/* IPv4 -> UDP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_UDP;
+	/* IPv6 -> UDP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_UDP;
 	/* extract info */
 	/* set the fv index to the second */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, first.l4.udp);
@@ -1778,10 +1804,13 @@ static s32 __proto_udp_int_init(struct protocol_info *info)
 	np->len   = sizeof_field(struct udphdr, dest) * BITS_PER_BYTE;
 	np->logic = NP_LOGIC_END;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> UDP */
-	params->pre[0].np_logic = NP_LOGIC_IP_2;
+	params->n_pre = 2;
+	/* IPv4 -> UDP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[0].val      = IPPROTO_UDP;
+	/* IPv6 -> UDP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6_2;
+	params->pre[1].val      = IPPROTO_UDP;
 	/* extract info */
 	/* set the fv index to the second */
 	params->ext.fld[0].fv_idx = offsetof(struct pp_fv, second.l4.udp);
@@ -1830,10 +1859,13 @@ static s32 __proto_gre_init(struct protocol_info *info)
 	skip->logic       = SKIP_LOGIC_ALU;
 	skip->op          = ALU_OP_4XC_4XK_4XS_PLUS_4;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> GRE */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 2;
+	/* IPv4 -> GRE */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_GRE;
+	/* IPv6 -> GRE */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val      = IPPROTO_GRE;
 	__proto_pr_debug(info);
 	pr_debug("done\n");
 
@@ -1875,10 +1907,13 @@ static s32 __proto_l2tpv3_ip_init(struct protocol_info *info)
 	skip->hdr_len_im = L2TPV3_OIP_HDR_LEN;
 	skip->logic = SKIP_LOGIC_IM;
 	/* preceding protocols */
-	params->n_pre = 1;
-	/* IPv4/6 -> L2TPv3 over IP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->n_pre = 2;
+	/* IPv4 -> L2TPv3 over IP */
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val = IPPROTO_L2TP;
+	/* IPv6 -> L2TPv3 over IP */
+	params->pre[1].np_logic = NP_LOGIC_IPV6;
+	params->pre[1].val = IPPROTO_L2TP;
 	/* extract session id */
 	fld = &params->ext.fld[params->ext.n_fld++];
 	fld->fv_idx = offsetof(struct pp_fv, first.l4.l2tpoip);
@@ -2015,7 +2050,7 @@ static s32 __proto_l2tpv2_select_init(struct protocol_info *info)
 	np = &params->np;
 	np->off = 0;
 	np->len = 8;
-	np->logic = NP_LOGIC_PROTO_SELECT;
+	np->logic = NP_LOGIC_IPV4_2_L2TP;
 	np->dflt = PRSR_PROTO_PAYLOAD;
 	/* header skip info */
 	params->skip.hdr_len_im = 0;
@@ -2067,7 +2102,7 @@ static s32 __proto_l2tpv2_op_len_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* L2TP v2 start -> L2TP v2 with length field */
-	params->pre[0].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[0].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[0].val = L2TPV2_LEN_PRESENT;
 	/* extract tunnel id and session id */
 	fld = &params->ext.fld[params->ext.n_fld++];
@@ -2121,7 +2156,7 @@ static s32 __proto_l2tpv2_no_op_len_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 1;
 	/* L2TP v2 start -> L2TP v2 with no length field */
-	params->pre[0].np_logic = NP_LOGIC_PROTO_SELECT;
+	params->pre[0].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[0].val = L2TPV2_NO_LEN_PRESENT;
 	/* extract tunnel id and session id when no length option is there */
 	fld = &params->ext.fld[params->ext.n_fld++];
@@ -2333,16 +2368,16 @@ static s32 __proto_sctp_init(struct protocol_info *info)
 	/* preceding protocols */
 	params->n_pre = 4;
 	/* IPv4 -> SCTP */
-	params->pre[0].np_logic = NP_LOGIC_IP;
+	params->pre[0].np_logic = NP_LOGIC_IPV4;
 	params->pre[0].val      = IPPROTO_SCTP;
 	/* IPv4 Internal -> SCTP */
-	params->pre[1].np_logic = NP_LOGIC_IP_2;
+	params->pre[1].np_logic = NP_LOGIC_IPV4_2_L2TP;
 	params->pre[1].val      = IPPROTO_SCTP;
 	/* IPv6 -> SCTP */
-	params->pre[2].np_logic = NP_LOGIC_IP;
+	params->pre[2].np_logic = NP_LOGIC_IPV6;
 	params->pre[2].val      = IPPROTO_SCTP;
 	/* IPv6 Internal -> SCTP */
-	params->pre[3].np_logic = NP_LOGIC_IP_2;
+	params->pre[3].np_logic = NP_LOGIC_IPV6_2;
 	params->pre[3].val      = IPPROTO_SCTP;
 	/* extract info */
 	/* extract ports and vtag vtag */

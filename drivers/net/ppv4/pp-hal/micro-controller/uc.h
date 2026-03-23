@@ -385,19 +385,19 @@ s32 uc_ccu_gpreg_get(bool uc_is_egr, u32 idx, u32 *gpreg);
 s32 uc_ccu_gpreg_set(bool uc_is_egr, u32 idx, u32 gpreg_val);
 
 /**
- * @brief Create GPID group in ingress uC FW
+ * @brief Update GPID group in ingress uC FW
  * @note all cpu entries MUST be set
  * @param grp_id group id
  * @param cpu cpus info
  * @return s32 0 on success, error code otherwise
  */
-s32 uc_ing_gpid_group_create(u32 grp_id,
+s32 uc_ing_gpid_group_update(u32 grp_id,
 			     struct ing_host_cpu_info cpu[PP_MAX_HOST_CPUS]);
 
 /**
  * @brief Delete GPID group from ingress uC FW
  * @param grp_id group id
- * @return s32 0 on succuss, error code otherwise
+ * @return s32 0 on success, error code otherwise
  */
 s32 uc_ing_gpid_group_delete(u32 grp_id);
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2021 - 2025 MaxLinear, Inc.
+ * Copyright (c) 2021 - 2026 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -9,7 +9,6 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
 #include <net/qos_tc.h>
-#include <linux/version.h>
 #include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
 #include "qos_tc_tbf.h"
@@ -104,7 +103,7 @@ static int qos_tc_drr_queue_update(struct net_device *dev,
 {
 	u32 handle = parms->handle;
 	int idx = TC_H_MIN(handle) - 1;
-	int weight, quantum;
+	int weight, quantum, ret;
 
 	if (idx < 0 || idx > QOS_TC_MAX_Q - 1) {
 		netdev_err(dev, "invalid child minor -> should be in [1-8]\n");
@@ -135,7 +134,12 @@ static int qos_tc_drr_queue_update(struct net_device *dev,
 	 */
 	weight = (125 * weight + 254) / 255;
 
-	return qos_tc_queue_add(sch, QOS_TC_QDISC_DRR, weight, idx, tc_params);
+	ret = qos_tc_queue_add(sch, QOS_TC_QDISC_DRR, weight, idx, tc_params);
+	if (ret < 0)
+		return ret;
+
+	/* Update CQM qid_queue_map for priority to queue mapping */
+	return qos_tc_update_cqm_qmap(sch, idx, true, tc_params);
 }
 
 static int qos_tc_drr_replace(struct net_device *dev,
@@ -219,13 +223,16 @@ static int qos_tc_drr_queue_del(struct qos_tc_qdisc *sch, u32 handle,
 	if (!TC_H_MIN(handle))
 		return 0;
 
-	if (idx < 0 && idx >= QOS_TC_MAX_Q)
+	if (idx < 0 || idx >= QOS_TC_MAX_Q)
 		return -EINVAL;
 
 	/* check if this is a queue */
 	if (sch->qids[idx].qid) {
 		netdev_dbg(sch->dev, "%s: qid:%d deleting\n",
 			   __func__, sch->qids[idx].qid);
+		/* Clear CQM qid_queue_map entry before queue deletion */
+		qos_tc_update_cqm_qmap(sch, idx, false, tc_params);
+
 		ret = qos_tc_queue_del(sch, idx, tc_params);
 		if (ret < 0) {
 			netdev_err(sch->dev, "%s: queue del err\n", __func__);
@@ -355,8 +362,14 @@ int qos_tc_drr_offload(struct net_device *dev,
 
 		break;
 	case TC_DRR_STATS:
-		/* TODO */
-		return -EOPNOTSUPP;
+		netdev_dbg(dev, "stats pid: %#x class/handle: %#x\n",
+			   opt->parent, opt->handle);
+		err = qos_tc_collect_stats(dev, opt->handle,
+					   opt->stats.bstats,
+					   opt->stats.qstats);
+		if (err < 0)
+			netdev_dbg(dev, "tc-drr stats failed: %d\n", err);
+		return err;
 	case TC_DRR_GRAFT:
 		/* TODO */
 		return -EOPNOTSUPP;
