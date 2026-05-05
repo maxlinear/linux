@@ -31,6 +31,7 @@
 #include <linux/of_platform.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <net/xfrm.h>
 
 #include <linux/pp_api.h>
 #include <soc/mxl/mxl_skb_ext.h>
@@ -1309,6 +1310,10 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 	struct dc_desc0 *desc_0;
 	int tunnel_id;
 	int ret;
+	struct xfrm_state *xs = NULL;
+#if IS_ENABLED(CONFIG_XFRM_INTERFACE)
+	struct net_device *xfrm_dev = NULL;
+#endif
 
 	dev_dbg(priv->dev, "%s enter\n", __func__);
 
@@ -1341,6 +1346,19 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 			ret = -EIO;
 			goto err_consume;
 		}
+
+		/* create xfrm sec path before PPA hook so that
+		 * ppa_vpn_parse_rx() can check x->if_id and skip
+		 * ESP header reconstruction for XFRM interface tunnels.
+		 */
+		ret = vpn_rx_dec_create_secpath(priv, skb, htonl(tunnel->spi),
+						desc_0->o_d.field.nexthdr,
+						tunnel->family);
+		if (ret) {
+			dev_err(priv->dev, "Failed to create secpath, err %d\n",
+				ret);
+			goto err_consume;
+		}
 #if IS_ENABLED(CONFIG_PPA)
 		if (!ppa_vpn_ig_lrn_hook) {
 			dev_err(priv->dev, "No PPA hook registered for ingress learning\n");
@@ -1355,17 +1373,35 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 		}
 #endif
 
-		/* create xfrm sec path */
-		ret = vpn_rx_dec_create_secpath(priv, skb, htonl(tunnel->spi),
-						desc_0->o_d.field.nexthdr,
-						tunnel->family);
-		if (ret) {
-			dev_err(priv->dev, "Failed to create secpath, err %d\n",
-				ret);
-			goto err_consume;
-		}
-
+		/* Use eth_type_trans() with the physical device to set
+		 * skb->protocol and pkt_type, then override skb->dev
+		 * to the XFRM interface so policy lookup uses the
+		 * correct if_id.
+		 */
 		skb->protocol = eth_type_trans(skb, tunnel->tx_if);
+		dev_dbg(priv->dev,
+			"%s: after eth_type_trans dev=%s proto=%04x pkt_type=%u\n",
+			__func__, skb->dev ? skb->dev->name : "null",
+			ntohs(skb->protocol), skb->pkt_type);
+#if IS_ENABLED(CONFIG_XFRM_INTERFACE)
+		xs = xfrm_input_state(skb);
+		if (xs && xs->if_id) {
+			rcu_read_lock();
+			xfrm_dev = xfrm_if_get_dev_by_ifid(xs_net(xs), xs->if_id);
+			rcu_read_unlock();
+			if (xfrm_dev) {
+				skb->dev = xfrm_dev;
+				dev_sw_netstats_rx_add(xfrm_dev, skb->len);
+				dev_dbg(priv->dev,
+					"%s: override dev=%s if_id=%u\n",
+					__func__, xfrm_dev->name, xs->if_id);
+			} else {
+				dev_err(priv->dev,
+					"xfrm_if_get_dev_by_ifid(%u) returned NULL\n",
+					xs->if_id);
+			}
+		}
+#endif
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 		/* @TBD: use 'napi_gro_receive' as specified by the kernel
 		 * documentation for IPSec offloading

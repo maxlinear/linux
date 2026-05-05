@@ -80,6 +80,28 @@ static struct xfrm_if *xfrmi_lookup(struct net *net, struct xfrm_state *x)
 	return NULL;
 }
 
+/**
+ * xfrm_if_get_dev_by_ifid - Look up XFRM interface net_device by if_id
+ * @net: network namespace
+ * @if_id: XFRM interface identifier
+ *
+ * Returns the net_device pointer for the XFRM interface matching @if_id,
+ * or NULL if not found. Must be called under rcu_read_lock().
+ * The returned device is not reference-counted; caller must hold RCU.
+ */
+struct net_device *xfrm_if_get_dev_by_ifid(struct net *net, u32 if_id)
+{
+	struct xfrmi_net *xfrmn = net_generic(net, xfrmi_net_id);
+	struct xfrm_if *xi;
+
+	for_each_xfrmi_rcu(xfrmn->xfrmi[xfrmi_hash(if_id)], xi) {
+		if (xi->p.if_id == if_id && (xi->dev->flags & IFF_UP))
+			return xi->dev;
+	}
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(xfrm_if_get_dev_by_ifid);
+
 static struct xfrm_if *xfrmi_decode_session(struct sk_buff *skb,
 					    unsigned short family)
 {
@@ -650,6 +672,13 @@ static int xfrmi_dev_init(struct net_device *dev)
 		if (is_zero_ether_addr(dev->broadcast))
 			memcpy(dev->broadcast, phydev->broadcast,
 			       dev->addr_len);
+		/* Inherit HW ESP offload features from physical device */
+		dev->features |= phydev->features &
+			(NETIF_F_HW_ESP | NETIF_F_HW_ESP_TX_CSUM | NETIF_F_GSO_ESP);
+		dev->hw_features |= phydev->hw_features &
+			(NETIF_F_HW_ESP | NETIF_F_HW_ESP_TX_CSUM | NETIF_F_GSO_ESP);
+		dev->hw_enc_features |= phydev->hw_enc_features &
+			(NETIF_F_HW_ESP | NETIF_F_GSO_ESP);
 	} else {
 		eth_hw_addr_random(dev);
 		eth_broadcast_addr(dev->broadcast);

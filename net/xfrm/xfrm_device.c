@@ -271,9 +271,27 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
 	}
 
 	if (!dev->xfrmdev_ops || !dev->xfrmdev_ops->xdo_dev_state_add) {
-		xso->dev = NULL;
+		struct net_device *phys_dev = NULL;
+		int iflink = dev_get_iflink(dev);
+
+		/* If dev is a virtual interface (e.g. xfrm interface),
+		 * try to resolve to the underlying physical device
+		 * that may have HW offload capability.
+		 */
+		if (iflink && iflink != dev->ifindex)
+			phys_dev = dev_get_by_index(net, iflink);
+
 		dev_put(dev);
-		return 0;
+
+		if (phys_dev && phys_dev->xfrmdev_ops &&
+		    phys_dev->xfrmdev_ops->xdo_dev_state_add) {
+			dev = phys_dev;
+		} else {
+			if (phys_dev)
+				dev_put(phys_dev);
+			xso->dev = NULL;
+			return 0;
+		}
 	}
 
 	if (x->props.flags & XFRM_STATE_ESN &&

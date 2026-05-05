@@ -321,6 +321,16 @@ struct xfrm_if_cb {
 void xfrm_if_register_cb(const struct xfrm_if_cb *ifcb);
 void xfrm_if_unregister_cb(void);
 
+#if IS_ENABLED(CONFIG_XFRM_INTERFACE)
+struct net_device *xfrm_if_get_dev_by_ifid(struct net *net, u32 if_id);
+#else
+static inline struct net_device *xfrm_if_get_dev_by_ifid(struct net *net,
+							 u32 if_id)
+{
+	return NULL;
+}
+#endif
+
 struct xfrm_dst_lookup_params {
 	struct net *net;
 	int tos;
