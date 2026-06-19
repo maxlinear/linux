@@ -15,10 +15,10 @@
 #include <asm/unaligned.h>
 #include <linux/version.h>
 #include <uapi/linux/tc_act/tc_vlan.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_vlan_storage.h"
 #include "qos_tc_vlan_prepare.h"
-#include "qos_tc_qos.h"
+#include "../qos_tc_qos.h"
 
 static bool should_use_ctp(struct net_device *dev, bool ingress)
 {

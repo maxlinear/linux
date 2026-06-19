@@ -10,16 +10,9 @@
 #include <linux/fs.h>
 #include <uapi/linux/stat.h> /* S_IRUSR */
 
-#include "qos_tc_ext_vlan.h"
 #include "qos_tc_flower.h"
-#include "qos_tc_pce.h"
-#include "qos_tc_police.h"
-#include "qos_tc_qmap.h"
 #include "qos_tc_qos.h"
-#include "qos_tc_trap.h"
-#include "qos_tc_vlan_filter.h"
-#include "qos_tc_skbedit.h"
-#include "qos_tc_extract_cfm.h"
+#include "qos_tc_switch_stubs.h"
 
 struct qos_tc_debugfs_entry {
 	const char *filename;

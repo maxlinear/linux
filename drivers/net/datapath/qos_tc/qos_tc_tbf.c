@@ -55,6 +55,9 @@ static int add_tbf_queue_to_root(struct qos_tc_port *port, u32 handle)
 	if (sch->use_cnt)
 		return 0;
 
+	sch->type = QOS_TC_QDISC_PRIO;
+	sch->prio.bands = 1;
+
 	ret = qos_tc_queue_add(sch, QOS_TC_QDISC_PRIO, 0, 0, &dummy);
 	if (ret) {
 		netdev_err(dev, "%s: tc-tbf queue add failed\n", __func__);

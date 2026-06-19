@@ -9,7 +9,7 @@
 #ifndef _QOS_TC_EXT_VLAN_
 #define _QOS_TC_EXT_VLAN_
 
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 
 struct net_device;
 struct seq_file;

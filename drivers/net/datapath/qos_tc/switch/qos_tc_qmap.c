@@ -13,8 +13,8 @@
 #include <net/tc_act/tc_mirred.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/qos_tc.h>
-#include "qos_tc_qos.h"
-#include "qos_tc_flower.h"
+#include "../qos_tc_qos.h"
+#include "../qos_tc_flower.h"
 
 struct flower_cls_map {
 	__be16 proto;

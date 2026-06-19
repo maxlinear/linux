@@ -11,9 +11,9 @@
 #include <net/tc_act/tc_mirred.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/tc_act/tc_sample.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_extract_cfm.h"
-#include "../dp_oam/dp_oam.h"
+#include "../../dp_oam/dp_oam.h"
 
 #define MAX_MDL 8
 
@@ -58,9 +58,7 @@ struct ts_offset_map ts_supported_opcodes[] = {
 };
 
 int (*qos_tc_cfm_offload_fn)(struct dp_oam_args *args) = NULL;
-EXPORT_SYMBOL(qos_tc_cfm_offload_fn);
 int (*qos_tc_cfm_unoffload_fn)(struct dp_oam_args *args) = NULL;
-EXPORT_SYMBOL(qos_tc_cfm_unoffload_fn);
 
 static int check_cfm_proto(struct flow_cls_offload *f)
 {

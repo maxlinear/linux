@@ -17,12 +17,12 @@
 #include <net/datapath_api.h>
 #include <net/datapath_api_vlan.h>
 #include <uapi/linux/tc_act/tc_vlan.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_vlan_storage.h"
 #include "qos_tc_vlan_filter.h"
 #include "qos_tc_ext_vlan.h"
-#include "qos_tc_trace.h"
+#include "../qos_tc_trace.h"
 
 #define QOS_TC_FILTER_DEF_PRIO_THRESHOLD 64000
 

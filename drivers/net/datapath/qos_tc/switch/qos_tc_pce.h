@@ -6,6 +6,9 @@
  *
  *****************************************************************************/
 
+#include <linux/seq_file.h>
+
+#if IS_ENABLED(CONFIG_QOS_TC_SWITCH_OFFLOAD)
 #include <net/switch_api/gsw_types.h>
 #include <net/switch_api/lantiq_gsw.h>
 #include <net/switch_api/lantiq_gsw_flow.h>
@@ -41,5 +44,7 @@ int qos_tc_pce_rule_create(struct net_device *dev,
  *  \param[in]	pref		TC command preference
  */
 int qos_tc_pce_rule_delete(unsigned long cookie, int pref);
+
+#endif /* CONFIG_QOS_TC_SWITCH_OFFLOAD */
 
 void qos_tc_pce_list_debugfs(struct seq_file *file, void *ctx);

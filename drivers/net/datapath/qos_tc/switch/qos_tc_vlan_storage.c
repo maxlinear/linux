@@ -9,7 +9,7 @@
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <net/datapath_api_vlan.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_vlan_storage.h"
 

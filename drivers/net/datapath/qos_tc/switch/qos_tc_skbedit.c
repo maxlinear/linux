@@ -11,9 +11,9 @@
 #include <net/tc_act/tc_vlan.h>
 #include <net/datapath_api.h>
 #include <net/flow_dissector.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
-#include "qos_tc_trace.h"
+#include "../qos_tc_trace.h"
 
 /* skbedit reassignment action info */
 struct skbedit {

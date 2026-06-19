@@ -18,12 +18,12 @@
 #include <linux/version.h>
 #include <net/tc_act/tc_gact.h>
 #include <net/tc_act/tc_vlan.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_pce.h"
 #include "qos_tc_parser.h"
 #include "qos_tc_mirred.h"
 #include "qos_tc_ext_vlan.h"
-#include "qos_tc_qos.h"
+#include "../qos_tc_qos.h"
 
 struct qos_tc_mirr_filter {
 	int proto;

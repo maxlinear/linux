@@ -535,6 +535,12 @@ enum gen_keypair_ver {
 	BASE_VERSION_1 = 1, /* With PKCS Attribute Support */
 };
 
+enum load_key_ver
+{
+	LOADKEY_VERSION_0 = 0, /* Old driver, without unified RSA keypair format support based on PKCS#8 */
+	LOADKEY_VERSION_1 = 1, /* With unified RSA keypair format support based on PKCS#8 */
+};
+
 enum sec_asym_enc_hash_alg {
 	ASYM_ENC_HASH_SHA1,
 	ASYM_ENC_HASH_SHA224,

@@ -13590,30 +13590,39 @@ static GSW_return_t GSW_MMD_MDIO_DataWrite(void *cdev,
 		goto UNLOCK_AND_RETURN;
 	}
 
+	/* UGW_SW-93649: Correct 5-step operation order (per Yossi Horen's
+	 * analysis) - must NOT be reordered. lock_mmd held throughout to
+	 * serialize against GSW_MmdDataRead/Write and GSW_PortLinkCfgSet
+	 * (PHY_ADDR_0/1 cross-path protection).
+	 *
+	 * Step 1: force_configure ON.
+	 */
 	force_to_configure_phy_settings(cdev, pidx, 1);
 
+	/* Step 2: PEN disable - stop auto-polling during MDIO access. */
 	if (gswdev->gipver == LTQ_GSWIP_3_0) {
 		gsw_r32(cdev, (GSWT_MDCCFG_0_PEN_1_OFFSET
-			       + GSW30_TOP_OFFSET),
-			GSWT_MDCCFG_0_PEN_1_SHIFT, 6, &mdc_reg);
+		               + GSW30_TOP_OFFSET),
+		        GSWT_MDCCFG_0_PEN_1_SHIFT, 6, &mdc_reg);
 		mdc_reg &= ~(1 << (pidx - 1));
 	} else {
 		gsw_r32(cdev, (MDC_CFG_0_PEN_0_OFFSET + GSW_TREG_OFFSET),
-			MDC_CFG_0_PEN_0_SHIFT, 6, &mdc_reg);
+		        MDC_CFG_0_PEN_0_SHIFT, 6, &mdc_reg);
 		mdc_reg &= ~(1 << pidx);
 	}
 
 	if (gswdev->gipver == LTQ_GSWIP_3_0) {
 		gsw_w32(cdev, (GSWT_MDCCFG_0_PEN_1_OFFSET
-			       + GSW30_TOP_OFFSET),
-			GSWT_MDCCFG_0_PEN_1_SHIFT, 6, mdc_reg);
+		               + GSW30_TOP_OFFSET),
+		        GSWT_MDCCFG_0_PEN_1_SHIFT, 6, mdc_reg);
 	} else {
 		gsw_w32(cdev, (MDC_CFG_0_PEN_0_OFFSET + GSW_TREG_OFFSET),
-			MDC_CFG_0_PEN_0_SHIFT, 6, mdc_reg);
+		        MDC_CFG_0_PEN_0_SHIFT, 6, mdc_reg);
 	}
 
 	ltq_mdelay_for_mdio();
 
+	/* Step 3: MDIO writes. */
 	mmd_data.nAddressDev = parm->nAddressDev;
 	mmd_data.nAddressReg = 0xd;
 	mmd_data.nData = dev;
@@ -13634,19 +13643,21 @@ static GSW_return_t GSW_MMD_MDIO_DataWrite(void *cdev,
 	mmd_data.nData = parm->nData;
 	GSW_MDIO_DataWrite(cdev, &mmd_data);
 
-
+	/* Step 4: PEN enable - resume auto-polling. */
 	if (gswdev->gipver == LTQ_GSWIP_3_0) {
 		mdc_reg |= (1 << (pidx - 1));
 		gsw_w32(cdev, (GSWT_MDCCFG_0_PEN_1_OFFSET
-			       + GSW30_TOP_OFFSET),
-			GSWT_MDCCFG_0_PEN_1_SHIFT, 6, mdc_reg);
+		               + GSW30_TOP_OFFSET),
+		        GSWT_MDCCFG_0_PEN_1_SHIFT, 6, mdc_reg);
 	} else {
 		mdc_reg |= (1 << pidx);
 		gsw_w32(cdev, (MDC_CFG_0_PEN_0_OFFSET + GSW_TREG_OFFSET),
-			MDC_CFG_0_PEN_0_SHIFT, 6, mdc_reg);
+		        MDC_CFG_0_PEN_0_SHIFT, 6, mdc_reg);
 	}
 
 	ltq_mdelay_for_mdio();
+
+	/* Step 5: force_configure OFF - restores normal link-state handling. */
 	force_to_configure_phy_settings(cdev, pidx, 0);
 	ret = GSW_statusOk;
 
@@ -14379,6 +14390,16 @@ GSW_return_t GSW_PortLinkCfgSet(void *cdev, GSW_portLinkCfg_t *parm)
 
 			/*		pr_err("%s:%s:%d PEN:%d, PACT:%d,  phyreg:0x%08x\n",
 						__FILE__, __func__, __LINE__,PEN, PACT,phyreg);*/
+			/* UGW_SW-93649: Protect PHY_ADDR write against concurrent
+			 * GSW_MMD_* operations that also read-modify-write PHY_ADDR
+			 * registers via force_to_configure_phy_settings().
+			 * Without this lock, concurrent GSW_MMD_DATA_WRITE and
+			 * GSW_PORT_LINK_CFG_SET calls corrupt PHY_ADDR_0 (0xF415)
+			 * / PHY_ADDR_1 (0xF414) register state.
+			 */
+#ifdef __KERNEL__
+			spin_lock_bh(&gswdev->lock_mmd);
+#endif
 			if (gswdev->gipver == LTQ_GSWIP_3_0) {
 				gsw_w32(cdev, ((GSWT_PHY_ADDR_1_ADDR_OFFSET + ((parm->nPortId - 1) * 4)) + GSW30_TOP_OFFSET),
 					0, 16, phyreg);
@@ -14386,6 +14407,9 @@ GSW_return_t GSW_PortLinkCfgSet(void *cdev, GSW_portLinkCfg_t *parm)
 				gsw_w32(cdev, ((PHY_ADDR_0_ADDR_OFFSET - pidx) + GSW_TREG_OFFSET),
 					0, 16, phyreg);
 			}
+#ifdef __KERNEL__
+			spin_unlock_bh(&gswdev->lock_mmd);
+#endif
 		}
 
 		data = 4; /*default mode */

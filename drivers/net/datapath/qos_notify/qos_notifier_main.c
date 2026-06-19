@@ -89,13 +89,15 @@ EXPORT_SYMBOL(qos_event_deregister);
  * Description: This API will be used by notifiers to send notification to PPA
  *              and will returns once PPA copies this data into its db
  */
-void qos_qmap_notify(void *data, int event)
+void qos_qmap_notify(void *data, enum qos_notify_event_type event)
 {
 	switch (event) {
 	case QOS_EVENT_SCH_ADD:
 	case QOS_EVENT_Q_ADD:
 	case QOS_EVENT_SCH_DELETE:
 	case QOS_EVENT_Q_DELETE:
+	case QOS_EVENT_MAP_ADD:
+	case QOS_EVENT_MAP_DELETE:
 		break;
 	default:
 		pr_err("%s: Invalid param\n", __func__);

@@ -12,6 +12,7 @@
 #include <linux/list.h>
 #include <linux/radix-tree.h>
 #include <linux/types.h>
+#include <net/datapath_api.h>
 
 #include "qos_tc_flower.h"
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
@@ -28,6 +29,8 @@
 #define QOS_TC_CPU_PORT 0
 
 #define QOS_TC_COOKIE_EMPTY -1
+
+#include "qos_tc_compat.h"
 
 enum qos_tc_qdisc_type {
 	QOS_TC_QDISC_NONE,
@@ -222,7 +225,6 @@ int qos_tc_update_qmap(struct net_device *dev,
 		       const struct qos_tc_params *tc_params);
 int qos_tc_ev_tc_assign(struct qos_tc_qdisc *sch, u8 tc);
 int qos_tc_ev_tc_unassign(struct qos_tc_qdisc *sch, u8 tc);
-int qos_tc_mappings_init(void);
 
 int qos_tc_ports_cleanup(void);
 
@@ -276,7 +278,7 @@ u64 psched_ns_t2l(const struct psched_ratecfg *r, u64 time_in_ns);
 int qos_tc_check_qid(struct qos_tc_qdisc *qdisc, int idx);
 
 int qos_tc_collect_stats(struct net_device *dev, u32 handle,
-			 struct gnet_stats_basic_packed *bstats,
+			 qos_tc_bstats_t *bstats,
 			 struct gnet_stats_queue *qstats);
 
 int qos_tc_add_qdisc_to_dev(struct net_device *dev,

@@ -4,7 +4,7 @@ config QOS_TC
 	tristate "QoS TC driver"
 	depends on DPM_DATAPATH && !GRX500_CBM
 	select NET_SCH_RED
-	select NET_ACT_COLMARK
+	select NET_ACT_COLMARK if !(MXL_SOC_TPZ_MACSS || MXL_TPZ_QEMU)
 	select NET_CLS_IND
 
 	help
@@ -18,6 +18,17 @@ config QOS_TC_KCOV
 	depends on KCOV && QOS_TC
 	help
 	  Enable coverage on QoS TC driver for fuzzing.
+
+config QOS_TC_SWITCH_OFFLOAD
+	bool "QoS TC switch offload support"
+	depends on QOS_TC
+	default y
+	help
+	  Enable hardware offload for classifier actions that rely on the
+	  switch PCE engine: trap-to-CPU, port mirroring/redirect, IP-based
+	  drop, SKB priority remark, and DSCP/PCP-to-traffic-class mapping.
+	  Disable this on platforms such as Topaz that do not have an
+	  integrated switch and where the switch API is not available.
 
 config QOS_TC_TRACING
 	bool "QoS TC tracing support"

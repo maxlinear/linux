@@ -6,14 +6,16 @@
  *
  *****************************************************************************/
 
+#include <linux/module.h>
 #include <linux/netdevice.h>
 #include <net/switch_api/gsw_types.h>
 #include <net/switch_api/lantiq_gsw.h>
 #include <net/switch_api/gsw_dev.h>
 #include <net/datapath_api_vlan.h>
 #include <net/datapath_api.h>
-#include "qos_tc_flower.h"
-#include "qos_tc_qos.h"
+#include "../qos_tc_flower.h"
+#include "../qos_tc_qos.h"
+
 
 
 

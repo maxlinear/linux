@@ -8,11 +8,13 @@
 #include <linux/module.h>
 #include <linux/version.h>
 #include <net/pkt_cls.h>
+#include <net/pkt_sched.h>
 #include <net/qos_tc.h>
 #include <linux/jiffies.h>
 #include "qos_tc_flower.h"
 #include "qos_tc_main.h"
 #include "qos_tc_qos.h"
+#include "qos_tc_switch_stubs.h"
 #include "qos_tc_debugfs.h"
 #include "qos_tc_trace.h"
 

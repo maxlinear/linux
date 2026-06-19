@@ -19,7 +19,7 @@
 #include <linux/string.h>
 
 #define MXL_TEE_PIN_SST_OBJNAME 		"token_persistent_info"
-#define MXL_TEE_PIN_SST_OBJNAME_ACCESS_POLICY	0x10020CF
+#define MXL_TEE_PIN_SST_OBJNAME_ACCESS_POLICY	0x10038CF
 #define SS_CREATE_FLAG_RESET			0xEF
 
 #define SO_PIN_DEFAULT				"87654321"
@@ -61,7 +61,7 @@ static int compute_sha256_digest(unsigned char *data_to_hash, unsigned char *has
 	struct crypto_shash *tfm;
 	int ret = 0;
 
-	pr_info("Request for sha256 data encryption.\n");
+	pr_debug("Request for sha256 data encryption.\n");
 
 	/* Allocate the SHASH transformation object */
 	tfm = crypto_alloc_shash("sha256", 0, 0);
@@ -96,7 +96,7 @@ static int compute_sha256_digest(unsigned char *data_to_hash, unsigned char *has
 	}
 
 	/* Now, hash_digest contains the SHA256 hash of input */
-	pr_info("SHA256 hash computed successfully.\n");
+	pr_debug("SHA256 hash computed successfully.\n");
 
 out_free_desc:
 	kfree(desc);
@@ -246,14 +246,14 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 	}
 	if (ret < 0) {
 		if (ret == -SST_OBJ_ALREADY_EXIST_ERR) {
-			pr_info("secure storage object (%s) exits.\n", MXL_TEE_PIN_SST_OBJNAME);
+			pr_debug("secure storage object (%s) exits.\n", MXL_TEE_PIN_SST_OBJNAME);
 			sst_param->secure_store_flags = sst_param->sst_access_policy.crypto_mode_flag & SS_CREATE_FLAG_RESET;
 			ret = sse_secure_storage_create_open_fn(sst_param, secure_store_config);
 			if (ret < 0) {
 				pr_err("secure storage Failed to open the Object(%s):ret:%d\n", MXL_TEE_PIN_SST_OBJNAME, ret);
 				goto finish;
 			} else {
-				pr_info("secure storage to open success ret:%d\n", ret);
+				pr_debug("secure storage to open success ret:%d\n", ret);
 				mxl_tee_pin_sst_obj_exists = true;
 			}
 		} else {
@@ -261,7 +261,7 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 			goto finish;
 		}
 	} else {
-		pr_info("secure storage to open success ret:%d\n", ret);
+		pr_debug("secure storage to create success ret:%d\n", ret);
 		mxl_tee_pin_sst_obj_exists = true;
 	}
 
@@ -274,9 +274,10 @@ static s32 mxl_tee_securestore_close(struct mxltee_driver *drv,
                                         sst_param_t *sst_param)
 {
 	s32 ret = 0;
-	pr_debug("Create/Open Secure Storage Object.\n");
+	pr_debug("Close Secure Storage Object.\n");
 	if (sse_secure_storage_close_delete_fn) {
 		ret = sse_secure_storage_close_delete_fn(sst_param, secure_store_config);
+		mxl_tee_pin_sst_obj_exists = false;
 	}
 	return ret;
 
@@ -289,7 +290,6 @@ static s32 mxl_tee_securestore_save(sst_config_t *secure_store_config,
 	s32 ret = 0;
 	sst_data_param_t xSaveObject = {0};
 
-	pr_info("Save data to Secure Storage Object.\n");
 	pr_debug("Data to be saved in SST Object:\n");
 	display_token_persistent_info(token_persistent_info);
 
@@ -308,7 +308,7 @@ static s32 mxl_tee_securestore_save(sst_config_t *secure_store_config,
 		pr_err("secure storage Failed to save :ret:%d\n", ret);
 		goto finish;
 	} else {
-		pr_info("secure storage save success ret:%d\n", ret);
+		pr_debug("secure storage save success ret:%d\n", ret);
 	}
 
 finish:
@@ -339,7 +339,7 @@ static s32 mxl_tee_securestore_load(sst_config_t *secure_store_config,
 		pr_err("secure storage Failed to load :ret:%d\n", ret);
 		goto finish;
 	} else {
-		pr_info("secure storage load success ret:%d\n", ret);
+		pr_debug("secure storage load success ret:%d\n", ret);
 	}
 
 	pr_debug("Data read from SST Object:\n");
@@ -441,24 +441,24 @@ s32 authenicate_pin(seccrypto_pin_info_t *pin_info,
 	}
 
 	if (pin_info->user_type == TYPE_USER) {
-		pr_info("Authenticating USER pin.\n");
+		pr_debug("Authenticating USER pin.\n");
 
 		if (memcmp((const void *)auth_pin_hash, (const void *)token_persistent_info_load->user_pin_hash,
 					(size_t)token_persistent_info_load->user_hash_size) != 0) {
 			pr_err("PIN not matched.\n");
 			ret = -EINVAL;
 		} else {
-			pr_info("PIN matched.\n");
+			pr_debug("PIN matched.\n");
 		}
 	} else if (pin_info->user_type == TYPE_SO) {
-		pr_info("Authenticating SO pin.\n");
+		pr_debug("Authenticating SO pin.\n");
 
 		if (memcmp((const void *)auth_pin_hash, (const void *)token_persistent_info_load->so_pin_hash,
 					(size_t)token_persistent_info_load->so_hash_size) != 0) {
 			pr_err("PIN not matched.\n");
 			ret = -EINVAL;
 		} else {
-			pr_info("PIN matched.\n");
+			pr_debug("PIN matched.\n");
 		}
 	} else {
 		pr_err("Invalid User Type.\n");
@@ -516,7 +516,7 @@ s32 handle_authpin_command(struct mxltee_driver *drv, struct mxltee_session *ses
 		pr_err("PIN Authenication failed\n");
 		goto finish;
 	} else {
-		pr_info("PIN Authenication passed.\n");
+		pr_debug("PIN Authenication passed.\n");
 	}
 
 finish:
@@ -592,7 +592,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 
 	/* SET/Modify the PIN */
 	if (pin_info->old_pin_info.user_type == TYPE_USER) {
-		pr_info("Set USER pin.\n");
+		pr_debug("Set USER pin.\n");
 
 		token_persistent_info_load.user_hash_alg = pin_info->old_pin_info.pin_hash_algo;
 		token_persistent_info_load.user_hash_size = TEE_MAX_HASH_SIZE;
@@ -604,7 +604,7 @@ s32 handle_setpin_command(struct mxltee_driver *drv, struct mxltee_session *sess
 		}
 
 	} else if (pin_info->old_pin_info.user_type == TYPE_SO) {
-		pr_info("Set SO pin.\n");
+		pr_debug("Set SO pin.\n");
 
 		token_persistent_info_load.so_hash_alg = pin_info->old_pin_info.pin_hash_algo;
 		token_persistent_info_load.so_hash_size = TEE_MAX_HASH_SIZE;

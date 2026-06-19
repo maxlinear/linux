@@ -12,14 +12,15 @@
 #include <net/qos_tc.h>
 #include "qos_tc_flower.h"
 #include "qos_tc_qos.h"
-#include "qos_tc_qmap.h"
+#include "qos_tc_switch_stubs.h"
 #include "qos_tc_trace.h"
+#include "qos_tc_qmap_ops.h"
 
 static LIST_HEAD(port_list);
 
 static int qos_tc_read_qstats(struct qos_tc_qdisc *sch,
 		       struct qos_tc_q_data *qdata,
-		       struct gnet_stats_basic_packed *bstats,
+		       qos_tc_bstats_t *bstats,
 		       struct gnet_stats_queue *qstats)
 {
 	struct dp_qos_queue_info qinfo = {0};
@@ -40,8 +41,8 @@ static int qos_tc_read_qstats(struct qos_tc_qdisc *sch,
 		return -EIO;
 
 	if (bstats) {
-		bstats->packets = qinfo.qacc;
-		bstats->bytes = qinfo.qacc_bytes;
+		qos_tc_bstats_set_packets(bstats, qinfo.qacc);
+		qos_tc_bstats_set_bytes(bstats, qinfo.qacc_bytes);
 	}
 
 	if (qstats) {
@@ -54,7 +55,7 @@ static int qos_tc_read_qstats(struct qos_tc_qdisc *sch,
 }
 
 static int qos_tc_get_class_stats(struct qos_tc_qdisc *sch, int idx,
-				  struct gnet_stats_basic_packed *bstats,
+				  qos_tc_bstats_t *bstats,
 				  struct gnet_stats_queue *qstats)
 {
 	if (idx < 0 || idx >= QOS_TC_MAX_Q)
@@ -70,11 +71,13 @@ static int qos_tc_get_class_stats(struct qos_tc_qdisc *sch, int idx,
 }
 
 int qos_tc_collect_stats(struct net_device *dev, u32 handle,
-			 struct gnet_stats_basic_packed *bstats,
+			 qos_tc_bstats_t *bstats,
 			 struct gnet_stats_queue *qstats)
 {
 	struct qos_tc_qdisc *sch = NULL;
 	int ret, i;
+	u64 packets = 0;
+	u64 bytes = 0;
 
 	if (!bstats || !qstats)
 		return -EINVAL;
@@ -96,23 +99,27 @@ int qos_tc_collect_stats(struct net_device *dev, u32 handle,
 		return ret;
 	}
 
-	memset(bstats, 0, sizeof(*bstats));
+	qos_tc_bstats_init(bstats);
 	memset(qstats, 0, sizeof(*qstats));
 
 	for (i = 0; i < QOS_TC_MAX_Q; i++) {
-		struct gnet_stats_basic_packed qbstats = {0};
+		qos_tc_bstats_t qbstats;
 		struct gnet_stats_queue qqstats = {0};
 
+		qos_tc_bstats_init(&qbstats);
 		ret = qos_tc_get_class_stats(sch, i, &qbstats, &qqstats);
 		if (ret < 0)
 			continue;
 
-		bstats->packets += qbstats.packets;
-		bstats->bytes += qbstats.bytes;
+		packets += qos_tc_bstats_get_packets(&qbstats);
+		bytes += qos_tc_bstats_get_bytes(&qbstats);
 		qstats->qlen += qqstats.qlen;
 		qstats->backlog += qqstats.backlog;
 		qstats->drops += qqstats.drops;
 	}
+
+	qos_tc_bstats_set_packets(bstats, packets);
+	qos_tc_bstats_set_bytes(bstats, bytes);
 
 	return 0;
 }
@@ -120,8 +127,6 @@ int qos_tc_collect_stats(struct net_device *dev, u32 handle,
 static int __qos_tc_qdata_remove(struct net_device *dev,
 				 struct qos_tc_q_data *qid,
 				 struct qos_tc_qdata_params *p);
-static int qos_tc_set_qmap(int qid, struct qos_tc_qdisc *sch, int subif,
-			int tc_cookie, bool en, const struct qos_tc_params *tc_params);
 
 struct qos_tc_port *qos_tc_port_get(struct net_device *dev)
 {
@@ -183,35 +188,6 @@ static int qos_tc_overwrite_port_thresholds(struct qos_tc_qdisc *sch)
 	}
 
 	return 0;
-}
-
-static bool qos_tc_is_netdev_reinsert_port(struct net_device *dev)
-{
-	dp_subif_t *subif __free(kfree) = NULL;
-	int ret;
-
-	subif = kzalloc(sizeof(*subif), GFP_KERNEL);
-	if (!subif) {
-		netdev_err(dev, "%s: failed to allocate memory for subif\n",
-			   __func__);
-		return false;
-	}
-	ret = dp_get_netif_subifid(dev, NULL, NULL, 0, subif, 0);
-	if (ret == DP_FAILURE) {
-		/* negative return value is no error for non
-		 * reinsertion port
-		 */
-		return false;
-	}
-	netdev_dbg(dev, "%s: returned %d\n",
-			   __func__, subif->data_flag & DP_SUBIF_REINSERT ? 1 : 0);
-
-	if (subif->data_flag & DP_SUBIF_REINSERT)
-		ret = true;
-	else
-		ret = false;
-
-	return ret;
 }
 
 static int set_alloc_flag(struct qos_tc_qdisc *sch)
@@ -287,7 +263,7 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 				   __func__);
 			return -ENOMEM;
 		}
-		ret = dp_get_netif_subifid(sch->dev, NULL, NULL, 0, subif, 0);
+		ret = qos_tc_get_netif_subifid(sch->dev, subif);
 		if (ret == DP_SUCCESS) {
 			/* The deq_idx is provided in the qos_tc_setup()
 			 * function by the caller like the PON Ethernet driver
@@ -295,7 +271,7 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 			 * to indicate the value is unknown.
 			 */
 			if (sch->deq_idx < 0 ||
-			    subif->data_flag & DP_SUBIF_REINSERT) {
+			    QOS_TC_SUBIF_DATA_FLAGS(subif) & DP_SUBIF_REINSERT) {
 				/* This is PON DS port so mark this */
 				sch->port = subif->port_id;
 				sch->deq_idx = 0;
@@ -305,26 +281,26 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 			 * reinsertion port from others. Special bit is set
 			 * for reinsertion port.
 			 */
-			flags = subif->data_flag;
+			flags = QOS_TC_SUBIF_DATA_FLAGS(subif);
 			/* save hw egress port settings */
 			sch->inst = subif->inst;
 			/* Save lookup mode */
-			sch->lookup_mode = subif->lookup_mode;
+			sch->lookup_mode = QOS_TC_SUBIF_LOOKUP_MODE(subif);
 			/* alloc_flag will be set for URX only; for other SoCs, it will be zero.
 			This alloc_flag is utilized for getting interface information.
 			Based on the interface, we are modifying queue length and drop algorithm
 			on user queues which are created on the particular default interfaces. */
 #if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
-			sch->alloc_flag = subif->alloc_flag;
+			sch->alloc_flag = QOS_TC_SUBIF_ALLOC_FLAGS(subif);
 #endif
 			/* If we do not have a default queue from DP use -1 */
-			if (subif->subif_common.num_q == 1)
-				sch->def_q = subif->subif_common.def_qlist[0];
+			if (QOS_TC_SUBIF_NUM_Q(subif) == 1)
+				sch->def_q = QOS_TC_SUBIF_DEF_Q(subif, 0);
 			else
 				sch->def_q = -1;
-			if (subif->subif_common.num_q > 1)
+			if (QOS_TC_SUBIF_NUM_Q(subif) > 1)
 				netdev_warn(sch->dev, "found %i DP default queues, do not change them",
-					    subif->subif_common.num_q);
+					    QOS_TC_SUBIF_NUM_Q(subif));
 		} else {
 			netdev_dbg(sch->dev, "Can not find in DP: %i", ret);
 			/* Some devices like T-Conts are not registered to DP
@@ -376,7 +352,7 @@ int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 				   __func__);
 			return -ENOMEM;
 		}
-		ret = dp_get_netif_subifid(sch->dev, NULL, NULL, 0, subif, 0);
+		ret = qos_tc_get_netif_subifid(sch->dev, subif);
 		if (ret < 0) {
 			return -ENODEV;
 		}
@@ -385,7 +361,7 @@ int qos_tc_get_port_info(struct qos_tc_qdisc *sch,
 		sch->deq_idx = 0;
 		sch->ds = true;
 		/* Save lookup mode */
-		sch->lookup_mode = subif->lookup_mode;
+		sch->lookup_mode = QOS_TC_SUBIF_LOOKUP_MODE(subif);
 	}
 
 	ret = set_alloc_flag(sch);
@@ -552,12 +528,12 @@ static bool qos_tc_is_dev_type(struct net_device *dev, u32 flag)
 			   __func__);
 		return false;
 	}
-	ret = dp_get_netif_subifid(dev, NULL, NULL, NULL, subif, 0);
+	ret = qos_tc_get_netif_subifid(dev, subif);
 	if (ret < 0) {
 		netdev_dbg(dev, "%s: subif idx get failed\n", __func__);
 		ret = false;
 	} else {
-		if (subif->alloc_flag & flag)
+		if (QOS_TC_SUBIF_ALLOC_FLAGS(subif) & flag)
 			ret = true;
 		else
 			ret = false;
@@ -566,25 +542,29 @@ static bool qos_tc_is_dev_type(struct net_device *dev, u32 flag)
 	return ret;
 }
 
-inline bool qos_tc_is_lan_dev(struct net_device *dev)
+bool qos_tc_is_lan_dev(struct net_device *dev)
 {
 	return qos_tc_is_dev_type(dev, DP_F_FAST_ETH_LAN);
 }
+EXPORT_SYMBOL(qos_tc_is_lan_dev);
 
-inline bool qos_tc_is_vuni_dev(struct net_device *dev)
+bool qos_tc_is_vuni_dev(struct net_device *dev)
 {
 	return qos_tc_is_dev_type(dev, DP_F_VUNI);
 }
+EXPORT_SYMBOL(qos_tc_is_vuni_dev);
 
-inline bool qos_tc_is_iphost_dev(struct net_device *dev)
+bool qos_tc_is_iphost_dev(struct net_device *dev)
 {
 	return qos_tc_is_dev_type(dev, DP_F_DIRECT);
 }
+EXPORT_SYMBOL(qos_tc_is_iphost_dev);
 
-inline bool qos_tc_is_gpon_dev(struct net_device *dev)
+bool qos_tc_is_gpon_dev(struct net_device *dev)
 {
 	return qos_tc_is_dev_type(dev, DP_F_GPON);
 }
+EXPORT_SYMBOL(qos_tc_is_gpon_dev);
 
 bool qos_tc_is_first_subif(struct net_device *dev)
 {
@@ -597,7 +577,7 @@ bool qos_tc_is_first_subif(struct net_device *dev)
 			   __func__);
 		return false;
 	}
-	ret = dp_get_netif_subifid(dev, NULL, NULL, NULL, subif, 0);
+	ret = qos_tc_get_netif_subifid(dev, subif);
 	if (ret != DP_SUCCESS) {
 		netdev_err(dev, "can not get subif\n");
 		ret = false;
@@ -610,6 +590,7 @@ bool qos_tc_is_first_subif(struct net_device *dev)
 
 	return ret;
 }
+EXPORT_SYMBOL(qos_tc_is_first_subif);
 
 bool qos_tc_subif_cmp_to_val(struct net_device *dev,
 			     bool (*cmp)(u32, u32), u32 lim)
@@ -621,7 +602,7 @@ bool qos_tc_subif_cmp_to_val(struct net_device *dev,
 	if (!subif)
 		return false;
 
-	ret = dp_get_netif_subifid(dev, NULL, NULL, NULL, subif, 0);
+	ret = qos_tc_get_netif_subifid(dev, subif);
 	if (ret != DP_SUCCESS) {
 		netdev_err(dev, "can not get subif\n");
 		ret = false;
@@ -631,6 +612,7 @@ bool qos_tc_subif_cmp_to_val(struct net_device *dev,
 
 	return ret;
 }
+EXPORT_SYMBOL(qos_tc_subif_cmp_to_val);
 
 static int qos_tc_qdata_child_remove(struct net_device *dev,
 				     struct qos_tc_q_data *qid,
@@ -706,22 +688,56 @@ int qos_tc_update_cqm_qmap(struct qos_tc_qdisc *sch, int idx,
 }
 
 #if IS_ENABLED(CONFIG_QOS_NOTIFY)
+static bool is_map_event(enum qos_notify_event_type event)
+{
+	switch (event) {
+	case QOS_EVENT_MAP_ADD:
+	case QOS_EVENT_MAP_DELETE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool is_q_event(enum qos_notify_event_type event)
+{
+	switch (event) {
+	case QOS_EVENT_Q_ADD:
+	case QOS_EVENT_Q_DELETE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool is_q_or_map_event(enum qos_notify_event_type event)
+{
+	return is_q_event(event) || is_map_event(event);
+}
+
 /*!
  * Fill up the notifier structure with required data and return structure
  */
 static void fill_qos_notify_data(struct qos_notifier_data *data,
-			struct qos_tc_qdisc *sch, int parent, int event, int idx, int prio_w)
+				 struct qos_tc_qdisc *sch, int parent, enum qos_notify_event_type event,
+				 int idx, int prio_w)
 {
 	data->netif = sch->dev;
 	data->sch_id = sch->sch_id;
 	data->sch_parent_id = (event == QOS_EVENT_SCH_ADD) ? parent : QOS_TC_UNUSED;
-	data->qid = ((event == QOS_EVENT_Q_ADD || event == QOS_EVENT_Q_DELETE) &&
-				(idx >= 0)) ? sch->qids[idx].qid : QOS_TC_UNUSED;
-	/* Reverse priority mapping: prio values 0-7 map to priority 7-0
-	 * Prio 0 = lowest priority, Prio 7 = highest priority
+	data->qid = (is_q_or_map_event(event) &&
+		     (idx >= 0)) ? sch->qids[idx].qid : QOS_TC_UNUSED;
+	/* MAP events carry "sch->offset+tc_cookie" directly, no reversal required.
+	 * Q_ADD/Q_DELETE carry band weights that need priority reversal
+	 * for PRIO schedulers (prio 0 = lowest, prio bands-1 = highest).
+	 * For Q events, prio_w = sch->offset + raw_priority, so we need to
+	 * extract the raw priority, reverse it, then add offset back.
 	 */
-	if (sch->type == QOS_TC_QDISC_PRIO) {
-		data->idx = (sch->prio.bands - 1 - prio_w);
+	if (is_map_event(event)) {
+		data->idx = prio_w;
+	} else if (sch->type == QOS_TC_QDISC_PRIO) {
+		data->idx = sch->offset + (sch->prio.bands - 1) -
+			    (prio_w - sch->offset);
 	} else if (sch->type == QOS_TC_QDISC_DRR) {
 		data->idx = prio_w;
 	} else {
@@ -732,7 +748,7 @@ static void fill_qos_notify_data(struct qos_notifier_data *data,
 /*!
  * validate the data and send notification
  */
-static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
+static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, enum qos_notify_event_type event,
 				    int parent, int idx, int prio_w,
 				    const struct qos_tc_params *tc_params)
 {
@@ -756,7 +772,7 @@ static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
 
 	/* TODO: This call may not be supported for DSL interface.
 	 * It has to be handled in case if it is required. */
-	ret = dp_get_netif_subifid(sch->dev, NULL, NULL, NULL, dp_subif, 0);
+	ret = qos_tc_get_netif_subifid(sch->dev, dp_subif);
 	if (ret < 0) {
 		if (tc_params && tc_params->flags & QOS_TC_IS_LIF_CONFIG)
 			dp_alloc_flag = tc_params->dp_alloc_flag;
@@ -769,7 +785,7 @@ static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
 			return;
 		}
 	} else {
-		dp_alloc_flag = dp_subif->alloc_flag;
+		dp_alloc_flag = QOS_TC_SUBIF_ALLOC_FLAGS(dp_subif);
 	}
 
 	/* NOTE: Any interfaces which are not required these notifications
@@ -783,12 +799,11 @@ static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
 	qos_qmap_notify(data, event);
 }
 #else
-static void qos_tc_check_and_notify(struct qos_tc_qdisc *sch, int event,
-				    int parent, int idx, int prio_w,
-				    const struct qos_tc_params *tc_params)
-{
-	return;
-}
+#define qos_tc_check_and_notify(_sch, _event, _parent, _idx, _prio_w, _tc_params) \
+	do { \
+		(void)(_sch); (void)(_event); (void)(_parent); \
+		(void)(_idx); (void)(_prio_w); (void)(_tc_params); \
+	} while (0)
 #endif /* CONFIG_QOS_NOTIFY */
 
 static int qos_tc_link_sched(struct qos_tc_qdisc *sch, int prio,
@@ -1621,22 +1636,6 @@ static int qos_tc_sched_policy_update(struct qos_tc_qdisc *sch,
 #define MAX_QUEUE_LENGTH_1K 0x400
 #define MAX_QUEUE_LENGTH_3K 0xC00
 
-static void q_parms_enable(struct qos_tc_qdisc *sch, struct dp_queue_conf *q)
-{
-	struct dp_qos_q_parms p = {0};
-	int ret;
-
-	ret = dp_qos_get_q_global_parms(sch->inst, sch->port,
-					sch->alloc_flag, 0, &p);
-	if (!ret) {
-		/* Apply global DPM queue parameters here. The parameters are
-		 * currently set over dts.
-		 */
-		netdev_dbg(sch->dev, "codel for qid: %u enabled\n", q->q_id);
-		q->codel = p.codel_en;
-	}
-}
-
 int qos_tc_queue_wred_defaults_set(struct qos_tc_qdisc *sch, int idx)
 {
 	struct dp_queue_conf q_cfg = {
@@ -1954,77 +1953,6 @@ int qos_tc_sched_status(struct qos_tc_port *p, struct qos_tc_qdisc *root)
 	return 0;
 }
 
-static int qos_tc_set_qmap(int qid, struct qos_tc_qdisc *sch, int subif,
-		int tc_cookie, bool en, const struct qos_tc_params *tc_params)
-{
-	struct dp_queue_map_set qmap_set = {0};
-	int ret;
-
-	if (WARN(qid < 0, "change invalid queue qid (%i) for subif: %i, en: %i",
-		 qid, subif, en))
-		return -EINVAL;
-
-	qmap_set.inst = 0;
-	qmap_set.mask.flowid = 1;
-
-	/* If tc cookie is not set, assume class is same as subif */
-	if (tc_cookie == QOS_TC_COOKIE_EMPTY)
-		qmap_set.map.class = subif;
-	else
-		qmap_set.map.class = tc_cookie;
-
-	if (tc_params && (tc_params->flags & QOS_TC_Q_MAP)) {
-		qmap_set.q_id = en ? qid : tc_params->def_q;
-		qmap_set.map.dp_port = tc_params->qmap_port;
-		qmap_set.map.mpe1 = 1;
-		qmap_set.map.mpe2 = 0;
-		qmap_set.mask.enc = 1;
-		qmap_set.mask.dec = 1;
-		qmap_set.mask.subif = 1;
-	} else {
-		qmap_set.q_id = en ? qid : 0;
-		qmap_set.map.dp_port = sch->port;
-		qmap_set.map.subif = subif;
-
-		if (!qos_tc_is_cpu_port(sch->port)) {
-			/* Do not set the flags below for the CPU port otherwise the
-			 * lookup table entry for the re-insert queue is overwritten.
-			 * The re-inserted packets carry mpe1 = 0 and
-			 * mpe = 0 in the DMA descriptor and they have to be kept.
-			 * Not used on URX, only relevant on PRX. URX uses dedicated
-			 * logical port.
-			 */
-			qmap_set.mask.mpe1 = 1;
-			qmap_set.mask.mpe2 = 1;
-		}
-
-#if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
-		/*
-		 * URX specific setting: egflag should be set only for egress ports,
-		 * and skipped for non-egress ports like CPU and VUNI.
-		 */
-		if (!qos_tc_is_cpu_port(sch->port) && !qos_tc_is_vuni_dev(sch->dev)) {
-			qmap_set.map.egflag = 1;
-			qmap_set.mask.egflag = 0;
-		}
-#endif
-		if (qos_tc_is_netdev_reinsert_port(sch->dev)) {
-			/* subif to be ignored for reinsertion port */
-			qmap_set.mask.subif = 1;
-			/* enc is relevant for PRX only */
-			qmap_set.map.enc = 1;
-		}
-	}
-
-	ret = dp_queue_map_set(&qmap_set, 0);
-	if (ret == DP_FAILURE) {
-		pr_err("%s: queue map set failed\n", __func__);
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 static int qos_tc_config_cpu_port(struct qos_tc_q_data *qid,
 				  struct qos_tc_qdisc *sch,
 				  int subif, char tc_cookie, bool en,
@@ -2042,73 +1970,6 @@ static int qos_tc_config_cpu_port(struct qos_tc_q_data *qid,
 		atomic_inc(&qid->ref_cnt);
 
 	return ret;
-}
-
-static int qos_tc_set_qmap_extraction(struct qos_tc_q_data *qid, int port,
-				      bool en)
-{
-	int ret;
-	struct dp_queue_map_set qmap_set = {
-		.inst = 0,
-		.q_id = en ? qid->qid : 0,
-		.map = {
-			.dp_port = port,
-			.mpe1 = 0,
-			.mpe2 = 1,
-		},
-		.mask = {
-			.subif = 1,
-			.class = 1,
-			.flowid = 1,
-		}
-	};
-
-	ret = dp_queue_map_set(&qmap_set, 0);
-	if (ret == DP_FAILURE) {
-		pr_err("%s: queue map set failed\n", __func__);
-		return -EINVAL;
-	}
-
-	if (!en)
-		atomic_dec(&qid->ref_cnt);
-	else
-		atomic_inc(&qid->ref_cnt);
-
-	return 0;
-}
-
-static int qos_tc_set_qmap_cpu_from_indev(struct qos_tc_q_data *qid, int port,
-					  int tc_cookie,
-					  bool en)
-{
-	int ret;
-	struct dp_queue_map_set qmap_set = {
-		.inst = 0,
-		.q_id = en ? qid->qid : 0,
-		.map = {
-			.dp_port = port,
-			.mpe1 = 0,
-			.class = tc_cookie,
-		},
-		.mask = {
-			.mpe2 = 1,
-			.subif = 1,
-			.flowid = 1,
-		}
-	};
-
-	ret = dp_queue_map_set(&qmap_set, 0);
-	if (ret == DP_FAILURE) {
-		pr_err("%s: queue map set failed\n", __func__);
-		return -EINVAL;
-	}
-
-	if (!en)
-		atomic_dec(&qid->ref_cnt);
-	else
-		atomic_inc(&qid->ref_cnt);
-
-	return 0;
 }
 
 static int qos_tc_force_tc(struct net_device *dev, int pqn, bool en)
@@ -2148,8 +2009,11 @@ static int qos_tc_map_qid(struct qos_tc_q_data *qid,
 	if (ret != 0)
 		return -EFAULT;
 
-	qos_tc_check_and_notify(sch, en ? QOS_EVENT_Q_ADD : QOS_EVENT_Q_DELETE,
-		QOS_TC_UNUSED, qid->p_w, (sch->offset + tc_cookie), NULL);
+#if IS_ENABLED(CONFIG_QOS_NOTIFY)
+	qos_tc_check_and_notify(sch, en ? QOS_EVENT_MAP_ADD : QOS_EVENT_MAP_DELETE,
+				QOS_TC_UNUSED, qid->p_w,
+				QOS_TC_NOTIFY_PRIO(qid, sch, tc_cookie), NULL);
+#endif
 
 	if (!en)
 		atomic_dec(&qid->ref_cnt);
@@ -2200,7 +2064,7 @@ static int qos_tc_replicate_mappings_for_subifs(struct net_device *dev,
 
 	/* Perform (subif, tc) -> (queue) mappings for each sub interface */
 	for_each_netdev(&init_net, netdev) {
-		if (dp_get_netif_subifid(netdev, NULL, NULL, NULL, subif, 0))
+		if (qos_tc_get_netif_subifid(netdev, subif))
 			continue;
 		if (subif->port_id != sch->port)
 			continue;
@@ -2228,7 +2092,7 @@ cleanup:
 	if (ret) {
 		en = !en;
 		for_each_netdev(&init_net, netdev) {
-			if (dp_get_netif_subifid(netdev, NULL, NULL, NULL, subif, 0))
+			if (qos_tc_get_netif_subifid(netdev, subif))
 				continue;
 			if (subif->port_id != sch->port)
 				continue;
@@ -2460,7 +2324,7 @@ static int qos_tc_update_qmap_cpu_from_indev(struct qos_tc_qdisc *sch,
 		return -ENOMEM;
 	}
 
-	ret = dp_get_netif_subifid(q_tc->indev, NULL, NULL, 0, subif, 0);
+	ret = qos_tc_get_netif_subifid(q_tc->indev, subif);
 	if (ret < 0) {
 		if (!en) {
 			/* If port is not there, there are no mappings.
@@ -2610,6 +2474,7 @@ int qos_tc_update_qmap(struct net_device *dev,
 
 	return qos_tc_update_qmap_default(sch, q_tc, en, qid, tc_params);
 }
+EXPORT_SYMBOL(qos_tc_update_qmap);
 
 int qos_tc_ports_cleanup(void)
 {
@@ -2963,6 +2828,7 @@ bool qos_tc_is_cpu_port(int port)
 {
 	return port == QOS_TC_CPU_PORT;
 }
+EXPORT_SYMBOL(qos_tc_is_cpu_port);
 
 bool qos_tc_is_netdev_cpu_port(struct net_device *dev)
 {
@@ -2974,6 +2840,7 @@ bool qos_tc_is_netdev_cpu_port(struct net_device *dev)
 
 	return qos_tc_is_cpu_port(port->root_qdisc.port);
 }
+EXPORT_SYMBOL(qos_tc_is_netdev_cpu_port);
 
 static void print_qos_tc_qdisc(struct seq_file *file,
 			       struct qos_tc_qdisc p)

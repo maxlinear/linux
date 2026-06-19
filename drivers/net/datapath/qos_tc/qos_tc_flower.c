@@ -16,15 +16,8 @@
 #include <net/flow_dissector.h>
 #include <linux/version.h>
 #include "qos_tc_flower.h"
-#include "qos_tc_ext_vlan.h"
-#include "qos_tc_vlan_filter.h"
-#include "qos_tc_qmap.h"
-#include "qos_tc_mirred.h"
-#include "qos_tc_police.h"
-#include "qos_tc_trap.h"
-#include "qos_tc_ip_drop.h"
-#include "qos_tc_skbedit.h"
-#include "qos_tc_extract_cfm.h"
+#include "qos_tc_qos.h"
+#include "qos_tc_switch_stubs.h"
 #include "qos_tc_trace.h"
 
 struct qos_tc_storage_node {
@@ -93,6 +86,7 @@ int qos_tc_flower_storage_add(struct net_device *dev,
 
 	return 0;
 }
+EXPORT_SYMBOL(qos_tc_flower_storage_add);
 
 static int flower_remove(struct net_device *dev,
 			 unsigned long cookie,
@@ -162,6 +156,7 @@ bool has_action_id(struct flow_cls_offload *f, enum flow_action_id id)
 
 	return false;
 }
+EXPORT_SYMBOL(has_action_id);
 
 static bool is_type_mirred(struct net_device *dev,
 			   struct flow_cls_offload *f)
@@ -572,6 +567,7 @@ struct net_device *qos_tc_get_indev(struct net_device *dev,
 
 	return __dev_get_by_index(dev_net(dev), match.key->ingress_ifindex);
 }
+EXPORT_SYMBOL(qos_tc_get_indev);
 
 void qos_tc_storage_debugfs(struct seq_file *file, void *ctx)
 {

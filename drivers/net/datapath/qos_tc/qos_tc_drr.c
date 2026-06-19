@@ -365,8 +365,8 @@ int qos_tc_drr_offload(struct net_device *dev,
 		netdev_dbg(dev, "stats pid: %#x class/handle: %#x\n",
 			   opt->parent, opt->handle);
 		err = qos_tc_collect_stats(dev, opt->handle,
-					   opt->stats.bstats,
-					   opt->stats.qstats);
+					(qos_tc_bstats_t *)opt->stats.bstats,
+					opt->stats.qstats);
 		if (err < 0)
 			netdev_dbg(dev, "tc-drr stats failed: %d\n", err);
 		return err;

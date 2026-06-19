@@ -397,6 +397,7 @@ int handle_keyload_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	icc_msg.param_attr = ICC_PARAM_PTR | (ICC_PARAM_PTR_NON_IOCU << 1);
 	icc_msg.param[0] = dma_active_session;
 	icc_msg.param[1] = dma_loadkey;
+	icc_msg.param[2] = LOADKEY_VERSION_1;
 
 	print_keyload_struct(loadkey);
 

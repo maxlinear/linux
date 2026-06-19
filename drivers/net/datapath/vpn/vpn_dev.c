@@ -1310,8 +1310,8 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 	struct dc_desc0 *desc_0;
 	int tunnel_id;
 	int ret;
-	struct xfrm_state *xs = NULL;
 #if IS_ENABLED(CONFIG_XFRM_INTERFACE)
+	struct xfrm_state *xs = NULL;
 	struct net_device *xfrm_dev = NULL;
 #endif
 
@@ -1388,7 +1388,6 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 		if (xs && xs->if_id) {
 			rcu_read_lock();
 			xfrm_dev = xfrm_if_get_dev_by_ifid(xs_net(xs), xs->if_id);
-			rcu_read_unlock();
 			if (xfrm_dev) {
 				skb->dev = xfrm_dev;
 				dev_sw_netstats_rx_add(xfrm_dev, skb->len);
@@ -1400,6 +1399,7 @@ static int vpn_dp_rx_fn(struct net_device *rxif, struct net_device *txif,
 					"xfrm_if_get_dev_by_ifid(%u) returned NULL\n",
 					xs->if_id);
 			}
+			rcu_read_unlock();
 		}
 #endif
 		skb->ip_summed = CHECKSUM_UNNECESSARY;

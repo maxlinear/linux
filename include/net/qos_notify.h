@@ -12,6 +12,8 @@ enum qos_notify_event_type {
 	QOS_EVENT_Q_DELETE,
 	QOS_EVENT_SCH_ADD,
 	QOS_EVENT_SCH_DELETE,
+	QOS_EVENT_MAP_ADD,
+	QOS_EVENT_MAP_DELETE,
 };
 
 struct notifier_block;
@@ -27,4 +29,4 @@ struct qos_notifier_data {
 
 int qos_event_register(struct notifier_block *nb);
 int qos_event_deregister(struct notifier_block *nb);
-void qos_qmap_notify(void *data, int event);
+void qos_qmap_notify(void *data, enum qos_notify_event_type event);

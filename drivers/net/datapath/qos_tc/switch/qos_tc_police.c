@@ -15,7 +15,8 @@
 #include <linux/list.h>
 #include <net/datapath_api.h>
 #include <net/datapath_api_qos.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_qos.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_vlan_prepare.h"
 #include "qos_tc_police.h"
 

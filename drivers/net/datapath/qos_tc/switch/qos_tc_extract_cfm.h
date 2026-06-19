@@ -11,7 +11,6 @@
 #include <linux/netdevice.h>
 #include <linux/types.h>
 #include <net/pkt_cls.h>
-#include "../dp_oam/dp_oam.h"
 
 struct cfm_rule;
 

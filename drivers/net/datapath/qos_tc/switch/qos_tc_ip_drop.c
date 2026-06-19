@@ -12,11 +12,11 @@
 #include <net/datapath_api.h>
 #include <net/flow_dissector.h>
 #include <net/pkt_cls.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_parser.h"
 #include "qos_tc_pce.h"
 #include "qos_tc_ip_drop.h"
-#include "qos_tc_qos.h"
+#include "../qos_tc_qos.h"
 
 static void qos_tc_ip_drop_set_default(struct net_device *dev,
 				       GSW_PCE_rule_t *pce_rule)

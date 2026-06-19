@@ -9,7 +9,7 @@
 #include <linux/list.h>
 #include <net/switch_api/gsw_dev.h>
 #include <net/datapath_api.h>
-#include "qos_tc_flower.h"
+#include "../qos_tc_flower.h"
 #include "qos_tc_pce.h"
 
 /** Mark PCE rule index as reserved */
