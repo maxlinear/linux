@@ -763,23 +763,6 @@ do_acct:
 }
 EXPORT_SYMBOL(ppa_nf_ct_refresh_acct);
 
-static const struct nf_ct_hook __rcu *orig_nfct_hook;
-static struct nf_ct_hook ppa_nfct_hook={0};
-
-/* note: already called with rcu_read_lock from nf_conntrack_destroy() */
-static void ppa_destroy_conntrack(struct nf_conntrack *nfct)
-{
-	struct nf_conn *ct = (struct nf_conn *)nfct;
-	const struct nf_ct_hook *ct_hook;
-
-	if (ppa_hook_session_del_fn != NULL && !in_irq() && !irqs_disabled()) {
-		ppa_hook_session_del_fn(ct, PPA_F_SESSION_ORG_DIR | PPA_F_SESSION_REPLY_DIR);
-	}
-
-	ct_hook = rcu_dereference(orig_nfct_hook);
-	if (ct_hook)
-		ct_hook->destroy(nfct);
-}
 
 #ifdef CONFIG_RFS_ACCEL
 static struct rps_dev_flow * ppa_set_rps_cpu(struct net_device *dev, struct sk_buff *skb,
@@ -922,28 +905,6 @@ done:
 EXPORT_SYMBOL(ppa_get_rps_cpu);
 #endif /* CONFIG_RFS_ACCEL */
 
-static void ppa_register_delhook(void)
-{
-	const struct nf_ct_hook *ct_hook;
-
-	rcu_read_lock();
-	ct_hook = rcu_dereference(nf_ct_hook);
-	if (ct_hook) {
-		memcpy(&ppa_nfct_hook, ct_hook, sizeof(struct nf_ct_hook));
-		ppa_nfct_hook.destroy = ppa_destroy_conntrack;
-
-		RCU_INIT_POINTER(orig_nfct_hook, ct_hook);
-		RCU_INIT_POINTER(nf_ct_hook, &ppa_nfct_hook);
-	}
-	rcu_read_unlock();
-}
-
-static void ppa_unregister_delhook(void)
-{
-	RCU_INIT_POINTER(nf_ct_hook, orig_nfct_hook);
-	RCU_INIT_POINTER(orig_nfct_hook, NULL);
-}
-
 int ppa_api_register_hooks(void)
 {
 	int ret = 0;
@@ -963,8 +924,6 @@ int ppa_api_register_hooks(void)
 #endif /* CONFIG_MXL_SKB_EXT */
 #endif /*CONFIG_PPA_EXT_PKT_LEARNING*/
 
-	/*delete conntrack hook*/
-	ppa_register_delhook();
 	return ret;
 }
 EXPORT_SYMBOL(ppa_api_register_hooks);
@@ -984,9 +943,6 @@ void ppa_api_unregister_hooks(void)
 	/*qos ebt hooks*/
 	nf_unregister_net_hooks(&init_net, qos_ebt_hook_ops, ARRAY_SIZE(qos_ebt_hook_ops));
 #endif /* CONFIG_INTEL_IPQOS*/
-
-	/*delete conntrack hook*/
-	ppa_unregister_delhook();
 }
 EXPORT_SYMBOL(ppa_api_unregister_hooks);
 
