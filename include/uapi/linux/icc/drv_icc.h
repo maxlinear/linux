@@ -182,6 +182,7 @@ int icc_register_callback(icc_devices type,
 void (*callback) (icc_wake_type));
 int icc_unregister_callback(icc_devices type);
 int icc_read(icc_devices type, icc_msg_t *rw);
+int icc_fifo_count(icc_devices icdev);
 int icc_write(icc_devices type, icc_msg_t *rw);
 icc_msg_t *icc_sync_write(icc_devices type, icc_msg_t *rw);
 int icc_regmap_sync_read(phys_addr_t paddr, unsigned int *val);

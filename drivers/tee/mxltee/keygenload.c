@@ -402,10 +402,15 @@ int handle_keyload_command(struct mxltee_driver *drv, struct mxltee_session *ses
 	print_keyload_struct(loadkey);
 
 	ret = icc_write_and_read(&icc_msg);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("keyload: icc_write_and_read failed, ret:%d\n",ret);
 		goto dma_unmap;
+	}
 
 	ret = validate_icc_reply(&icc_msg, session->session_id);
+	if (ret < 0) {
+		pr_err("keyload: validate_icc_reply failed, ret:%d\n",ret);
+	}
 
 dma_unmap:
 	if (dma_loadkey) {

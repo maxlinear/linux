@@ -121,15 +121,17 @@ static int mxltee_open_session(struct tee_context *ctx,
 	}
 
 	if (sess_arg->clnt_login == TEE_IOCTL_LOGIN_PUBLIC) {
-		pr_debug("public login type not supported\n");
+		pr_err("public login type not supported\n");
 		ret = -EINVAL;
 		goto error;
 	}
 
 	ret = tee_session_calc_client_uuid(&clnt_uuid, sess_arg->clnt_login,
 			sess_arg->clnt_uuid);
-	if (ret)
+	if (ret) {
+		pr_err("tee_session_calc_client_uuid failed ret:%d\n", ret);
 		goto error;
+	}
 
 	export_uuid(&session->clnt_uuid[0], &clnt_uuid);
 	export_uuid(&session->ta_uuid[0], (const uuid_t *)&sess_arg->uuid[0]);
@@ -137,7 +139,7 @@ static int mxltee_open_session(struct tee_context *ctx,
 	drv_data = dev_get_drvdata(&ctx->teedev->dev);
 	if (IS_ERR_OR_NULL(drv_data)) {
 		ret = PTR_ERR(drv_data);
-		pr_debug("private data structure cannot be null\n");
+		pr_err("private data structure cannot be null\n");
 		goto error;
 	}
 
@@ -145,6 +147,7 @@ static int mxltee_open_session(struct tee_context *ctx,
 	ret = scs_create_session(drv_data, session, tee_param);
 	mutex_unlock(&drv_data->invoke_mutex);
 	if (ret < 0) {
+		pr_err("scs_create_session failed ret:%d\n", ret);
 		goto error;
 	} else {
 		sess_arg->session = session->session_id;
@@ -183,15 +186,17 @@ static int mxltee_close_session(struct tee_context *ctx, uint32_t session_id)
 	drv_data = dev_get_drvdata(&ctx->teedev->dev);
 	if (IS_ERR_OR_NULL(drv_data)) {
 		ret = PTR_ERR(drv_data);
-		pr_debug("private data structure cannot be null\n");
+		pr_err("private data structure cannot be null\n");
 		return -EINVAL;
 	}
 
 	mutex_lock(&drv_data->invoke_mutex);
 	ret = scs_close_session(drv_data, session);
 	mutex_unlock(&drv_data->invoke_mutex);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("scs_close_session failed ret:%d\n", ret);
 		return ret;
+	}
 
 	mutex_lock(&context->sess_mutex);
 	list_del(&session->list_node);

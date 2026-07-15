@@ -430,6 +430,15 @@ int icc_read(icc_devices icdev, icc_msg_t *rw)
 }
 EXPORT_SYMBOL(icc_read);
 
+int icc_fifo_count(icc_devices icdev)
+{
+	uint32_t num = (uint32_t)icdev;
+	if (num >= MAX_CLIENT)
+		return -EFAULT;
+	return (MAX_DEPTH - FIFO_AVAILABLE(num));
+}
+EXPORT_SYMBOL(icc_fifo_count);
+
 
 /*ioctl functions supported by icc*/
 long icc_ioctl(struct file *file_p, uint32_t nCmd, unsigned long arg)

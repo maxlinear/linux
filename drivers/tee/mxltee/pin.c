@@ -25,6 +25,7 @@
 #define SO_PIN_DEFAULT				"87654321"
 
 bool mxl_tee_pin_sst_obj_exists = false;
+sshandle_t pin_ss_handle = 0;
 
 int (*sse_secure_storage_create_open_fn)(sst_param_t *sst_param,
 					sst_config_t *secure_store_config);
@@ -54,6 +55,10 @@ typedef struct {
 	unsigned char so_pin_hash[TEE_MAX_HASH_SIZE];
 	unsigned char user_pin_hash[TEE_MAX_HASH_SIZE];
 } token_persistent_info_t;
+
+static s32 mxl_tee_securestore_close(struct mxltee_driver *drv,
+                                        sst_config_t *secure_store_config,
+                                        sst_param_t *sst_param);
 
 static int compute_sha256_digest(unsigned char *data_to_hash, unsigned char *hash_digest)
 {
@@ -237,7 +242,10 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 	populate_sst_param(sst_param);
 
 	populate_secure_store_config(secure_store_config);
-
+	if (pin_ss_handle) {
+		sst_param->ss_handle = pin_ss_handle;
+		mxl_tee_securestore_close(drv, secure_store_config, sst_param);
+	}
 	if (sse_secure_storage_create_open_fn) {
 		ret = sse_secure_storage_create_open_fn(sst_param, secure_store_config);
 	} else {
@@ -255,14 +263,16 @@ static s32 mxl_tee_securestore_create_open(struct mxltee_driver *drv,
 			} else {
 				pr_debug("secure storage to open success ret:%d\n", ret);
 				mxl_tee_pin_sst_obj_exists = true;
+				pin_ss_handle = sst_param->ss_handle;
 			}
 		} else {
 			pr_err("secure storage Failed to create the Object(%s):ret:%d\n", MXL_TEE_PIN_SST_OBJNAME, ret);
 			goto finish;
 		}
 	} else {
-		pr_debug("secure storage to create success ret:%d\n", ret);
+		pr_debug("secure storage to open success ret:%d\n", ret);
 		mxl_tee_pin_sst_obj_exists = true;
+		pin_ss_handle = sst_param->ss_handle;
 	}
 
 finish:
@@ -278,6 +288,7 @@ static s32 mxl_tee_securestore_close(struct mxltee_driver *drv,
 	if (sse_secure_storage_close_delete_fn) {
 		ret = sse_secure_storage_close_delete_fn(sst_param, secure_store_config);
 		mxl_tee_pin_sst_obj_exists = false;
+		pin_ss_handle = 0;
 	}
 	return ret;
 

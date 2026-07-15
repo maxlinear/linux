@@ -31,6 +31,8 @@
 #define SCSA_ICC_MSG_NOT_READ	(0)
 DECLARE_WAIT_QUEUE_HEAD(icc_msg_arrived);
 static atomic_t icc_msg_read = ATOMIC_INIT(SCSA_ICC_MSG_READ);
+void (*sse_secure_storage_lock_unlock_fn) (int operation);
+EXPORT_SYMBOL(sse_secure_storage_lock_unlock_fn);
 
 /*
  * Function pointer for invoking TEE functions
@@ -89,16 +91,41 @@ void fill_secure_storage_params(struct secure_storage_params_tep *params)
 	strncpy(params->pname, current->comm, TASK_COMM_LEN - 1);
 }
 
+int icc_flush(void)
+{
+	int icc_msg_flush_count, ret;
+	icc_msg_t icc_msg;
+	icc_msg_flush_count = icc_fifo_count(SECURE_SIGN_SERVICE);
+	if (!icc_msg_flush_count)
+		return 0;
+	while (icc_msg_flush_count--) {
+		ret = wait_event_interruptible_timeout(icc_msg_arrived, !atomic_read(&icc_msg_read), msecs_to_jiffies(2000));
+		if (ret == 0) {
+			pr_err("secure timeout ret:%d\n", ret);
+			return -ECONNREFUSED;
+		}
+		memset(&icc_msg, 0x0, sizeof(icc_msg_t));
+		ret = icc_read(SECURE_SIGN_SERVICE, &icc_msg);
+		if (ret < 0) {
+			pr_err("failed to read icc message for open session ret:%d\n", ret);
+			return -ETIMEDOUT;
+		}
+		atomic_set(&icc_msg_read, SCSA_ICC_MSG_READ);
+	}
+	return 0;
+}
+
 int icc_write_and_read(icc_msg_t *icc_msg)
 {
 	int ret;
 
 	pr_debug("ICC command request\n");
 	print_icc_msg((const icc_msg_t *)icc_msg);
+	icc_flush();
 
 	ret = icc_write(SECURE_SIGN_SERVICE, icc_msg);
 	if (ret < 0) {
-		pr_debug("failed to write icc or open session ret:%d\n", ret);
+		pr_err("failed to write icc or open session ret:%d\n", ret);
 		return -ECONNREFUSED;
 	}
 
@@ -112,7 +139,7 @@ int icc_write_and_read(icc_msg_t *icc_msg)
 
 	ret = icc_read(SECURE_SIGN_SERVICE, icc_msg);
 	if (ret < 0) {
-		pr_debug("failed to read icc message for open session ret:%d\n", ret);
+		pr_err("failed to read icc message for open session ret:%d\n", ret);
 		return -ETIMEDOUT;
 	}
 	atomic_set(&icc_msg_read, SCSA_ICC_MSG_READ);
@@ -127,15 +154,18 @@ int validate_icc_reply(icc_msg_t *icc_msg, uint32_t session_id)
 	int ret = TEEC_SUCCESS;
 
 	if (icc_msg->msg_id != ICC_CMD_ID_INVOKE_CMD_REPLY) {
+		pr_err("Wrong ICC reply received:%d, retry\n", icc_msg->msg_id);
 		ret = -EINVAL;
 	} else {
 		ret = tee_error_to_linux(icc_msg->param_attr);
-		if (ret < 0)
+		if (ret < 0) {
+			pr_err("validate_icc_reply failed, param_attr:%d,ret:%d",icc_msg->param_attr, ret);
 			return ret;
+		}
 	}
-
 	if (icc_msg->param[0] != session_id)
 		ret = -EINVAL;
+
 	return ret;
 }
 
@@ -147,7 +177,7 @@ struct active_session_param *get_active_scsa_session(struct mxltee_driver *drv,
 
 	active_session = (void *)gen_pool_alloc(drv->iccpool, sizeof(*active_session));
 	if (!active_session) {
-		pr_debug("memory allocation failed for key generation\n");
+		pr_err("memory allocation failed for key generation\n");
 		return ERR_PTR(-ENOMEM);
 	}
 	memset(active_session, 0x0, sizeof(*active_session));
@@ -160,7 +190,7 @@ struct active_session_param *get_active_scsa_session(struct mxltee_driver *drv,
 	*dma_active_session = dma_map_single_attrs(drv->iccdev, active_session, sizeof(*active_session),
 			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
 	if (dma_mapping_error(drv->iccdev, *dma_active_session)) {
-		pr_debug("DMA mapping failed for key generation\n");
+		pr_err("DMA mapping failed for key generation\n");
 		ret = -ENOMEM;
 		goto gen_free;
 	}
@@ -188,7 +218,7 @@ int scs_create_session(struct mxltee_driver *drv, struct mxltee_session *session
 
 	sess_uuid = (void *)gen_pool_alloc(drv->iccpool, sizeof(struct open_session_param));
 	if (!sess_uuid) {
-		pr_debug("memory allocation failed for open session\n");
+		pr_err("memory allocation failed for open session\n");
 		return -ENOMEM;
 	}
 	memcpy(&sess_uuid->client_uuid[0], &session->clnt_uuid[0], TEE_IOCTL_UUID_LEN);
@@ -202,7 +232,7 @@ int scs_create_session(struct mxltee_driver *drv, struct mxltee_session *session
 	dma_sess_uuid = dma_map_single_attrs(drv->iccdev, sess_uuid, sizeof(struct open_session_param),
 			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
 	if (dma_mapping_error(drv->iccdev, dma_sess_uuid)) {
-		pr_debug("DMA mapping failed for open session\n");
+		pr_err("DMA mapping failed for open session\n");
 		ret = -ENOMEM;
 		goto gen_free;
 	}
@@ -211,9 +241,12 @@ int scs_create_session(struct mxltee_driver *drv, struct mxltee_session *session
 	icc_msg.param[0] = (unsigned long)dma_sess_uuid;
 
 	ret = icc_write_and_read(&icc_msg);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("icc_write_and_read failed ret:%d\n",ret);
 		goto gen_free;
+	}
 	if (icc_msg.msg_id != ICC_CMD_ID_OPEN_SESSION_REPLY) {
+		pr_err("Wrong ICC reply received:%d\n", icc_msg.msg_id);
 		ret = -EINVAL;
 	} else {
 		ret = (int)icc_msg.param_attr;
@@ -243,7 +276,7 @@ int scs_close_session(struct mxltee_driver *drv, struct mxltee_session *session)
 
 	close_session = (void *)gen_pool_alloc(drv->iccpool, sizeof(struct close_session_param));
 	if (!close_session) {
-		pr_debug("memory allocation failed for close session\n");
+		pr_err("memory allocation failed for close session\n");
 		return -ENOMEM;
 	}
 	memcpy(&close_session->client_uuid[0], &session->clnt_uuid[0], TEE_IOCTL_UUID_LEN);
@@ -258,7 +291,7 @@ int scs_close_session(struct mxltee_driver *drv, struct mxltee_session *session)
 	dma_close_session = dma_map_single_attrs(drv->iccdev, close_session, sizeof(struct close_session_param),
 			DMA_BIDIRECTIONAL, DMA_ATTR_NON_CONSISTENT);
 	if (dma_mapping_error(drv->iccdev, dma_close_session)) {
-		pr_debug("DMA mapping failed for open session\n");
+		pr_err("DMA mapping failed for open session\n");
 		ret = -ENOMEM;
 		goto gen_free;
 	}
@@ -267,9 +300,12 @@ int scs_close_session(struct mxltee_driver *drv, struct mxltee_session *session)
 	icc_msg.param[0] = (unsigned long)dma_close_session;
 
 	ret = icc_write_and_read(&icc_msg);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("icc_write_and_read failed ret:%d\n",ret);
 		goto gen_free;
+	}
 	if (icc_msg.msg_id != ICC_CMD_ID_CLOSE_SESSION_REPLY) {
+		pr_err("Wrong ICC reply received:%d\n", icc_msg.msg_id);
 		ret = -ECOMM;
 	} else {
 		ret = (int)icc_msg.param_attr;
@@ -288,22 +324,33 @@ int scs_invoke(struct mxltee_driver *drv, struct mxltee_context *ctx,
 {
 	struct mxltee_session *session = NULL;
 	int ret = 0;
+	int invoke_ops;
 
 	if (!sess_arg || (!param && sess_arg->num_params))
 		return -EINVAL;
+
+	invoke_ops = sess_arg->func;
 
 	session = get_session_from_session_id(ctx, sess_arg->session);
 	if (!session) {
 		pr_debug("session_id:%d is invalid\n", sess_arg->session);
 		return -EINVAL;
 	}
-	if (invoke_tee_func[sess_arg->func]) {
-		pr_debug("TEE function:0x%x invoked\n", sess_arg->func);
-		ret = invoke_tee_func[sess_arg->func](drv, session, sess_arg->num_params,
+	if (sse_secure_storage_lock_unlock_fn) {
+		if ((invoke_ops == TA_SECURE_CRYPTO_LOAD_KEY) || (invoke_ops == TA_SECURE_CRYPTO_GEN_KEYPAIR))
+			sse_secure_storage_lock_unlock_fn(1);
+	}
+	if (invoke_tee_func[invoke_ops]) {
+		pr_debug("TEE function:0x%x invoked\n", invoke_ops);
+		ret = invoke_tee_func[invoke_ops](drv, session, sess_arg->num_params,
 				param);
 	} else {
-		pr_err("TEE function:0x%x is not supported\n", sess_arg->func);
+		pr_err("TEE function:0x%x is not supported\n", invoke_ops);
 		ret = -ENOTSUPP;
+	}
+	if (sse_secure_storage_lock_unlock_fn) {
+		if ((invoke_ops == TA_SECURE_CRYPTO_LOAD_KEY) || (invoke_ops == TA_SECURE_CRYPTO_GEN_KEYPAIR))
+			sse_secure_storage_lock_unlock_fn(0);
 	}
 	return ret;
 }
