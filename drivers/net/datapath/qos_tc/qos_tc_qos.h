@@ -138,6 +138,7 @@ struct qos_tc_qdisc {
 	};
 
 	int alloc_flag;
+	unsigned int data_flag;
 	/* TODO: abstrac the hw specific part */
 	struct qos_tc_qdisc_ops *ops;
 };

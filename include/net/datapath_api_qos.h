@@ -1858,6 +1858,22 @@ int dp_hostif_update(int inst, int dpid, int vap, struct dp_hif_datapath *new_dp
 int dp_qos_codel_cfg_set(struct dp_qos_codel_cfg *cfg, int flag);
 int dp_qos_codel_cfg_get(struct dp_qos_codel_cfg *cfg, int flag);
 
+/* Forward declarations for PP types */
+struct pp_cpu_info;
+struct pp_whitelist_field;
+
+/* CPU ingress QoS group functions */
+int dp_gpid_group_create(int inst, const char *name,
+			 const struct pp_cpu_info *info, u32 num_cpus);
+int dp_gpid_group_delete(int inst, u32 id);
+int dp_gpid_group_update(int inst, u32 id, const struct pp_cpu_info *info, u32 num_cpus);
+int dp_gpid_group_add_port(int inst, u32 id, u16 gpid, u8 prio);
+int dp_gpid_group_del_port(int inst, u32 id, u16 gpid);
+int dp_gpid_group_rule_add(int inst, u32 id, u8 prio,
+			   const struct pp_whitelist_field *fields, u32 cnt);
+int dp_gpid_group_rule_del(int inst, u32 id, u8 prio,
+			   const struct pp_whitelist_field *fields, u32 cnt);
+
 /*!
  * @struct dp_qos_q_parms
  *

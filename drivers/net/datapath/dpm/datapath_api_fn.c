@@ -43,6 +43,33 @@ EXPORT_SYMBOL(dp_queue_conf_get_fn);
 int (*dp_queue_conf_set_fn)(struct dp_queue_conf *cfg, int flag) = NULL;
 EXPORT_SYMBOL(dp_queue_conf_set_fn);
 
+int (*dp_gpid_group_create_fn)(int inst, const char *name,
+			       const struct pp_cpu_info *info, u32 num_cpus) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_create_fn);
+
+int (*dp_gpid_group_delete_fn)(int inst, u32 id) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_delete_fn);
+
+int (*dp_gpid_group_update_fn)(int inst, u32 id,
+			       const struct pp_cpu_info *info, u32 num_cpus) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_update_fn);
+
+int (*dp_gpid_group_add_port_fn)(int inst, u32 id, u16 gpid, u8 prio) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_add_port_fn);
+
+int (*dp_gpid_group_del_port_fn)(int inst, u32 id, u16 gpid) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_del_port_fn);
+
+int (*dp_gpid_group_rule_add_fn)(int inst, u32 id, u8 prio,
+				 const struct pp_whitelist_field *fields,
+				 u32 cnt) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_rule_add_fn);
+
+int (*dp_gpid_group_rule_del_fn)(int inst, u32 id, u8 prio,
+				 const struct pp_whitelist_field *fields,
+				 u32 cnt) = NULL;
+EXPORT_SYMBOL(dp_gpid_group_rule_del_fn);
+
 int (*dp_ingress_ctp_tc_map_set_fn)(struct dp_tc_cfg *tc, int flag) = NULL;
 EXPORT_SYMBOL(dp_ingress_ctp_tc_map_set_fn);
 
@@ -761,6 +788,66 @@ int dp_queue_conf_set(struct dp_queue_conf *cfg, int flag)
 	return DP_FAILURE;
 }
 EXPORT_SYMBOL(dp_queue_conf_set);
+
+int dp_gpid_group_create(int inst, const char *name,
+			 const struct pp_cpu_info *info, u32 num_cpus)
+{
+	if (dp_gpid_group_create_fn)
+		return dp_gpid_group_create_fn(inst, name, info, num_cpus);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_create);
+
+int dp_gpid_group_delete(int inst, u32 id)
+{
+	if (dp_gpid_group_delete_fn)
+		return dp_gpid_group_delete_fn(inst, id);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_delete);
+
+int dp_gpid_group_update(int inst, u32 id, const struct pp_cpu_info *info,
+			 u32 num_cpus)
+{
+	if (dp_gpid_group_update_fn)
+		return dp_gpid_group_update_fn(inst, id, info, num_cpus);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_update);
+
+int dp_gpid_group_add_port(int inst, u32 id, u16 gpid, u8 prio)
+{
+	if (dp_gpid_group_add_port_fn)
+		return dp_gpid_group_add_port_fn(inst, id, gpid, prio);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_add_port);
+
+int dp_gpid_group_del_port(int inst, u32 id, u16 gpid)
+{
+	if (dp_gpid_group_del_port_fn)
+		return dp_gpid_group_del_port_fn(inst, id, gpid);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_del_port);
+
+int dp_gpid_group_rule_add(int inst, u32 id, u8 prio,
+			   const struct pp_whitelist_field *fields, u32 cnt)
+{
+	if (dp_gpid_group_rule_add_fn)
+		return dp_gpid_group_rule_add_fn(inst, id, prio, fields, cnt);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_rule_add);
+
+int dp_gpid_group_rule_del(int inst, u32 id, u8 prio,
+			   const struct pp_whitelist_field *fields, u32 cnt)
+{
+	if (dp_gpid_group_rule_del_fn)
+		return dp_gpid_group_rule_del_fn(inst, id, prio, fields, cnt);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(dp_gpid_group_rule_del);
 
 int dp_node_unlink(struct dp_node_link *info, int flag)
 {

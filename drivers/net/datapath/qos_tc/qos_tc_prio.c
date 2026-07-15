@@ -13,6 +13,7 @@
 #include "qos_tc_qos.h"
 #include "qos_tc_tbf.h"
 #include "qos_tc_trace.h"
+#include "qos_tc_cpu_qos.h"
 
 static int qos_tc_sched_update(struct net_device *dev,
 			       struct qos_tc_port *port,
@@ -104,6 +105,10 @@ static int qos_tc_queues_update(struct net_device *dev,
 		}
 	}
 
+	ret = qos_tc_prio_update_cpu_info(sch);
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
@@ -148,6 +153,14 @@ static int qos_tc_prio_replace(struct net_device *dev,
 		ret = qos_tc_get_port_info(&port->root_qdisc, tc_params);
 		if (ret < 0)
 			goto err_free_port;
+
+		/* CPU Ingress QoS: Don't allow creating SP queues on low cpu port */
+		if (port->root_qdisc.data_flag & DP_SUBIF_CPU_LOW_PRI) {
+			netdev_err(dev, "Creating SP scheduler on low cpu port %s is not "
+							"allowed\n", dev->name);
+			ret = -EINVAL;
+			goto err_free_port;
+		}
 	}
 
 	qdisc = qos_tc_qdisc_find(port, opt->handle);

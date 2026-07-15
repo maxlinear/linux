@@ -13,6 +13,7 @@
 #include "qos_tc_qos.h"
 #include "qos_tc_tbf.h"
 #include "qos_tc_trace.h"
+#include "qos_tc_cpu_qos.h"
 
 #define MAX_QUANTUM (255 * 4096)
 #define KB 1024
@@ -138,6 +139,10 @@ static int qos_tc_drr_queue_update(struct net_device *dev,
 	if (ret < 0)
 		return ret;
 
+	ret = qos_tc_drr_update_cpu_info(sch, idx);
+	if (ret)
+		return ret;
+
 	/* Update CQM qid_queue_map for priority to queue mapping */
 	return qos_tc_update_cqm_qmap(sch, idx, true, tc_params);
 }
@@ -175,6 +180,15 @@ static int qos_tc_drr_replace(struct net_device *dev,
 			netdev_err(dev, "tc-drr port info get failed\n");
 			goto err_free_port;
 		}
+
+		/* CPU Ingress QoS: Don't allow creating DRR queues on high cpu port */
+		if (port->root_qdisc.data_flag & DP_SUBIF_CPU_HIGH_PRI) {
+			netdev_err(dev, "Creating WRR scheduler on high cpu port %s is not "
+						"allowed\n", dev->name);
+			ret = -EINVAL;
+			goto err_free_port;
+		}
+
 		ret = qos_tc_drr_sched_update(dev, port, opt, tc_params);
 		if (ret < 0) {
 			netdev_err(dev, "tc-drr sched config failed\n");
@@ -238,6 +252,11 @@ static int qos_tc_drr_queue_del(struct qos_tc_qdisc *sch, u32 handle,
 			netdev_err(sch->dev, "%s: queue del err\n", __func__);
 			return ret;
 		}
+
+		ret = qos_tc_drr_update_cpu_info(sch, idx);
+		if (ret)
+			return ret;
+
 		return 1;
 	}
 

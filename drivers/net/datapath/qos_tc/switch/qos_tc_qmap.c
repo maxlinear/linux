@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
- * Copyright (c) 2020 - 2023 MaxLinear, Inc.
+ * Copyright (c) 2020 - 2026 MaxLinear, Inc.
  * Copyright (c) 2020 Intel Corporation
  *
  *****************************************************************************/
@@ -15,22 +15,8 @@
 #include <net/qos_tc.h>
 #include "../qos_tc_qos.h"
 #include "../qos_tc_flower.h"
-
-struct flower_cls_map {
-	__be16 proto;
-	u32 pref;
-	u32 classid;
-	u32 qid;
-	char tc_cookie;
-	bool ingress;
-	struct flow_dissector_key_vlan key;
-	struct flow_dissector_key_vlan mask;
-	struct net_device *dev;
-	int in_ifi;
-	int tc;
-	int subif;
-	struct list_head list;
-};
+#include "../qos_tc_cpu_qos.h"
+#include "qos_tc_qmap.h"
 
 static LIST_HEAD(tc_class_list);
 
@@ -71,31 +57,38 @@ static int qos_tc_parse_flower_action(struct flow_cls_offload *f,
 	return 0;
 }
 
+int qos_tc_get_flower_cookie(struct flow_cls_offload *f, char *tc_cookie)
+{
+	return qos_tc_parse_flower_action(f, tc_cookie);
+}
+
 static int qos_tc_parse_tc_flower(struct flow_cls_offload *f,
 				  struct flower_cls_map **flt,
 				  bool ingress)
 {
 	struct flow_dissector *d = qos_tc_get_dissector(f);
+	void *key = qos_tc_get_key(f);
+	void *mask = qos_tc_get_mask(f);
 
 	*flt = kzalloc(sizeof(**flt), GFP_KERNEL);
 	if (!*flt)
 		return -ENOMEM;
 
 	if (d->used_keys &
-			~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
-				BIT(FLOW_DISSECTOR_KEY_BASIC) |
-				BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
-				BIT(FLOW_DISSECTOR_KEY_VLAN) |
-				BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-				BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-				BIT(FLOW_DISSECTOR_KEY_IP) |
-				BIT(FLOW_DISSECTOR_KEY_META) |
-				BIT(FLOW_DISSECTOR_KEY_PORTS))) {
-		pr_debug("%s: Unsupported key used: 0x%x\n", __func__,
-			 d->used_keys);
+		~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
+		BIT(FLOW_DISSECTOR_KEY_BASIC) |
+		BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
+		BIT(FLOW_DISSECTOR_KEY_VLAN) |
+		BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+		BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+		BIT(FLOW_DISSECTOR_KEY_IP) |
+		BIT(FLOW_DISSECTOR_KEY_META) |
+		BIT(FLOW_DISSECTOR_KEY_PORTS))) {
+		pr_debug("%s: Unsupported key used: 0x%x\n", __func__, d->used_keys);
 		kfree(*flt);
 		return -EOPNOTSUPP;
 	}
+
 	pr_debug("%s: Supported key used: 0x%x\n", __func__, d->used_keys);
 
 	(*flt)->pref = f->common.prio;
@@ -103,20 +96,48 @@ static int qos_tc_parse_tc_flower(struct flow_cls_offload *f,
 	(*flt)->classid = f->classid;
 	(*flt)->ingress = ingress;
 
-	/* Classification/Matching arguments parsing */
+	// VLAN
 	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_VLAN)) {
-		struct flow_dissector_key_vlan *key =
-			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_VLAN,
-						  qos_tc_get_key(f));
-		struct flow_dissector_key_vlan *mask =
-			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_VLAN,
-						  qos_tc_get_mask(f));
+		struct flow_dissector_key_vlan *vkey =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_VLAN, key);
+		struct flow_dissector_key_vlan *vmask =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_VLAN, mask);
+
 		pr_debug("%s: match vid: %#x/%#x pcp: %#x\n", __func__,
-			 key->vlan_id,
-			 key->vlan_priority,
-			 mask->vlan_id);
-		(*flt)->key = *key;
-		(*flt)->mask = *mask;
+			 vkey->vlan_id, vkey->vlan_priority, vmask->vlan_id);
+
+		(*flt)->key = *vkey;
+		(*flt)->mask = *vmask;
+	}
+
+	// IP Protocol (Basic dissector)
+	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_BASIC)) {
+		struct flow_dissector_key_basic *bkey =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_BASIC, key);
+		struct flow_dissector_key_basic *bmask =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_BASIC, mask);
+		(*flt)->basic_key = *bkey;
+		(*flt)->basic_mask = *bmask;
+	}
+
+	// L4 Ports
+	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_PORTS)) {
+		struct flow_dissector_key_ports *pkey =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_PORTS, key);
+		struct flow_dissector_key_ports *pmask =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_PORTS, mask);
+		(*flt)->ports_key = *pkey;
+		(*flt)->ports_mask = *pmask;
+	}
+
+	// IPv4 Addresses
+	if (dissector_uses_key(d, FLOW_DISSECTOR_KEY_IPV4_ADDRS)) {
+		struct flow_dissector_key_ipv4_addrs *ipkey =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_IPV4_ADDRS, key);
+		struct flow_dissector_key_ipv4_addrs *ipmask =
+			skb_flow_dissector_target(d, FLOW_DISSECTOR_KEY_IPV4_ADDRS, mask);
+		(*flt)->ipv4_key = *ipkey;
+		(*flt)->ipv4_mask = *ipmask;
 	}
 
 	return 0;
@@ -235,6 +256,12 @@ int qos_tc_map(struct net_device *dev, struct flow_cls_offload *f,
 	if (ret < 0)
 		goto err;
 
+	if (qos_tc_is_netdev_cpu_port(dev)) {
+		ret = qos_tc_cpu_ingg_qos_add(dev, map, f);
+		if (ret < 0)
+			goto err;
+	}
+
 	list_add(&map->list, &tc_class_list);
 
 	return 0;
@@ -295,14 +322,26 @@ int qos_tc_unmap(struct net_device *dev, void *list_node,
 	if (map->in_ifi)
 		indev = __dev_get_by_index(dev_net(dev), map->in_ifi);
 
+	if (qos_tc_is_netdev_cpu_port(dev)) {
+		ret = qos_tc_cpu_ingg_qos_delete(dev, indev, map);
+		if (ret < 0)
+			return ret;
+	}
+
 	ret = __qos_tc_unmap(dev, map, indev, tc_params);
 	if (ret < 0) {
 		netdev_err(dev, "%s: queue unmap fail (%d)\n", __func__, ret);
 		return ret;
 	}
 
-	list_del(&map->list);
-	kfree(map);
+	/* Only delete from list and free if it was actually added.
+	 * If add failed before list_add, pointers are NULL (from kzalloc).
+	 * In that case, the error path in qos_tc_map already freed it.
+	 */
+	if (map->list.prev != NULL && map->list.next != NULL) {
+		list_del(&map->list);
+		kfree(map);
+	}
 	return 0;
 }
 

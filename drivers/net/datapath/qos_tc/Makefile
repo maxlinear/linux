@@ -16,7 +16,8 @@ qos_tc-y := \
 	qos_tc_mqprio.o \
 	qos_tc_flower.o \
 	qos_tc_tbf.o \
-	qos_tc_codel.o
+	qos_tc_codel.o \
+	qos_tc_cpu_qos.o
 
 # Switch offload objects — compiled only when enabled and linked into qos_tc.ko
 qos_tc-$(CONFIG_QOS_TC_SWITCH_OFFLOAD) += \

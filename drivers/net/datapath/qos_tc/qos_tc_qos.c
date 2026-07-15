@@ -15,6 +15,7 @@
 #include "qos_tc_switch_stubs.h"
 #include "qos_tc_trace.h"
 #include "qos_tc_qmap_ops.h"
+#include "qos_tc_cpu_qos.h"
 
 static LIST_HEAD(port_list);
 
@@ -207,14 +208,103 @@ static int set_alloc_flag(struct qos_tc_qdisc *sch)
 	return 0;
 }
 
+static void qos_tc_set_from_subif_common(struct qos_tc_qdisc *sch,
+					 dp_subif_t *subif)
+{
+	sch->inst = subif->inst;
+
+#if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
+	sch->alloc_flag = subif->alloc_flag;
+#endif
+
+	if (subif->subif_common.num_q == 1)
+		sch->def_q = subif->subif_common.def_qlist[0];
+	else
+		sch->def_q = -1;
+
+	if (subif->subif_common.num_q > 1)
+		netdev_warn(sch->dev,
+			    "found %i DP default queues, do not change them",
+			    subif->subif_common.num_q);
+}
+
+static int qos_tc_prepare_deq_and_flags(struct qos_tc_qdisc *sch,
+					dp_subif_t *subif, bool subif_found,
+					struct dp_dequeue_res *deq, int *flags)
+{
+	*flags = 0;
+
+	/* Handle CPU port case */
+	if (qos_tc_is_cpu_port(sch->port) && subif_found) {
+		sch->inst = subif->inst;
+		sch->def_q = subif->def_qid;
+		sch->data_flag = subif->data_flag;
+		deq->dev = sch->dev;
+		return 0;
+	}
+
+	/* Handle ports that do not have a dp subif */
+	if (!subif_found) {
+		netdev_dbg(sch->dev, "Can not find in DP");
+		/* Some devices like T-Conts are not registered to DP
+		 * and then this function returns an error. Just ignore
+		 * it in that case.
+		 */
+		if (sch->deq_idx < 0)
+			return -ENODEV;
+		sch->def_q = -1;
+		sch->inst = 0;
+		deq->dp_port = sch->port;
+		deq->cqm_deq_idx = sch->deq_idx;
+		return 0;
+	}
+
+	/* subif_found is true, non-CPU port */
+	/* The deq_idx is provided in the qos_tc_setup()
+	 * function by the caller like the PON Ethernet driver
+	 * or the LAN Ethernet driver. Some drivers provide -1
+	 * to indicate the value is unknown.
+	 */
+	if (sch->deq_idx < 0 || subif->data_flag & DP_SUBIF_REINSERT) {
+		/* This is PON DS port so mark this */
+		sch->port = subif->port_id;
+		sch->deq_idx = 0;
+		sch->ds = true;
+	}
+
+	/* Take flags from subif in order to distinguish
+	 * reinsertion port from others. Special bit is set
+	 * for reinsertion port.
+	 */
+	*flags = subif->data_flag;
+
+	/* save hw egress port settings */
+	qos_tc_set_from_subif_common(sch, subif);
+
+	deq->dp_port = sch->port;
+	deq->cqm_deq_idx = sch->deq_idx;
+	return 0;
+}
+
+static int qos_tc_get_port_resources(struct qos_tc_qdisc *sch,
+				struct dp_dequeue_res *deq, int flags)
+{
+	int ret = dp_deq_port_res_get(deq, flags);
+
+	if (ret < 0)
+		return ret;
+	sch->epn = deq->cqm_deq_port;
+	return 0;
+}
+
 int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 		const struct qos_tc_params *tc_params)
 {
 	dp_subif_t *subif __free(kfree) = NULL;
 	struct dp_dequeue_res deq = {0};
-	struct dp_queue_res q_res[QOS_TC_MAX_Q] = {0};
 	int ret;
 	int flags = 0;
+	bool subif_found;
 
 	if (tc_params && tc_params->flags & QOS_TC_IS_LIF_CONFIG) {
 		sch->def_q = tc_params->def_q;
@@ -225,101 +315,22 @@ int qos_tc_fill_port_data(struct qos_tc_qdisc *sch,
 		return 0;
 	}
 
-	/* The CPU port is not a subif in DP but needs special handling. We
-	 * cannot directly get the DP default CPU queues from DP for the CPU
-	 * port, but we just request all queues for this port and assume that
-	 * the first one is the DP default queue. The CPU port is the port 0
-	 * on our systems, hard code that.
-	 * If we get more than one CPU queue, we do not change anything here.
-	 * On LGM we get 32 queues here, probably configured by PPA and we
-	 * should not touch them. On PRX we get only one and it works fine.
-	 * We plan to add dedicated support for the CPU port later.
-	 */
-	if (qos_tc_is_cpu_port(sch->port)) {
-		deq.dp_port = 0;
-		deq.cqm_deq_idx = DEQ_PORT_OFFSET_ALL;
-		deq.q_res = q_res;
-		deq.q_res_size = ARRAY_SIZE(q_res);
-		ret = dp_deq_port_res_get(&deq, 0);
-		if (ret != DP_SUCCESS) {
-			netdev_err(sch->dev, "can not get CPU queue: %i", ret);
-			return -ENODEV;
-		}
-		if (deq.num_q == 1)
-			sch->def_q = q_res[0].q_id;
-		else
-			sch->def_q = -1;
-		if (deq.num_q > 1)
-			netdev_dbg(sch->dev, "found %i DP default CPU queues, do not change them",
-				   deq.num_q);
-		sch->inst = 0;
-		sch->port = 0;
-		sch->deq_idx = DEQ_PORT_OFFSET_ALL;
-		memset(&deq, 0, sizeof(deq));
-	} else {
-		subif = kzalloc(sizeof(*subif), GFP_KERNEL);
-		if (!subif) {
-			netdev_err(sch->dev, "%s: failed to allocate memory for subif\n",
-				   __func__);
-			return -ENOMEM;
-		}
-		ret = qos_tc_get_netif_subifid(sch->dev, subif);
-		if (ret == DP_SUCCESS) {
-			/* The deq_idx is provided in the qos_tc_setup()
-			 * function by the caller like the PON Ethernet driver
-			 * or the LAN Ethernet driver. Some drivers provide -1
-			 * to indicate the value is unknown.
-			 */
-			if (sch->deq_idx < 0 ||
-			    QOS_TC_SUBIF_DATA_FLAGS(subif) & DP_SUBIF_REINSERT) {
-				/* This is PON DS port so mark this */
-				sch->port = subif->port_id;
-				sch->deq_idx = 0;
-				sch->ds = true;
-			}
-			/* Take flags from subif in order to distinguish
-			 * reinsertion port from others. Special bit is set
-			 * for reinsertion port.
-			 */
-			flags = QOS_TC_SUBIF_DATA_FLAGS(subif);
-			/* save hw egress port settings */
-			sch->inst = subif->inst;
-			/* Save lookup mode */
-			sch->lookup_mode = QOS_TC_SUBIF_LOOKUP_MODE(subif);
-			/* alloc_flag will be set for URX only; for other SoCs, it will be zero.
-			This alloc_flag is utilized for getting interface information.
-			Based on the interface, we are modifying queue length and drop algorithm
-			on user queues which are created on the particular default interfaces. */
-#if (defined(CONFIG_X86_INTEL_LGM) || defined(CONFIG_SOC_LGM))
-			sch->alloc_flag = QOS_TC_SUBIF_ALLOC_FLAGS(subif);
-#endif
-			/* If we do not have a default queue from DP use -1 */
-			if (QOS_TC_SUBIF_NUM_Q(subif) == 1)
-				sch->def_q = QOS_TC_SUBIF_DEF_Q(subif, 0);
-			else
-				sch->def_q = -1;
-			if (QOS_TC_SUBIF_NUM_Q(subif) > 1)
-				netdev_warn(sch->dev, "found %i DP default queues, do not change them",
-					    QOS_TC_SUBIF_NUM_Q(subif));
-		} else {
-			netdev_dbg(sch->dev, "Can not find in DP: %i", ret);
-			/* Some devices like T-Conts are not registered to DP
-			 * and then this function returns an error. Just ignore
-			 * it in that case.
-			 */
-			if (sch->deq_idx < 0)
-				return -ENODEV;
-			sch->def_q = -1;
-			sch->inst = 0;
-		}
+	subif = kzalloc(sizeof(*subif), GFP_KERNEL);
+	if (!subif) {
+		netdev_err(sch->dev, "%s: kzalloc failed for subif\n", __func__);
+		return -ENOMEM;
 	}
 
-	deq.dp_port = sch->port;
-	deq.cqm_deq_idx = sch->deq_idx;
-	ret = dp_deq_port_res_get(&deq, flags);
-	if (ret < 0)
+	ret = dp_get_netif_subifid(sch->dev, NULL, NULL, 0, subif, 0);
+	subif_found = (ret == DP_SUCCESS);
+
+	ret = qos_tc_prepare_deq_and_flags(sch, subif, subif_found, &deq, &flags);
+	if (ret)
 		return ret;
-	sch->epn = deq.cqm_deq_port;
+
+	ret = qos_tc_get_port_resources(sch, &deq, flags);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1903,6 +1914,12 @@ int qos_tc_qdisc_tree_del(struct qos_tc_port *p, struct qos_tc_qdisc *root,
 				return ret;
 		}
 	}
+
+	/* Update CPU queue info after deletion (will use default queues) */
+	ret = qos_tc_prio_update_cpu_info(root);
+	if (ret)
+		return ret;
+
 	netdev_dbg(root->dev, "%s: deleting sched %#x %#x\n",
 		   __func__, root->parent, root->handle);
 	ret = qos_tc_sched_del(root, tc_params);
